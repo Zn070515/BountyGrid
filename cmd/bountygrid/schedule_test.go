@@ -17,6 +17,7 @@ type fakeScheduleStore struct {
 	account  *domain.Account
 	opps     []domain.Opportunity
 	tasks    []domain.ResearchTask
+	comp     *domain.CompetitionSnapshot
 }
 
 func (f *fakeScheduleStore) ListPrograms(ctx context.Context, platform domain.Platform) ([]domain.Program, error) {
@@ -30,6 +31,12 @@ func (f *fakeScheduleStore) GetAccount(ctx context.Context, id domain.AccountID)
 		return domain.Account{}, postgres.ErrNotFound
 	}
 	return *f.account, nil
+}
+func (f *fakeScheduleStore) GetLatestCompetitionSnapshot(ctx context.Context, platform domain.Platform, scope string) (domain.CompetitionSnapshot, error) {
+	if f.comp == nil {
+		return domain.CompetitionSnapshot{}, postgres.ErrNotFound
+	}
+	return *f.comp, nil
 }
 func (f *fakeScheduleStore) PutOpportunity(ctx context.Context, o domain.Opportunity) error {
 	f.opps = append(f.opps, o)
@@ -107,6 +114,38 @@ func TestExecuteSchedule(t *testing.T) {
 	}
 	if !statuses["QUEUED"] || !statuses["HUMAN_ACTION_REQUIRED"] {
 		t.Fatalf("task statuses = %+v", statuses)
+	}
+}
+
+func TestExecuteScheduleUsesCompetitionSnapshot(t *testing.T) {
+	p := schedProgram("p1", domain.StatusRunning, true, true)
+	top10 := 0.708
+	dup := 0.5
+	sat := 0.6
+	comp := &domain.CompetitionSnapshot{
+		ID: "comp", Platform: domain.PlatformVulbox, Scope: "PLATFORM", ObservedAt: testNow,
+		Top10Share: &top10, DuplicatePressure: &dup, Saturation: &sat, Confidence: 0.7,
+	}
+	acct := domain.Account{ID: "vulbox/account", Platform: domain.PlatformVulbox, ObservedAt: testNow,
+		Capability: domain.AccountCapability{CanSubmit: true, EvaluatedAt: testNow}}
+	store := &fakeScheduleStore{
+		programs: []domain.Program{p},
+		states:   []domain.DerivedState{schedState(p, "RUNNING")},
+		account:  &acct,
+		comp:     comp,
+	}
+	out, err := executeSchedule(context.Background(), store, scheduleOptions{Platform: "vulbox", Top: 1}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.ResearchQueue) != 1 {
+		t.Fatalf("research = %+v", out.ResearchQueue)
+	}
+	if out.ResearchQueue[0].Confidence != 0.7 {
+		t.Fatalf("confidence = %v, want snapshot 0.7", out.ResearchQueue[0].Confidence)
+	}
+	if out.ResearchQueue[0].CompetitionPenalty <= 0 {
+		t.Fatal("competition penalty missing")
 	}
 }
 

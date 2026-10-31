@@ -223,6 +223,21 @@ go run ./cmd/bountygrid decide -authorize <decision-id>
 go run ./cmd/bountygrid schedule -platform vulbox -top 5 -persist
 ```
 
+### CompetitionSnapshot · `competition`
+
+- `bountygrid competition -file snapshot.json -persist`：校验 platform/scope/share/confidence；生成带 Evidence 的快照（`ManualImport`，原文脱敏到 `.evidence/competition/`），写入 `competition_snapshots`。
+- 已落库三份审计快照（2026-10-31）：
+
+```text
+xianzhi  top10=0.708  active=28 rewarded=27 pool=14,680  confidence=0.7
+vulbox   top10=0.500* active=50 rewarded=30 pool=30,000  confidence=0.5
+butian   top10=0.500* active=30 rewarded=10 pool=—       confidence=0.5
+* 页面没有直接给出 top10 share，按 0.5 保守估计并在 Evidence 文本里注明。
+```
+
+- 重新调度后：Vulbox 9 个 human（confidence 0.5、penalty 0.645），Xianzhi 3 个 human（confidence 0.7、penalty 0.608）；`opportunities=12`、`research_tasks=12 HUMAN_ACTION_REQUIRED`。仍无 research，因为账号能力未观测（fail-closed）。
+- `PutOpportunity` 冲突更新现在刷新全部反规范化列（expected_return/per_cost/penalty/confidence/evaluated_at/data），避免“JSON 已更新、列还是旧值”。
+
 ### Butian Reader（37 专属SRC 已实测，账号/GROW 待网络恢复）
 
 - `internal/adapter/butian`：`AuthStatus`、`SyncAccount`（合规考核/实战认证/实名/银行卡，保守 fail-closed）、`SyncPrograms`（37 专属SRC）、`SyncProgram`、`SyncScope`（未报名 GATED）、`SyncPolicy`（保守 `UNKNOWN`）。

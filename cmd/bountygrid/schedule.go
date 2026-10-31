@@ -25,6 +25,7 @@ type scheduleStore interface {
 	ListPrograms(ctx context.Context, platform domain.Platform) ([]domain.Program, error)
 	ListStates(ctx context.Context, platform domain.Platform, subject domain.StateSubject) ([]domain.DerivedState, error)
 	GetAccount(ctx context.Context, id domain.AccountID) (domain.Account, error)
+	GetLatestCompetitionSnapshot(ctx context.Context, platform domain.Platform, scope string) (domain.CompetitionSnapshot, error)
 	PutOpportunity(ctx context.Context, o domain.Opportunity) error
 	PutResearchTask(ctx context.Context, t domain.ResearchTask) error
 }
@@ -127,6 +128,12 @@ func executeSchedule(ctx context.Context, store scheduleStore, opts scheduleOpti
 	} else if !errors.Is(err, postgres.ErrNotFound) {
 		return out, err
 	}
+	var comp *domain.CompetitionSnapshot
+	if c, err := store.GetLatestCompetitionSnapshot(ctx, domain.Platform(opts.Platform), "PLATFORM"); err == nil {
+		comp = &c
+	} else if !errors.Is(err, postgres.ErrNotFound) {
+		return out, err
+	}
 
 	var candidates []opportunity.Candidate
 	for _, p := range progs {
@@ -137,7 +144,7 @@ func executeSchedule(ctx context.Context, store scheduleStore, opts scheduleOpti
 			continue
 		}
 		candidates = append(candidates, opportunity.Candidate{
-			Program: p, Status: domain.ProgramStatus(st.State), Account: acct,
+			Program: p, Status: domain.ProgramStatus(st.State), Account: acct, Competition: comp,
 		})
 	}
 	res := opportunity.Schedule(opportunity.NewEngine(), candidates, opportunity.Options{

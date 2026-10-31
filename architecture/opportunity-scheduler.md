@@ -65,6 +65,8 @@ type CompetitionSnapshot struct {
 
 > 这些是 **snapshot**，不是永久事实；每次同步更新并记录 `observed_at/confidence`。
 
+Phase 4 当前实现：`bountygrid competition -file <json> -persist` 导入带 Evidence 的快照（`ManualImport`，原文脱敏到本地），写入 `competition_snapshots`；`schedule` 读取每平台最新 `PLATFORM` 快照。已落库先知 0.708/conf0.7、漏洞盒子 0.5/conf0.5、补天 0.5/conf0.5；后两者页面没有直接给出 top10 share，按 0.5 保守估计并在 Evidence 文本注明。
+
 ### 2.3 置信度
 
 - 榜单完整可见：0.9

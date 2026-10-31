@@ -47,6 +47,7 @@ func TestRepoRoundTrip(t *testing.T) {
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM report_drafts WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM findings WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM research_tasks WHERE program_id=$1`, progID)
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM competition_snapshots WHERE id=$1`, "it-comp-"+suffix)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM opportunities WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM action_decisions WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM derived_states WHERE program_id=$1`, progID)
@@ -235,9 +236,36 @@ func TestRepoRoundTrip(t *testing.T) {
 	reportID := "it-report-" + suffix
 	subID := domain.SubmissionID("it-sub-" + suffix)
 
+	compID := "it-comp-" + suffix
+	comp := domain.CompetitionSnapshot{
+		ID: compID, Platform: domain.PlatformButian, Scope: "PLATFORM", ObservedAt: now,
+		Top10Share: floatPtr(0.5), Confidence: 0.5,
+	}
+	if err := r.PutCompetitionSnapshot(ctx, comp); err != nil {
+		t.Fatal(err)
+	}
+	gotComp, err := r.GetLatestCompetitionSnapshot(ctx, domain.PlatformButian, "PLATFORM")
+	if err != nil || gotComp.ID != compID {
+		t.Fatalf("competition roundtrip: %+v %v", gotComp, err)
+	}
+
 	opp := domain.Opportunity{ID: oppID, ProgramID: progID, Confidence: 0.5, EvaluatedAt: now}
 	if err := r.PutOpportunity(ctx, opp); err != nil {
 		t.Fatal(err)
+	}
+	opp.Confidence = 0.9
+	opp.CompetitionPenalty = 0.7
+	if err := r.PutOpportunity(ctx, opp); err != nil {
+		t.Fatal(err)
+	}
+	var gotConfidence, gotPenalty float64
+	if err := r.Pool.QueryRow(ctx,
+		`SELECT confidence, competition_penalty FROM opportunities WHERE id=$1`, oppID,
+	).Scan(&gotConfidence, &gotPenalty); err != nil {
+		t.Fatal(err)
+	}
+	if gotConfidence != 0.9 || gotPenalty != 0.7 {
+		t.Fatalf("opportunity upsert did not refresh columns: %v/%v", gotConfidence, gotPenalty)
 	}
 	task := domain.ResearchTask{ID: taskID, OpportunityID: oppID, ProgramID: progID, Status: "CREATED", CreatedAt: now}
 	if err := r.PutResearchTask(ctx, task); err != nil {
@@ -291,3 +319,5 @@ func TestRepoRoundTrip(t *testing.T) {
 		t.Fatalf("second consume = %v, want ErrApprovalConsumed", err)
 	}
 }
+
+func floatPtr(v float64) *float64 { return &v }
