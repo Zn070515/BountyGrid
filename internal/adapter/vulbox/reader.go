@@ -343,6 +343,28 @@ func (r *Reader) pageText(ctx context.Context) (string, error) {
 	return s, nil
 }
 
+func (r *Reader) closeOverlays(ctx context.Context) {
+	// Promotional drawers may open after navigation. Wait for them, close them,
+	// then wait until the profile identity text is visible (best-effort).
+	script := `(async()=>{
+		let clicked=0;
+		for(let i=0;i<60;i++){
+			const closers=[...document.querySelectorAll('.anticon-close, .mask.close, .drawer .close, .ant-modal-close')];
+			if(closers.length){
+				for(const e of closers){ try{ e.click(); clicked++; }catch(_){} }
+				break;
+			}
+			await new Promise(r=>setTimeout(r,100));
+		}
+		for(let i=0;i<50;i++){
+			if((document.body.innerText||'').includes('已实名')) break;
+			await new Promise(r=>setTimeout(r,100));
+		}
+		return JSON.stringify({clicked});
+	})()`
+	_, _ = r.browser.Eval(ctx, script)
+}
+
 func (r *Reader) readPage(ctx context.Context, url, source string, sourceType domain.SourceType, title string, at time.Time, requireUserCenter bool) (string, domain.Evidence, error) {
 	if err := r.browser.Open(ctx, url); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
 		return "", domain.Evidence{}, fmt.Errorf("vulbox: open %s: %w", url, err)
@@ -350,6 +372,9 @@ func (r *Reader) readPage(ctx context.Context, url, source string, sourceType do
 	if err := r.browser.WaitLoad(ctx); err != nil {
 		return "", domain.Evidence{}, fmt.Errorf("vulbox: wait %s: %w", url, err)
 	}
+	// User-center pages open promotional drawers over the profile. Dismiss
+	// them read-only so identity/joined data is not hidden behind the overlay.
+	r.closeOverlays(ctx)
 	finalURL, err := r.browser.GetURL(ctx)
 	if err != nil {
 		return "", domain.Evidence{}, fmt.Errorf("vulbox: url %s: %w", url, err)
