@@ -18,6 +18,7 @@ import (
 type syncOptions struct {
 	Programs    bool
 	Account     bool
+	ProgramID   string
 	Pages       int
 	PageSize    int
 	RawDir      string
@@ -29,11 +30,30 @@ type syncOptions struct {
 }
 
 type syncOutput struct {
-	Platform string          `json:"platform"`
-	Auth     string          `json:"auth"`
-	Programs *programsOutput `json:"programs,omitempty"`
-	Account  *accountOutput  `json:"account,omitempty"`
-	Evidence []string        `json:"evidence,omitempty"`
+	Platform string               `json:"platform"`
+	Auth     string               `json:"auth"`
+	Programs *programsOutput      `json:"programs,omitempty"`
+	Account  *accountOutput       `json:"account,omitempty"`
+	Detail   *programDetailOutput `json:"program,omitempty"`
+	Evidence []string             `json:"evidence,omitempty"`
+}
+
+type programDetailOutput struct {
+	ID                        string   `json:"id"`
+	Name                      string   `json:"name"`
+	Type                      string   `json:"type"`
+	Status                    string   `json:"status"`
+	Eligibility               string   `json:"eligibility"`
+	ScopeVisibility           string   `json:"scope_visibility"`
+	ScopeAccess               string   `json:"scope_access"`
+	ContentsKnown             bool     `json:"contents_known"`
+	Include                   []string `json:"include,omitempty"`
+	Exclude                   []string `json:"exclude,omitempty"`
+	ExcludeNotes              []string `json:"exclude_notes,omitempty"`
+	FileUpload                string   `json:"file_upload"`
+	AIAnalysis                string   `json:"ai_analysis"`
+	HumanVerificationRequired bool     `json:"human_verification_required"`
+	Facts                     int      `json:"facts"`
 }
 
 type programsOutput struct {
@@ -73,6 +93,7 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 	fs.SetOutput(io.Discard)
 	fs.BoolVar(&o.Programs, "programs", true, "read the project hall list")
 	fs.BoolVar(&o.Account, "account", false, "read the account (requires a logged-in session)")
+	fs.StringVar(&o.ProgramID, "program", "", "read one enterprise SRC by native id (e.g. 444); implies scope+policy")
 	fs.IntVar(&o.Pages, "pages", 1, "maximum project-list pages (1-152)")
 	fs.IntVar(&o.PageSize, "page-size", 50, "project-list page size (10-100)")
 	fs.StringVar(&o.RawDir, "raw-dir", ".evidence/vulbox", "local directory for redacted raw evidence")
@@ -84,8 +105,8 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
-	if !o.Programs && !o.Account {
-		return o, errors.New("sync: choose -programs and/or -account")
+	if !o.Programs && !o.Account && o.ProgramID == "" {
+		return o, errors.New("sync: choose -programs, -account and/or -program")
 	}
 	if o.Pages < 1 || o.Pages > 152 {
 		return o, errors.New("sync: -pages must be between 1 and 152")
@@ -164,6 +185,24 @@ func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w
 			out.Evidence = append(out.Evidence, string(ev.ID))
 		}
 	}
+	if opts.ProgramID != "" {
+		pid := domain.ProgramID("vulbox/" + opts.ProgramID)
+		snap, err := reader.SyncProgram(ctx, pid)
+		if err != nil {
+			return err
+		}
+		policy, err := reader.SyncPolicy(ctx, pid)
+		if err != nil {
+			return err
+		}
+		out.Detail = summarizeProgramDetail(snap, policy)
+		for _, ev := range snap.Evidence {
+			out.Evidence = append(out.Evidence, string(ev.ID))
+		}
+		for _, ev := range policy.Evidence {
+			out.Evidence = append(out.Evidence, string(ev.ID))
+		}
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
@@ -209,6 +248,43 @@ func summarizeAccount(a adapter.AccountSnapshot) *accountOutput {
 		out.SeasonRank = *acct.Rank
 	}
 	return out
+}
+
+func summarizeProgramDetail(p adapter.ProgramSnapshot, pol adapter.PolicySnapshot) *programDetailOutput {
+	out := &programDetailOutput{
+		ID:                        string(p.Program.ID),
+		Name:                      p.Program.Name,
+		Type:                      string(p.Program.Type),
+		Status:                    string(p.Program.Status.Status),
+		Eligibility:               string(p.Program.Eligibility.Decision),
+		ScopeVisibility:           string(p.Scope.Visibility),
+		ScopeAccess:               string(p.Scope.Access),
+		ContentsKnown:             p.Scope.ContentsKnown,
+		FileUpload:                string(pol.Automation.FileUpload),
+		AIAnalysis:                string(pol.Automation.AIAnalysis),
+		HumanVerificationRequired: pol.Automation.HumanVerificationRequired,
+		Facts:                     len(p.Facts) + len(pol.Facts),
+	}
+	for _, a := range p.Scope.Include {
+		out.Include = append(out.Include, a.Value)
+	}
+	for _, a := range p.Scope.Exclude {
+		out.Exclude = append(out.Exclude, a.Value)
+	}
+	out.ExcludeNotes = factStrings(p.Facts, "vulbox.scope.exclude_notes")
+	return out
+}
+
+func factStrings(fs []domain.ObservedFact, pred string) []string {
+	for _, f := range fs {
+		if f.Predicate != pred {
+			continue
+		}
+		if v, ok := f.Value.([]string); ok {
+			return v
+		}
+	}
+	return nil
 }
 
 func factInt(fs []domain.ObservedFact, pred string) int {

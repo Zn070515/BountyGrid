@@ -2,8 +2,11 @@ package vulbox
 
 import (
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Zn070515/BountyGrid/internal/domain"
 )
 
 // accountPage is the subset of the Vulbox user center the reader records.
@@ -80,6 +83,79 @@ func firstFloat(s string) float64 {
 
 // parseIdentityText derives identity and bank-binding state from the personal
 // center text. Unknown is returned when the page does not say.
+var (
+	reScopePattern = regexp.MustCompile(`^\*\.[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$`)
+	reAnyPattern   = regexp.MustCompile(`\*\.[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?`)
+)
+
+// parseSRCScope extracts the include/exclude asset patterns from an enterprise
+// SRC page. found is true when the 资产范围 section exists; include may still be
+// empty (the caller must fail closed rather than assume "everything").
+func parseSRCScope(text string) (include, exclude, notes []string, found bool) {
+	start := strings.Index(text, "资产范围")
+	if start < 0 {
+		return nil, nil, nil, false
+	}
+	section := text[start:]
+	if end := strings.Index(section, "最新公告"); end >= 0 {
+		section = section[:end]
+	}
+	found = true
+	seenI := map[string]struct{}{}
+	seenE := map[string]struct{}{}
+	seenN := map[string]struct{}{}
+	add := func(dst *[]string, seen map[string]struct{}, v string) {
+		if _, ok := seen[v]; ok {
+			return
+		}
+		seen[v] = struct{}{}
+		*dst = append(*dst, v)
+	}
+	for _, raw := range strings.Split(section, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "暂不收录") || strings.Contains(line, "暂不收录") {
+			if m := reAnyPattern.FindString(strings.ToLower(line)); m != "" {
+				add(&exclude, seenE, m)
+			} else {
+				add(&notes, seenN, line)
+			}
+			continue
+		}
+		low := strings.ToLower(line)
+		if reScopePattern.MatchString(low) {
+			add(&include, seenI, low)
+		}
+	}
+	sort.Strings(include)
+	sort.Strings(exclude)
+	sort.Strings(notes)
+	return include, exclude, notes, found
+}
+
+type srcPolicy struct {
+	FileUpload                domain.CapabilityStatus
+	AIAnalysis                domain.CapabilityStatus
+	HumanVerificationRequired bool
+}
+
+// parseSRCPolicy only records rules the page states explicitly. Everything
+// else stays UNKNOWN and is merged later with the platform FAQ.
+func parseSRCPolicy(text string) srcPolicy {
+	low := strings.ToLower(text)
+	p := srcPolicy{}
+	if strings.Contains(low, "禁止上传webshell") || strings.Contains(low, "禁止上传 web shell") {
+		p.FileUpload = domain.CapForbidden
+	}
+	if strings.Contains(text, "AI生成漏洞报告提交规范") || strings.Contains(text, "AI辅助漏洞报告") {
+		p.AIAnalysis = domain.CapConditional
+		p.HumanVerificationRequired = true
+	}
+	return p
+}
+
 func parseIdentityText(text string) (*bool, *bool) {
 	var identity *bool
 	switch {

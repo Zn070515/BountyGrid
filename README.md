@@ -115,7 +115,7 @@ bash probes/butian/grow-dates.sh
 |---|---|---|
 | Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
 | 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
-| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：sidecar + Vulbox 公开项目列表/账号 Reader；Scope/Policy 详情页待登录后接入 |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：Vulbox 公开列表、账号、企业SRC Scope/Policy 已实测；Xianzhi/Butian 未开始 |
 | Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
 | Phase 4 | Opportunity / Scheduler | Phase 1 Reader 接入之后 |
 | Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
@@ -125,15 +125,25 @@ bash probes/butian/grow-dates.sh
 已落地（只读，不点击提交/报名/NDA）：
 
 - `internal/sidecar`：`agent-browser` 只读客户端，只暴露 `open/wait/eval/get/screenshot/state save/close`；按命令限速，不提供 click/fill。
-- `internal/adapter/vulbox`：`AuthStatus`、`SyncAccount`（需登录）、`SyncPrograms`（公开项目列表，走页面自身的只读 GET）；`SyncProgram/SyncScope/SyncPolicy` 在详情页验证前 fail-closed 返回 `ErrUnsupported`，不猜 Scope/规则。
-- `cmd/bountygrid sync`：`-programs`（默认）、`-account`、`-pages`、`-page-size`、`-session`（默认 `vbprobe`）、`-raw-dir`；输出 JSON 摘要，不打印页面原文。
+- `internal/adapter/vulbox`：`AuthStatus`、`SyncAccount`（需登录）、`SyncPrograms`（公开项目列表，走页面自身的只读 GET）、`SyncProgram/SyncScope/SyncPolicy`（企业SRC子域，实测联想 444）；非企业SRC详情页仍 fail-closed 返回 `ErrUnsupported`。
+- `cmd/bountygrid sync`：`-programs`（默认）、`-account`、`-program <id>`、`-pages`、`-page-size`、`-session`（默认 `vbprobe`）、`-raw-dir`；输出 JSON 摘要，不打印页面原文。
 - 原始证据脱敏后写入 `.evidence/`（gitignored），数据库/仓库不保存页面原文。
 
-实测（2026-10-31）：公开项目列表第 1 页 10 个项目、`estimated_total=1513`、150 条 Fact、1 条 Evidence；所有 Fact 都有 EvidenceRef。账号同步需先人工登录：
+实测（2026-10-31）：
+
+```text
+公开列表：10 个项目/页，estimated_total=1513，150 条 Fact，1 条 Evidence
+账号    ：见习白帽 / exp 10 / 信誉 100 / 排名 9999+ / 实名 / CanSubmit / 已加入 2
+联想 444：RUNNING / ELIGIBLE；Scope PUBLIC+GRANTED+known；include 9 条、exclude *.sunits.com；
+          FileUpload=FORBIDDEN，AIAnalysis=CONDITIONAL，HumanVerificationRequired=true
+```
+
+账号与单项目同步需先人工登录：
 
 ```bash
 bash probes/session/relogin.sh vulbox
 go run ./cmd/bountygrid sync -account -programs -pages=1
+go run ./cmd/bountygrid sync -programs=false -account=false -program 444
 ```
 
 `relogin.sh` 现在故意不加载旧 state（损坏的 state 会让浏览器导航挂起），登录成功后重新保存。单机上产品 Reader 复用探针会话 `vbprobe`；其他环境用 `-session` 覆盖。`sync` 默认**不关闭**会话，避免把内存中的登录态关掉；需要清理时显式加 `-close=true`。

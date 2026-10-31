@@ -18,6 +18,10 @@ type fakeReader struct {
 	programsErr error
 	account     adapter.AccountSnapshot
 	accountErr  error
+	program     adapter.ProgramSnapshot
+	programErr  error
+	policy      adapter.PolicySnapshot
+	policyErr   error
 }
 
 func (f *fakeReader) Platform() domain.Platform { return domain.PlatformVulbox }
@@ -31,13 +35,13 @@ func (f *fakeReader) SyncPrograms(context.Context, adapter.SyncOptions) (adapter
 	return f.programs, f.programsErr
 }
 func (f *fakeReader) SyncProgram(context.Context, domain.ProgramID) (adapter.ProgramSnapshot, error) {
-	return adapter.ProgramSnapshot{}, adapter.ErrUnsupported
+	return f.program, f.programErr
 }
 func (f *fakeReader) SyncScope(context.Context, domain.ProgramID) (adapter.ScopeSnapshot, error) {
 	return adapter.ScopeSnapshot{}, adapter.ErrUnsupported
 }
 func (f *fakeReader) SyncPolicy(context.Context, domain.ProgramID) (adapter.PolicySnapshot, error) {
-	return adapter.PolicySnapshot{}, adapter.ErrUnsupported
+	return f.policy, f.policyErr
 }
 
 func TestExecuteSyncPrograms(t *testing.T) {
@@ -87,6 +91,64 @@ func TestExecuteSyncAccount(t *testing.T) {
 	}
 	if out.Account == nil || out.Account.ID != "vulbox/account" || !out.Account.CanSubmit || out.Account.CanPayout {
 		t.Fatalf("account output = %+v", out.Account)
+	}
+}
+
+func TestExecuteSyncProgramDetail(t *testing.T) {
+	prog := domain.Program{ID: "vulbox/444", Name: "联想", Type: domain.TypeEnterpriseSRC}
+	prog.Status.Status = domain.StatusRunning
+	prog.Eligibility.Decision = domain.Eligible
+	snap := adapter.ProgramSnapshot{
+		Program: prog,
+		Scope: domain.Scope{
+			Visibility: domain.ScopePublic, Access: domain.ScopeAccessGranted, ContentsKnown: true,
+			Include: []domain.Asset{{Value: "*.lenovo.com"}},
+			Exclude: []domain.Asset{{Value: "*.sunits.com"}},
+		},
+		Facts:    []domain.ObservedFact{{Predicate: "vulbox.scope.exclude_notes", Value: []string{"安想、智慧医疗"}}},
+		Evidence: []domain.Evidence{{ID: "evp"}},
+	}
+	pol := adapter.PolicySnapshot{
+		Automation: domain.AutomationPolicy{
+			FileUpload: domain.CapForbidden, AIAnalysis: domain.CapConditional,
+			HumanVerificationRequired: true,
+		},
+		Facts:    []domain.ObservedFact{{ID: "fp"}},
+		Evidence: []domain.Evidence{{ID: "evpol"}},
+	}
+	f := &fakeReader{program: snap, policy: pol}
+	var buf bytes.Buffer
+	if err := executeSync(context.Background(), f, syncOptions{ProgramID: "444"}, &buf); err != nil {
+		t.Fatal(err)
+	}
+	var out syncOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Detail == nil || out.Detail.ID != "vulbox/444" || !out.Detail.ContentsKnown {
+		t.Fatalf("detail = %+v", out.Detail)
+	}
+	if len(out.Detail.Include) != 1 || out.Detail.Include[0] != "*.lenovo.com" {
+		t.Fatalf("include = %v", out.Detail.Include)
+	}
+	if len(out.Detail.Exclude) != 1 || out.Detail.Exclude[0] != "*.sunits.com" {
+		t.Fatalf("exclude = %v", out.Detail.Exclude)
+	}
+	if out.Detail.FileUpload != "FORBIDDEN" || out.Detail.AIAnalysis != "CONDITIONAL" {
+		t.Fatalf("policy = %+v", out.Detail)
+	}
+	if len(out.Evidence) != 2 {
+		t.Fatalf("evidence = %v", out.Evidence)
+	}
+}
+
+func TestParseSyncOptionsAllowsProgramOnly(t *testing.T) {
+	opts, err := parseSyncOptions([]string{"-programs=false", "-program", "444"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.ProgramID != "444" {
+		t.Fatalf("program = %q", opts.ProgramID)
 	}
 }
 

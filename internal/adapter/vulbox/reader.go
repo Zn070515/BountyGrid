@@ -146,26 +146,21 @@ func (r *Reader) SyncPrograms(ctx context.Context, opts adapter.SyncOptions) (ad
 }
 
 // SyncAccount reads the user center, personal center and joined projects. It
-// requires an authenticated session and never attempts to log in.
+// requires an authenticated session and never attempts to log in. The first
+// readPage call detects the login redirect, so callers do not need a separate
+// AuthStatus round-trip.
 func (r *Reader) SyncAccount(ctx context.Context) (adapter.AccountSnapshot, error) {
-	state, err := r.AuthStatus(ctx)
-	if err != nil {
-		return adapter.AccountSnapshot{}, err
-	}
-	if state != adapter.AuthOK {
-		return adapter.AccountSnapshot{}, adapter.ErrAuthRequired
-	}
 	at := r.now().UTC()
 
-	homeText, homeEv, err := r.readPage(ctx, userHomeURL, "account-home", domain.SourceAccount, "Vulbox 控制台", at)
+	homeText, homeEv, err := r.readPage(ctx, userHomeURL, "account-home", domain.SourceAccount, "Vulbox 控制台", at, true)
 	if err != nil {
 		return adapter.AccountSnapshot{}, err
 	}
-	profileText, profileEv, err := r.readPage(ctx, profileURL, "account-profile", domain.SourceAccount, "Vulbox 个人中心", at)
+	profileText, profileEv, err := r.readPage(ctx, profileURL, "account-profile", domain.SourceAccount, "Vulbox 个人中心", at, true)
 	if err != nil {
 		return adapter.AccountSnapshot{}, err
 	}
-	joinedText, joinedEv, err := r.readPage(ctx, myProjectsURL, "account-projects", domain.SourceAccount, "Vulbox 我的项目", at)
+	joinedText, joinedEv, err := r.readPage(ctx, myProjectsURL, "account-projects", domain.SourceAccount, "Vulbox 我的项目", at, true)
 	if err != nil {
 		return adapter.AccountSnapshot{}, err
 	}
@@ -348,7 +343,7 @@ func (r *Reader) pageText(ctx context.Context) (string, error) {
 	return s, nil
 }
 
-func (r *Reader) readPage(ctx context.Context, url, source string, sourceType domain.SourceType, title string, at time.Time) (string, domain.Evidence, error) {
+func (r *Reader) readPage(ctx context.Context, url, source string, sourceType domain.SourceType, title string, at time.Time, requireUserCenter bool) (string, domain.Evidence, error) {
 	if err := r.browser.Open(ctx, url); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
 		return "", domain.Evidence{}, fmt.Errorf("vulbox: open %s: %w", url, err)
 	}
@@ -359,7 +354,7 @@ func (r *Reader) readPage(ctx context.Context, url, source string, sourceType do
 	if err != nil {
 		return "", domain.Evidence{}, fmt.Errorf("vulbox: url %s: %w", url, err)
 	}
-	if !strings.Contains(finalURL, "user.vulbox.com") {
+	if requireUserCenter && !strings.Contains(finalURL, "user.vulbox.com") {
 		return "", domain.Evidence{}, adapter.ErrAuthRequired
 	}
 	text, err := r.pageText(ctx)
@@ -407,19 +402,179 @@ func safeName(s string) string {
 	return repl.Replace(s)
 }
 
-// SyncProgram / SyncScope / SyncPolicy need the authenticated detail page.
-// They intentionally fail closed until the detail extractor has a verified
-// live page; guessing scope or policy would violate the evidence contract.
-func (r *Reader) SyncProgram(ctx context.Context, id domain.ProgramID) (adapter.ProgramSnapshot, error) {
-	return adapter.ProgramSnapshot{}, fmt.Errorf("vulbox: SyncProgram detail parser pending live page: %w", adapter.ErrUnsupported)
+func (r *Reader) findProject(ctx context.Context, nativeID string) (apiProject, error) {
+	if err := r.ensureListHost(ctx); err != nil {
+		return apiProject{}, err
+	}
+	apiURL := fmt.Sprintf("%s/web/project/projects?type=7&status=0&flag=0&search=&page=1&page_size=100&direction=desc&order_by=normal&limit=", apiBase)
+	body, status, err := r.fetchJSON(ctx, apiURL)
+	if err != nil {
+		return apiProject{}, err
+	}
+	if status != 200 {
+		return apiProject{}, fmt.Errorf("vulbox: enterprise SRC list HTTP %d", status)
+	}
+	var resp projectListResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return apiProject{}, fmt.Errorf("vulbox: decode enterprise SRC list: %w", err)
+	}
+	if resp.Code != 200 {
+		return apiProject{}, fmt.Errorf("vulbox: enterprise SRC list code %d: %s", resp.Code, resp.Message)
+	}
+	for _, p := range resp.Data.Data {
+		if string(p.ID) == nativeID {
+			return p, nil
+		}
+	}
+	return apiProject{}, fmt.Errorf("vulbox: project %s is not an enterprise SRC in the current list: %w", nativeID, adapter.ErrUnsupported)
+}
+
+func (r *Reader) ensureListHost(ctx context.Context) error {
+	if u, err := r.browser.GetURL(ctx); err == nil {
+		if !strings.Contains(u, "www.vulbox.com") && !strings.Contains(u, "user.vulbox.com") {
+			r.openedList = false
+		}
+	}
+	return r.openList(ctx)
 }
 
 func (r *Reader) SyncScope(ctx context.Context, id domain.ProgramID) (adapter.ScopeSnapshot, error) {
-	return adapter.ScopeSnapshot{}, fmt.Errorf("vulbox: SyncScope detail parser pending live page: %w", adapter.ErrUnsupported)
+	native := strings.TrimPrefix(string(id), "vulbox/")
+	p, err := r.findProject(ctx, native)
+	if err != nil {
+		return adapter.ScopeSnapshot{}, err
+	}
+	at := r.now().UTC()
+	url := projectURL(p)
+	text, ev, err := r.readPage(ctx, url, "program-scope", domain.SourceProgram, p.TaskTitle, at, false)
+	if err != nil {
+		return adapter.ScopeSnapshot{}, err
+	}
+	include, exclude, notes, found := parseSRCScope(text)
+	if !found || len(include) == 0 {
+		if strings.Contains(text, "保密承诺书") || strings.Contains(text, "NDA") {
+			scope := domain.Scope{
+				Visibility:    domain.ScopeGatedByNDA,
+				Access:        domain.ScopeAccessNotGranted,
+				ContentsKnown: false,
+				ObservedAt:    at,
+				Evidence:      []domain.EvidenceID{ev.ID},
+			}
+			if err := scope.Validate(); err != nil {
+				return adapter.ScopeSnapshot{}, fmt.Errorf("vulbox: invalid gated scope: %w", err)
+			}
+			fs := []domain.ObservedFact{projectFact(ev.ID, id, facts.PredScopeVisibility, string(domain.ScopeGatedByNDA), "", at)}
+			return adapter.ScopeSnapshot{Scope: scope, Facts: fs, Evidence: []domain.Evidence{ev}}, nil
+		}
+		return adapter.ScopeSnapshot{}, fmt.Errorf("vulbox: asset scope not parseable for %s: %w", id, adapter.ErrUnsupported)
+	}
+	scope := domain.Scope{
+		Visibility:    domain.ScopePublic,
+		Access:        domain.ScopeAccessGranted,
+		ContentsKnown: true,
+		Include:       scopeAssets(id, include, true, ev.ID),
+		Exclude:       scopeAssets(id, exclude, false, ev.ID),
+		ObservedAt:    at,
+		Evidence:      []domain.EvidenceID{ev.ID},
+	}
+	if err := scope.Validate(); err != nil {
+		return adapter.ScopeSnapshot{}, fmt.Errorf("vulbox: invalid scope for %s: %w", id, err)
+	}
+	fs := []domain.ObservedFact{
+		projectFact(ev.ID, id, facts.PredScopeVisibility, string(domain.ScopePublic), "", at),
+		projectFact(ev.ID, id, "vulbox.scope.include", include, "", at),
+		projectFact(ev.ID, id, "vulbox.scope.exclude", exclude, "", at),
+		projectFact(ev.ID, id, "vulbox.scope.source", url, "", at),
+	}
+	if len(notes) > 0 {
+		fs = append(fs, projectFact(ev.ID, id, "vulbox.scope.exclude_notes", notes, "", at))
+	}
+	return adapter.ScopeSnapshot{Scope: scope, Facts: fs, Evidence: []domain.Evidence{ev}}, nil
+}
+
+func scopeAssets(pid domain.ProgramID, patterns []string, inScope bool, evID domain.EvidenceID) []domain.Asset {
+	native := strings.TrimPrefix(string(pid), "vulbox/")
+	out := make([]domain.Asset, 0, len(patterns))
+	for _, pat := range patterns {
+		out = append(out, domain.Asset{
+			ID:        domain.AssetID("vulbox/scope/" + native + "/" + pat),
+			Platform:  domain.PlatformVulbox,
+			ProgramID: pid,
+			Kind:      domain.AssetDomain,
+			Value:     pat,
+			InScope:   inScope,
+			Source:    evID,
+		})
+	}
+	return out
 }
 
 func (r *Reader) SyncPolicy(ctx context.Context, id domain.ProgramID) (adapter.PolicySnapshot, error) {
-	return adapter.PolicySnapshot{}, fmt.Errorf("vulbox: SyncPolicy detail parser pending live page: %w", adapter.ErrUnsupported)
+	native := strings.TrimPrefix(string(id), "vulbox/")
+	p, err := r.findProject(ctx, native)
+	if err != nil {
+		return adapter.PolicySnapshot{}, err
+	}
+	at := r.now().UTC()
+	text, ev, err := r.readPage(ctx, projectURL(p), "program-policy", domain.SourcePolicy, p.TaskTitle, at, false)
+	if err != nil {
+		return adapter.PolicySnapshot{}, err
+	}
+	sp := parseSRCPolicy(text)
+	auto := conservativeAutomation()
+	fs := []domain.ObservedFact{projectFact(ev.ID, id, "vulbox.policy.source", projectURL(p), "", at)}
+	if sp.FileUpload != "" {
+		auto.FileUpload = sp.FileUpload
+		fs = append(fs, projectFact(ev.ID, id, "vulbox.policy.file_upload", string(sp.FileUpload), "", at))
+	}
+	if sp.AIAnalysis != "" {
+		auto.AIAnalysis = sp.AIAnalysis
+		fs = append(fs, projectFact(ev.ID, id, "vulbox.policy.ai_analysis", string(sp.AIAnalysis), "", at))
+	}
+	if sp.HumanVerificationRequired {
+		auto.HumanVerificationRequired = true
+	}
+	return adapter.PolicySnapshot{
+		Automation:  auto,
+		Constraints: domain.Constraints{},
+		Facts:       fs,
+		Evidence:    []domain.Evidence{ev},
+	}, nil
+}
+
+func (r *Reader) SyncProgram(ctx context.Context, id domain.ProgramID) (adapter.ProgramSnapshot, error) {
+	native := strings.TrimPrefix(string(id), "vulbox/")
+	p, err := r.findProject(ctx, native)
+	if err != nil {
+		return adapter.ProgramSnapshot{}, err
+	}
+	at := r.now().UTC()
+	scopeSnap, err := r.SyncScope(ctx, id)
+	if err != nil {
+		return adapter.ProgramSnapshot{}, err
+	}
+	evID := scopeSnap.Evidence[0].ID
+	prog, pFacts, err := programFromProject(p, evID, at)
+	if err != nil {
+		return adapter.ProgramSnapshot{}, err
+	}
+	prog.Scope = scopeSnap.Scope
+	if err := prog.Validate(); err != nil {
+		return adapter.ProgramSnapshot{}, fmt.Errorf("vulbox: invalid program %s after scope merge: %w", id, err)
+	}
+	filtered := pFacts[:0]
+	for _, f := range pFacts {
+		if f.Predicate != facts.PredScopeVisibility {
+			filtered = append(filtered, f)
+		}
+	}
+	pFacts = append(filtered, scopeSnap.Facts...)
+	return adapter.ProgramSnapshot{
+		Program:  prog,
+		Scope:    scopeSnap.Scope,
+		Facts:    pFacts,
+		Evidence: scopeSnap.Evidence,
+	}, nil
 }
 
 var _ adapter.Reader = (*Reader)(nil)

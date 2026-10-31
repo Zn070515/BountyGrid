@@ -174,7 +174,12 @@ GET https://vapi.vulbox.com/web/project/projects
 
 `SyncPrograms` 一次只取 `MaxPages` 页；批次带 `EstimatedTotal` 与 `Estimated=true`（1513 来自分页推算）。每个响应页生成一条 Evidence，Fact ID 由 `evidence/native_id/predicate` 组成，重跑同一 Evidence 幂等。
 
-`SyncProgram/SyncScope/SyncPolicy` 在详情页选择器验证前返回 `ErrUnsupported`：不猜 Scope、不把未知规则写成 `ALLOW`。下一步需要在已登录会话中打开 `user.vulbox.com/projectHall/projectDetail/<id>` 或企业 SRC 子域，确认资产范围/公告的 DOM，再把真实值写入 `Scope`/`AutomationPolicy`。
+企业SRC详情（`SyncProgram/SyncScope/SyncPolicy`）已用联想 444 的 `https://lsrc.vulbox.com` 实测：
+
+- 页面 `资产范围` 段：以 `*.` 开头的独占行 → Include；含“暂不收录”的行 → 提取 `*.domain` 到 Exclude，无域名的描述行写入 `vulbox.scope.exclude_notes`。
+- 页面 `禁止上传webshell` → `FileUpload=FORBIDDEN`；存在“AI生成漏洞报告提交规范”公告 → `AIAnalysis=CONDITIONAL` + `HumanVerificationRequired=true`。
+- 其他自动化能力保持 `UNKNOWN`，等待平台 FAQ/公告合并；未知值不会被写成 `ALLOW`。
+- 非企业SRC（普通/高级项目）详情页尚未验证，仍返回 `ErrUnsupported`。
 
 本机会话：`probes/session/relogin.sh vulbox` 使用 `vbprobe` 并保存 state；产品 `sync` 默认复用同一个已登录会话（`-session vbprobe`），不加载旧 state 文件（损坏的 state 会让导航挂起）。其他机器用 `-session` 指定独立会话。
 

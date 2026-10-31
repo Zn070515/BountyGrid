@@ -433,6 +433,90 @@ func TestSyncAccountToleratesNavigationTimeout(t *testing.T) {
 	}
 }
 
+func srcReader(t *testing.T) (*Reader, *fakeBrowser) {
+	t.Helper()
+	f := &fakeBrowser{
+		responses: map[string]string{
+			"type=7&status=0": listResponse(t, []apiProject{sampleProject()}),
+		},
+		pageText: map[string]string{
+			"https://lsrc.vulbox.com": evalJSON(t, srcScopeFixture),
+		},
+	}
+	return newReader(t, f), f
+}
+
+func TestSyncScopeEnterpriseSRC(t *testing.T) {
+	r, _ := srcReader(t)
+	snap, err := r.SyncScope(context.Background(), "vulbox/444")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Scope.Visibility != domain.ScopePublic || snap.Scope.Access != domain.ScopeAccessGranted || !snap.Scope.ContentsKnown {
+		t.Fatalf("scope = %+v", snap.Scope)
+	}
+	if len(snap.Scope.Include) != 9 || len(snap.Scope.Exclude) != 1 {
+		t.Fatalf("include/exclude = %d/%d", len(snap.Scope.Include), len(snap.Scope.Exclude))
+	}
+	if len(snap.Evidence) != 1 {
+		t.Fatalf("evidence = %d", len(snap.Evidence))
+	}
+	seenVisibility := false
+	for _, f := range snap.Facts {
+		if len(f.EvidenceRefs) == 0 {
+			t.Fatalf("fact without evidence: %+v", f)
+		}
+		if f.Predicate == facts.PredScopeVisibility && f.Value == "PUBLIC" {
+			seenVisibility = true
+		}
+	}
+	if !seenVisibility {
+		t.Fatal("missing PUBLIC scope visibility fact")
+	}
+}
+
+func TestSyncPolicyEnterpriseSRC(t *testing.T) {
+	r, _ := srcReader(t)
+	snap, err := r.SyncPolicy(context.Background(), "vulbox/444")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Automation.FileUpload != domain.CapForbidden {
+		t.Fatalf("file upload = %s, want FORBIDDEN", snap.Automation.FileUpload)
+	}
+	if snap.Automation.AIAnalysis != domain.CapConditional {
+		t.Fatalf("ai analysis = %s, want CONDITIONAL", snap.Automation.AIAnalysis)
+	}
+	if !snap.Automation.HumanVerificationRequired {
+		t.Fatal("human verification must be required")
+	}
+	if len(snap.Facts) == 0 {
+		t.Fatal("policy facts missing")
+	}
+}
+
+func TestSyncProgramEnterpriseSRC(t *testing.T) {
+	r, _ := srcReader(t)
+	snap, err := r.SyncProgram(context.Background(), "vulbox/444")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Program.Scope.Visibility != domain.ScopePublic || !snap.Program.Scope.ContentsKnown {
+		t.Fatalf("program scope = %+v", snap.Program.Scope)
+	}
+	if snap.Program.Eligibility.Decision != domain.Eligible {
+		t.Fatalf("eligibility = %s", snap.Program.Eligibility.Decision)
+	}
+	if err := snap.Program.Validate(); err != nil {
+		t.Fatalf("program invalid: %v", err)
+	}
+	for _, f := range snap.Facts {
+		if f.Predicate == facts.PredScopeVisibility && f.Value == "UNKNOWN" {
+			t.Fatal("stale UNKNOWN scope fact survived the merge")
+		}
+	}
+}
+
 func TestParseAccountText(t *testing.T) {
 	text := "信誉优秀 | 100 分\n当前等级:\n见习白帽\n经验值:\n9\n下一等级:\n初级白帽\n" +
 		"赛季战况\nS3\n赛季积分\n0\n赛季排名\n9999+\n账户余额\n0 元\n提成金\n0 元\n" +

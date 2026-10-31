@@ -40,7 +40,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "sync":
-		syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		syncCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		if err := runSync(syncCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "sync:", err)
