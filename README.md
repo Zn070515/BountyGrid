@@ -115,7 +115,7 @@ bash probes/butian/grow-dates.sh
 |---|---|---|
 | Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
 | 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
-| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：Vulbox、Xianzhi 已实测；Butian 37 专属SRC 已实测（DOM）；`-persist` 已接入并实测 Vulbox 50 项目/750 Fact/1 Evidence 落库；账号/GROW 受反爬/10060 阻塞 |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 三平台均已实测并落库（178 项目）；Vulbox 1 QUEUED research；Xianzhi 3 / Butian 34 human（报名/合规/实战认证门槛）；Butian 公益SRC/GROW 待接入 |
 | Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
 | Phase 4 | Opportunity / Scheduler | Phase 1 Reader 接入之后 |
 | Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
@@ -146,7 +146,7 @@ bash probes/butian/grow-dates.sh
 - 任务数据来自页面 React fiber 的 `task` 对象；状态映射实测：`4=RUNNING`、`5=ENDED`、`6=PAUSED`；类型 `1=SRC`、`2=企业众测`。实测 91 条：**34 RUNNING / 54 ENDED / 3 PAUSED**，**61 BRAND_SRC / 30 CROWD_TEST**，1058 条 Fact、5 条 Evidence，与审计完全一致。
 - 翻页/重开同一 hash URL 可能是 no-op；`openList` 会 `reload` 强制重新取数。曾遇到控制台数据接口 `os error 10060` 时 SPA 只剩壳（0 卡片），reload 后恢复。
 - 账号同步已跑通（`auth=OK`），但个人资料页只显示“实名认证”标签、没有文本状态，当前 `identity_verified` 保持 nil（`CanSubmit=false`，fail-closed）；需要补账号状态提取器。
-- 已报名任务的可见 Scope 解析尚未验证；未报名任务一律返回 GATED。
+- **登录不等于报名**：当前 0 个已报名任务；Scope 必须 `GATED_BY_SIGNUP`。已报名任务的可见 Scope 解析需要在本人实际报名后验证，未报名任务一律返回 GATED。
 
 ```bash
 go run ./cmd/bountygrid sync -platform xianzhi -programs -pages=5
@@ -219,7 +219,8 @@ go run ./cmd/bountygrid decide -authorize <decision-id>
   - `penalty = 0.4·top10_share + 0.35·duplicate + 0.25·saturation`；缺 CompetitionSnapshot 时用保守 0.5/0.5/0.5，并把 Confidence 降到 0.2。
   - `score = E[reward] × (1 − penalty) / max(cost,1) × confidence`；`Inputs[]` 记录 p_valid/权重/竞争/成本/置信度。**不按最高赏金排序。**
 - `Scheduler`：硬过滤 `RUNNING` + cooldown；`CanSubmit=false` / `Eligibility != ELIGIBLE` / `Scope.Access != GRANTED` 只进 HumanActionQueue，不进入执行队列；Top-K、每平台/每项目配额、企业SRC保留位；产出 `ResearchTask` 状态 `QUEUED` 或 `HUMAN_ACTION_REQUIRED`，**没有 Harness 执行**。
-- 实测（2026-10-31）：Vulbox 9 个 RUNNING 可评分程序 → **1 research（联想 444，`QUEUED`）/ 8 human（`PROGRAM_GATE`，未加入）**；40 个 PAUSED/ENDED 被排除、1 个无赏金数据；DB `research_tasks` = 1 `QUEUED` + 11 `HUMAN_ACTION_REQUIRED`，无平台动作。账号能力修复前是 0 research / 9 human（`ACCOUNT_CAPABILITY`，fail-closed），见下。
+- 实测（2026-10-31）：Vulbox 9 个 RUNNING 可评分程序 → **1 research（联想 444，`QUEUED`）/ 8 human（`PROGRAM_GATE`，未加入）**；40 个 PAUSED/ENDED 被排除、1 个无赏金数据。Butian 34 human（`ACCOUNT_CAPABILITY`，合规考核/实战认证）、Xianzhi 3 human。DB `research_tasks` = 1 `QUEUED` + 45 `HUMAN_ACTION_REQUIRED`，无平台动作。账号能力修复前 Vulbox 是 0 research / 9 human，见下。
+- **登录态 ≠ 资格**：三个浏览器会话都登录着，但 Xianzhi 需要实际报名才解锁 Scope，Butian 需要合规考核/实战认证，Vulbox 个人中心被促销抽屉遮挡（已修复）。账号门槛与页面授权永远不由“已登录”推断。
 
 ```bash
 go run ./cmd/bountygrid schedule -platform vulbox -top 5 -persist
@@ -260,7 +261,8 @@ go run ./cmd/bountygrid harness -tool view_rules -request ./request.json
 - `internal/adapter/butian`：`AuthStatus`、`SyncAccount`（合规考核/实战认证/实名/银行卡，保守 fail-closed）、`SyncPrograms`（37 专属SRC）、`SyncProgram`、`SyncScope`（未报名 GATED）、`SyncPolicy`（保守 `UNKNOWN`）。
 - 专属SRC 列表从已渲染 DOM 的 `.plan-exclusive-src .company-card` 读取（不调用被验证码保护的 `/Reward/corps`）；实测 **37/37，259 Fact，1 Evidence**，全部 `RUNNING / PRIVATE_EXCLUSIVE / HUMAN_ACTION_REQUIRED`（报名 + 实战认证双门槛）。
 - 列表卡片没有原生 company ID，ProgramID 用公司名 SHA-1 前缀（`butian/src/<hex>`）；后续拿到原生 ID 时再迁移。
-- 账号中心/提交页的浏览器导航当前报 `os error 10060`（curl 可达 302），反爬/验证码会话阻止新导航；账号 Gate 代码已实现但未实测，`ComplianceExam` 未知时强制 `CanSubmit=false`。
+- 账号同步已成功（`auth=OK`）：账号 `CanSubmit=false`（本季度合规考核未完成；专属SRC还需实战认证），已落库。之前的账号中心导航 `os error 10060` 是瞬时浏览器连接失败，重试后成功；登录态一直在。
+- 37 专属SRC 已落库（178 项目含 Vulbox 50 + Xianzhi 91）；`derive` 产出 74 个 Butian states；调度 34 human（`ACCOUNT_CAPABILITY`）、3 个无赏金数据。Xianzhi 同理：91 任务只读成功，但 0 个已报名，Scope 必须 GATED。
 - 公益SRC `/Reward/pub` 可直接返回 200 页/30 条，但尚未接入；GROW 页面/`GrowExtractor` 尚未联调。
 
 ```bash

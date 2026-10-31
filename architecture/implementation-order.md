@@ -96,7 +96,8 @@
 - 37 专属SRC 已实测：从项目大厅已渲染 DOM 的 `.plan-exclusive-src .company-card` 读取，**37/37，259 Fact，1 Evidence**，全部 `RUNNING/PRIVATE_EXCLUSIVE/HUMAN_ACTION_REQUIRED`（报名 + 实战认证）。
 - 快照持久化已接入 `sync -persist`：Evidence → Facts → Program/Account；实测 Vulbox 50 项目/750 Fact/1 Evidence、Xianzhi 91 项目/1058 Fact/5 Evidence、Vulbox 444 详情（PUBLIC/GRANTED，FileUpload=FORBIDDEN）落库；累计 141/1830/8，0 条 Fact 缺 EvidenceRef。
 - 卡片无原生 company ID，ProgramID = 公司名 SHA-1 前缀；后续有原生 ID 时迁移。
-- 账号中心/提交页的浏览器导航报 `os error 10060`（curl 302 可达），反爬/验证码会话阻止新导航；账号 Gate 代码已实现但未实测，`ComplianceExam` 未知时强制 `CanSubmit=false`。
+- 账号同步已成功（auth=OK）：`CanSubmit=false`（合规考核未完成 / 专属SRC实战认证），已落库。之前的账号中心导航 `os error 10060` 是瞬时浏览器连接失败，重试后成功；登录态一直在。
+- 37 专属SRC 已通过 `-persist` 落库（三平台合计 178 项目）；`derive` 产出 74 个 Butian states；`schedule` 34 human（ACCOUNT_CAPABILITY）、3 个无赏金数据。Xianzhi 91 任务只读成功，但 0 个已报名，Scope 必须 GATED；Vulbox 1 QUEUED research（444）。
 - 公益SRC `/Reward/pub` 可用（200 页/30 条）但未接入；GROW 页面未联调（`GrowExtractor` 已有单测）。
 - 退出条件仍差：账号 `CanSubmit=false` 实测、GROW 日期实测、公益SRC 分页接入。
 
