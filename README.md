@@ -115,7 +115,7 @@ bash probes/butian/grow-dates.sh
 |---|---|---|
 | Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
 | 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
-| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：Vulbox、Xianzhi 已实测；Butian 37 专属SRC 已实测（DOM），账号/GROW 受反爬/10060 阻塞，公益SRC 接口可用但未接入 |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：Vulbox、Xianzhi 已实测；Butian 37 专属SRC 已实测（DOM）；`-persist` 已接入并实测 Vulbox 50 项目/750 Fact/1 Evidence 落库；账号/GROW 受反爬/10060 阻塞 |
 | Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
 | Phase 4 | Opportunity / Scheduler | Phase 1 Reader 接入之后 |
 | Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
@@ -160,6 +160,17 @@ go run ./cmd/bountygrid sync -programs=false -account=false -program 444
 ```
 
 `relogin.sh` 现在故意不加载旧 state（损坏的 state 会让浏览器导航挂起），登录成功后重新保存。单机上产品 Reader 复用探针会话 `vbprobe`；其他环境用 `-session` 覆盖。`sync` 默认**不关闭**会话，避免把内存中的登录态关掉；需要清理时显式加 `-close=true`。
+
+### 快照持久化 · `sync -persist`
+
+- 顺序：Evidence → Facts → Program/Account；Evidence 先落库，Fact 必须带 EvidenceRef，然后才 upsert Program/Account。
+- 原始页面仍只写本地 `.evidence/`；数据库只存 Evidence 元数据/hash/RawRef、Fact、Program/Account JSON。
+- 幂等：Evidence/Fact ID 确定性；同 ID 同内容重跑是 no-op，Program/Account 用 upsert。新一次同步产生新 Evidence/Fact（append-only observation）。
+- 实测（2026-10-31，本地 `bountygrid-pg`）：Vulbox 第 1 页 50 项目 → `programs=50`、`observed_facts=750`、`evidence=1`，`persisted=true`。
+
+```bash
+go run ./cmd/bountygrid sync -platform vulbox -programs -pages=1 -persist
+```
 
 ### Butian Reader（37 专属SRC 已实测，账号/GROW 待网络恢复）
 
