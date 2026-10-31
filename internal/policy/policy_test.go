@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"errors"
+	"regexp"
 	"testing"
 	"time"
 
@@ -97,6 +98,13 @@ func approval(action domain.Action, resource string) *domain.HumanApproval {
 		ParametersHash: parametersHash(nil),
 		ExpiresAt:      testNow.Add(time.Hour),
 		SingleUse:      true,
+	}
+}
+
+func TestDecisionIDAvoidsLongDigitRuns(t *testing.T) {
+	id := decisionID("r1", testNow)
+	if regexp.MustCompile(`[0-9]{16,}`).MatchString(id) {
+		t.Fatalf("decision id has a long digit run: %s", id)
 	}
 }
 

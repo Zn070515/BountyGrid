@@ -207,6 +207,10 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err := r.PutDecision(ctx, d); err != nil {
 		t.Fatal(err)
 	}
+	gotDecision, err := r.GetDecision(ctx, d.ID)
+	if err != nil || gotDecision.Decision != d.Decision || gotDecision.RequestID != d.RequestID {
+		t.Fatalf("decision roundtrip: %+v %v", gotDecision, err)
+	}
 
 	oppID := domain.OpportunityID("it-opp-" + suffix)
 	taskID := domain.TaskID("it-task-" + suffix)

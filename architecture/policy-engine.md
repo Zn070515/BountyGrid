@@ -373,7 +373,8 @@ single_use（human-only 动作必须 true）
 - `ExpiresAt` 取 `now+5m`、`Program.Status.ValidUntil`、`HumanApproval.ExpiresAt` 三者中最早的时间；决策不能比它所依据的状态或授权活得更久。
 - ApprovalLedger 只有返回 `domain.ErrApprovalConsumed` 才映射为 `REQUIRE_HUMAN`；数据库/网络故障必须向上返回错误，不能伪装成“审批已使用”。
 - 项目状态 TTL 内有效；状态变化/证据 supersede 时立即失效。
-- 执行前 Action Gateway 必须二次校验 `ExpiresAt` 与 `Program.Status`。
+- 执行前 Action Gateway 必须二次校验 `ExpiresAt` 与 `Program.Status`。`bountygrid decide -authorize` 实现：ALLOW + 未过期 + human-only 有审批；执行类动作要求 Program RUNNING 且 `Status.ValidUntil > now`。Gateway 本身不执行动作，DENY 无副作用。
+- Decision ID 使用带分隔符的时间戳，避免 16-19 位连续数字被 secret scanner 误判为银行卡号。审计 payload 不重复 decision ID（由 `audit_events.entity_id` 承载）。
 
 ## 10. 审计
 

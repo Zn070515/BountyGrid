@@ -141,6 +141,14 @@
 - Decision 过期二次校验。
 - 退出条件：过期 Decision 不能执行；DENY 不产生副作用。
 
+**当前实现（2026-10-31）**：
+
+- `internal/gateway`：`Evaluate` 从 PostgreSQL 加载 Account/Program，调用 Policy Engine，持久化 `ActionDecision` + `action.decision` 审计；缺失上下文持久化 `DENY CONTEXT_NOT_FOUND`。
+- `Authorize`：执行前校验 ALLOW、`ExpiresAt > now`、human-only 审批存在；执行类动作要求 Program `RUNNING` 且状态未过期。Gateway 不执行平台动作。
+- `cmd/bountygrid decide` 已接 PostgreSQL 一次性审批账本；单测覆盖重复审批返回 REQUIRE_HUMAN。
+- 实测：VIEW_RULES ALLOW + authorize=true；REPORT_SUBMIT DENY ACCOUNT_CANNOT_SUBMIT；ACTIVE_HTTP 缺 Asset DENY ASSET_REQUIRED；`action_decisions=3`、审计 3 条。
+- 仍差：人工队列/Decision 缓存、Harness 工具注册（Phase 5）尚未接入。
+
 ## 4. Opportunity + Scheduler
 
 ### 4.1 CompetitionSnapshot

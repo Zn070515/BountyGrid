@@ -53,6 +53,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "derive:", err)
 			os.Exit(1)
 		}
+	case "decide":
+		decideCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := runDecide(decideCtx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "decide:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("bountygrid dev")
 	default:
@@ -62,7 +69,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|version>")
+	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|decide|version>")
 }
 
 func dsn() (string, error) {

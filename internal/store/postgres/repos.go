@@ -441,6 +441,22 @@ func (r *Repo) PutState(ctx context.Context, s domain.DerivedState) error {
 
 // ---------- Decisions ----------
 
+func (r *Repo) GetDecision(ctx context.Context, id domain.DecisionID) (domain.ActionDecision, error) {
+	var data []byte
+	err := r.Pool.QueryRow(ctx, `SELECT data FROM action_decisions WHERE id=$1`, id).Scan(&data)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return domain.ActionDecision{}, ErrNotFound
+		}
+		return domain.ActionDecision{}, fmt.Errorf("postgres: get decision: %w", err)
+	}
+	var d domain.ActionDecision
+	if err := json.Unmarshal(data, &d); err != nil {
+		return domain.ActionDecision{}, fmt.Errorf("postgres: decode decision: %w", err)
+	}
+	return d, nil
+}
+
 func (r *Repo) PutDecision(ctx context.Context, d domain.ActionDecision) error {
 	if err := d.Validate(); err != nil {
 		return err
