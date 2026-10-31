@@ -51,11 +51,38 @@ architecture/       完整 Go 架构设计（一次定稿，按依赖实现）
 - 回退：`go env -w GOTOOLCHAIN=local`
 - 说明：基础安装位于 `D:\Program Files`（无管理员写权限），未覆盖系统目录。
 
-## 环境分工（已确认）
+## 本地开发（Phase 0 已落地）
+
+已实现：
+
+- `internal/domain`：平台/账号/项目/Scope/Eligibility/Action/Competition/Finding/Ledger 类型与不变量
+- `internal/evidence`：不可变 Evidence Store 接口 + 内存实现
+- `internal/store/postgres`：pgxpool 连接 + 嵌入式 SQL 迁移
+- `cmd/bountygrid`：`migrate` / `ping` / `version`
+- 单元测试覆盖 Scope GATED、Eligibility 决策一致性、补天合规考核 `CanSubmit`、人工-only Action、提交审批、负金额账本、Fact 证据引用
+
+PostgreSQL（本机 Docker）：
+
+```text
+container: bountygrid-pg
+image:     postgres:16-alpine
+dsn:       postgres://bountygrid:***@127.0.0.1:55434/bountygrid?sslmode=disable
+```
+
+连接串在 `.env.local`（gitignored，不提交）。首次：
+
+```bash
+cp env.example .env.local   # 填入本地密码（或使用已有 .env.local）
+go run ./cmd/bountygrid migrate
+go run ./cmd/bountygrid ping
+go test ./...
+```
+
+## 环境分工
 
 | 环境 | 职责 |
 |------|------|
-| 本机（当前 Windows） | 讨论、审计、**只读探针**；GitHub 同步后**也可在本机开发** |
+| 本机（当前 Windows） | 讨论、审计、**只读探针**；**已可开发**（Phase 0 已跑通） |
 | 台式机 | BountyGrid 开发（可选/并行），通过 GitHub 同步 |
 | 存储 | **PostgreSQL 单机**、单用户、单库单 schema |
 | 部署 | 模块化单体，一个 Go 二进制 + 本机 PostgreSQL |
@@ -64,10 +91,10 @@ architecture/       完整 Go 架构设计（一次定稿，按依赖实现）
 
 ## 下一步
 
-- 本机：仓库同步后即可开发；探针继续用于验证平台事实/选择器。
-- 开发顺序按 `architecture/implementation-order.md` 从 Phase 0 开始：
-  1. `internal/domain`（类型/不变量/测试）
-  2. `internal/evidence` + `internal/audit`
-  3. `internal/store/postgres`
-  4. Vulbox Reader（第一个 Adapter）
-  5. Policy Engine（Eligibility + Action Matrix）
+按 `architecture/implementation-order.md` 继续：
+
+1. `internal/audit`（审计事件）
+2. `internal/facts` + `internal/state`（抽取器与状态派生）
+3. `internal/policy`（Eligibility + Action Matrix）
+4. Vulbox Reader（第一个 Adapter）
+5. Opportunity/Scheduler、Harness、Verification、Submission、Ledger

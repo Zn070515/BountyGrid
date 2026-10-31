@@ -1,0 +1,363 @@
+package domain
+
+import "fmt"
+
+func (e Evidence) Validate() error {
+	if !e.Platform.Valid() {
+		return fmt.Errorf("evidence %s: invalid platform %q", e.ID, e.Platform)
+	}
+	if !e.SourceType.Valid() {
+		return fmt.Errorf("evidence %s: invalid source type %q", e.ID, e.SourceType)
+	}
+	if !e.Transport.Valid() {
+		return fmt.Errorf("evidence %s: invalid transport %q", e.ID, e.Transport)
+	}
+	if e.URL == "" {
+		return fmt.Errorf("evidence %s: url is empty", e.ID)
+	}
+	if e.CapturedAt.IsZero() {
+		return fmt.Errorf("evidence %s: captured_at is zero", e.ID)
+	}
+	if e.ContentHash == "" {
+		return fmt.Errorf("evidence %s: content_hash is empty", e.ID)
+	}
+	return nil
+}
+
+func (f ObservedFact) Validate() error {
+	if !f.Platform.Valid() {
+		return fmt.Errorf("fact %s: invalid platform %q", f.ID, f.Platform)
+	}
+	if f.Predicate == "" {
+		return fmt.Errorf("fact %s: predicate is empty", f.ID)
+	}
+	if f.ObservedAt.IsZero() {
+		return fmt.Errorf("fact %s: observed_at is zero", f.ID)
+	}
+	if len(f.EvidenceRefs) == 0 {
+		return fmt.Errorf("fact %s: evidence_refs is empty", f.ID)
+	}
+	if !f.Confidence.Valid() {
+		return fmt.Errorf("fact %s: confidence %v out of range", f.ID, f.Confidence)
+	}
+	if f.ExtractorVersion == "" {
+		return fmt.Errorf("fact %s: extractor_version is empty", f.ID)
+	}
+	switch f.Subject {
+	case SubjectAccount:
+		if f.AccountID == nil {
+			return fmt.Errorf("fact %s: account subject requires account_id", f.ID)
+		}
+	case SubjectProgram:
+		if f.ProgramID == nil {
+			return fmt.Errorf("fact %s: program subject requires program_id", f.ID)
+		}
+	case SubjectAsset:
+		if f.AssetID == nil {
+			return fmt.Errorf("fact %s: asset subject requires asset_id", f.ID)
+		}
+	case SubjectPayout:
+		if f.AccountID == nil && f.ProgramID == nil {
+			return fmt.Errorf("fact %s: payout subject requires account_id or program_id", f.ID)
+		}
+	default:
+		return fmt.Errorf("fact %s: invalid subject %q", f.ID, f.Subject)
+	}
+	return nil
+}
+
+func (s DerivedState) Validate() error {
+	if !s.Platform.Valid() {
+		return fmt.Errorf("state %s: invalid platform %q", s.ID, s.Platform)
+	}
+	if s.State == "" {
+		return fmt.Errorf("state %s: state is empty", s.ID)
+	}
+	if len(s.Inputs) == 0 {
+		return fmt.Errorf("state %s: inputs is empty", s.ID)
+	}
+	if s.ObservedAt.IsZero() || s.DerivedAt.IsZero() {
+		return fmt.Errorf("state %s: timestamps are zero", s.ID)
+	}
+	if s.ValidUntil.IsZero() || !s.ValidUntil.After(s.DerivedAt) {
+		return fmt.Errorf("state %s: valid_until must be after derived_at", s.ID)
+	}
+	if !s.Confidence.Valid() {
+		return fmt.Errorf("state %s: confidence %v out of range", s.ID, s.Confidence)
+	}
+	if s.RuleVersion == "" {
+		return fmt.Errorf("state %s: rule_version is empty", s.ID)
+	}
+	return nil
+}
+
+func (g EligibilityGate) Validate() error {
+	if !g.Kind.Valid() {
+		return fmt.Errorf("gate: invalid kind %q", g.Kind)
+	}
+	if !g.Satisfied.Valid() {
+		return fmt.Errorf("gate %s: invalid satisfaction %q", g.Kind, g.Satisfied)
+	}
+	if g.Required && g.Satisfied == GateNotRequired {
+		return fmt.Errorf("gate %s: required gate cannot be NOT_REQUIRED", g.Kind)
+	}
+	if g.Blocking && !g.Required {
+		return fmt.Errorf("gate %s: blocking gate must be required", g.Kind)
+	}
+	return nil
+}
+
+func (s EligibilityState) Validate() error {
+	if !s.Decision.Valid() {
+		return fmt.Errorf("eligibility: invalid decision %q", s.Decision)
+	}
+	if s.EvaluatedAt.IsZero() {
+		return fmt.Errorf("eligibility: evaluated_at is zero")
+	}
+	if s.PolicyVersion == "" {
+		return fmt.Errorf("eligibility: policy_version is empty")
+	}
+	for _, g := range s.Gates {
+		if err := g.Validate(); err != nil {
+			return err
+		}
+	}
+
+	blockingUnsatisfied := false
+	blockingHuman := false
+	unknown := false
+	for _, g := range s.Gates {
+		if !g.Required {
+			continue
+		}
+		if g.Satisfied == GateUnknown {
+			unknown = true
+		}
+		if g.Blocking && g.Satisfied == GateUnsatisfied {
+			blockingUnsatisfied = true
+			if g.Kind.HumanResolvable() {
+				blockingHuman = true
+			}
+		}
+	}
+
+	switch s.Decision {
+	case Eligible:
+		if blockingUnsatisfied || unknown {
+			return fmt.Errorf("eligibility: ELIGIBLE but has blocking/unknown gates")
+		}
+	case Ineligible:
+		if !blockingUnsatisfied || blockingHuman {
+			return fmt.Errorf("eligibility: INELIGIBLE requires a non-human blocking gate")
+		}
+	case HumanActionNeeded:
+		if !blockingHuman {
+			return fmt.Errorf("eligibility: HUMAN_ACTION_REQUIRED requires a human-resolvable blocking gate")
+		}
+	case EligibilityUnknown:
+		if blockingUnsatisfied || !unknown {
+			return fmt.Errorf("eligibility: UNKNOWN requires an unknown gate and no blocking gate")
+		}
+	}
+	return nil
+}
+
+func (a Account) Validate() error {
+	if a.ID == "" {
+		return fmt.Errorf("account: id is empty")
+	}
+	if !a.Platform.Valid() {
+		return fmt.Errorf("account %s: invalid platform %q", a.ID, a.Platform)
+	}
+	if a.ObservedAt.IsZero() {
+		return fmt.Errorf("account %s: observed_at is zero", a.ID)
+	}
+	for _, g := range a.Gates {
+		if err := g.Validate(); err != nil {
+			return err
+		}
+	}
+	for _, g := range a.Capability.BlockingReasons {
+		if err := g.Validate(); err != nil {
+			return err
+		}
+	}
+	if a.Capability.CanSubmit {
+		for _, g := range a.Gates {
+			if g.Required && g.Blocking && g.Satisfied == GateUnsatisfied {
+				return fmt.Errorf("account %s: CanSubmit with blocking gate %s", a.ID, g.Kind)
+			}
+		}
+		if a.ComplianceExamCompleted != nil && !*a.ComplianceExamCompleted {
+			return fmt.Errorf("account %s: CanSubmit with incomplete compliance exam", a.ID)
+		}
+	}
+	if a.Capability.CanPayout && a.BankBound != nil && !*a.BankBound {
+		return fmt.Errorf("account %s: CanPayout with unbound bank card", a.ID)
+	}
+	return nil
+}
+
+func (s Scope) Validate() error {
+	if !s.Visibility.Valid() {
+		return fmt.Errorf("scope: invalid visibility %q", s.Visibility)
+	}
+	if s.ObservedAt.IsZero() {
+		return fmt.Errorf("scope: observed_at is zero")
+	}
+	if s.Visibility != ScopePublic {
+		if s.ContentsKnown || len(s.Include) > 0 || len(s.Exclude) > 0 || len(s.Conditional) > 0 {
+			return fmt.Errorf("scope: non-public visibility must not contain contents")
+		}
+	}
+	for _, a := range append(append(append([]Asset{}, s.Include...), s.Exclude...), s.Conditional...) {
+		if a.ID == "" || a.Value == "" {
+			return fmt.Errorf("scope: asset id/value is empty")
+		}
+	}
+	return nil
+}
+
+func (p Program) Validate() error {
+	if p.ID == "" {
+		return fmt.Errorf("program: id is empty")
+	}
+	if !p.Platform.Valid() {
+		return fmt.Errorf("program %s: invalid platform %q", p.ID, p.Platform)
+	}
+	if p.Name == "" {
+		return fmt.Errorf("program %s: name is empty", p.ID)
+	}
+	if !p.Type.Valid() {
+		return fmt.Errorf("program %s: invalid type %q", p.ID, p.Type)
+	}
+	if !p.Status.Status.Valid() {
+		return fmt.Errorf("program %s: invalid status %q", p.ID, p.Status.Status)
+	}
+	if p.Status.ObservedAt.IsZero() {
+		return fmt.Errorf("program %s: status observed_at is zero", p.ID)
+	}
+	if p.Status.ValidUntil.IsZero() || !p.Status.ValidUntil.After(p.Status.ObservedAt) {
+		return fmt.Errorf("program %s: status valid_until must be after observed_at", p.ID)
+	}
+	if err := p.Eligibility.Validate(); err != nil {
+		return fmt.Errorf("program %s: %w", p.ID, err)
+	}
+	for _, g := range p.Gates {
+		if err := g.Validate(); err != nil {
+			return fmt.Errorf("program %s: %w", p.ID, err)
+		}
+	}
+	if err := p.Scope.Validate(); err != nil {
+		return fmt.Errorf("program %s: %w", p.ID, err)
+	}
+	if !p.Reward.TaxBasis.Valid() {
+		return fmt.Errorf("program %s: invalid tax basis %q", p.ID, p.Reward.TaxBasis)
+	}
+	for _, c := range []CapabilityStatus{
+		p.Automation.AIAnalysis, p.Automation.AutonomousAgent, p.Automation.BrowserAutomation,
+		p.Automation.AutomatedScanning, p.Automation.DirectoryEnumeration,
+		p.Automation.SubdomainDiscovery, p.Automation.HighConcurrency,
+		p.Automation.BruteForce, p.Automation.CredentialStuffing,
+		p.Automation.FileUpload, p.Automation.StateMutation, p.Automation.RCEVerification,
+		p.Automation.SensitiveDataRead, p.Automation.InternalNetwork,
+		p.Automation.LateralMovement, p.Automation.DoS,
+	} {
+		if !c.Valid() {
+			return fmt.Errorf("program %s: invalid capability status %q", p.ID, c)
+		}
+	}
+	return nil
+}
+
+func (r ActionRequest) Validate() error {
+	if r.ID == "" {
+		return fmt.Errorf("action request: id is empty")
+	}
+	if !r.Actor.Kind.Valid() {
+		return fmt.Errorf("action request %s: invalid actor kind %q", r.ID, r.Actor.Kind)
+	}
+	if !r.Action.Valid() {
+		return fmt.Errorf("action request %s: invalid action %q", r.ID, r.Action)
+	}
+	if r.AccountID == "" || r.ProgramID == "" {
+		return fmt.Errorf("action request %s: account_id/program_id required", r.ID)
+	}
+	if r.RequestedAt.IsZero() {
+		return fmt.Errorf("action request %s: requested_at is zero", r.ID)
+	}
+	return nil
+}
+
+func (d ActionDecision) Validate() error {
+	if d.ID == "" {
+		return fmt.Errorf("decision: id is empty")
+	}
+	if d.RequestID == "" {
+		return fmt.Errorf("decision %s: request_id is empty", d.ID)
+	}
+	if !d.Decision.Valid() {
+		return fmt.Errorf("decision %s: invalid decision %q", d.ID, d.Decision)
+	}
+	if d.DecidedAt.IsZero() {
+		return fmt.Errorf("decision %s: decided_at is zero", d.ID)
+	}
+	if d.PolicyVersion == "" {
+		return fmt.Errorf("decision %s: policy_version is empty", d.ID)
+	}
+	if d.Decision == DecisionAllow && d.Action.HumanOnly() && d.HumanApproval == nil {
+		return fmt.Errorf("decision %s: ALLOW for human-only action without approval", d.ID)
+	}
+	if d.HumanApproval != nil {
+		if d.HumanApproval.ApprovedBy == "" || d.HumanApproval.ApprovedAt.IsZero() {
+			return fmt.Errorf("decision %s: approval missing approver/time", d.ID)
+		}
+		if d.HumanApproval.Action != d.Action {
+			return fmt.Errorf("decision %s: approval action mismatch", d.ID)
+		}
+		if d.HumanApproval.ProgramID != "" && d.ProgramID != "" && d.HumanApproval.ProgramID != d.ProgramID {
+			return fmt.Errorf("decision %s: approval program mismatch", d.ID)
+		}
+	}
+	return nil
+}
+
+func (s Submission) Validate() error {
+	if s.ID == "" || s.ReportID == "" || s.ProgramID == "" {
+		return fmt.Errorf("submission: id/report_id/program_id required")
+	}
+	if s.SubmittedAt.IsZero() {
+		return fmt.Errorf("submission %s: submitted_at is zero", s.ID)
+	}
+	if s.ApprovalID == "" {
+		return fmt.Errorf("submission %s: human approval id required", s.ID)
+	}
+	if s.Receipt == "" {
+		return fmt.Errorf("submission %s: receipt is empty", s.ID)
+	}
+	return nil
+}
+
+func (l LedgerEntry) Validate() error {
+	if l.ID == "" || l.ProgramID == "" {
+		return fmt.Errorf("ledger: id/program_id required")
+	}
+	if !l.Platform.Valid() {
+		return fmt.Errorf("ledger %s: invalid platform %q", l.ID, l.Platform)
+	}
+	switch l.Kind {
+	case LedgerExpected, LedgerSubmitted, LedgerAccepted, LedgerPaid, LedgerFee, LedgerTax, LedgerRefund:
+	default:
+		return fmt.Errorf("ledger %s: invalid kind %q", l.ID, l.Kind)
+	}
+	if l.Amount.Amount < 0 {
+		return fmt.Errorf("ledger %s: negative amount", l.ID)
+	}
+	if l.Amount.Currency == "" {
+		return fmt.Errorf("ledger %s: currency is empty", l.ID)
+	}
+	if l.OccurredAt.IsZero() {
+		return fmt.Errorf("ledger %s: occurred_at is zero", l.ID)
+	}
+	return nil
+}

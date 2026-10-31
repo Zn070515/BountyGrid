@@ -1,0 +1,51 @@
+package domain
+
+import (
+	"encoding/json"
+	"time"
+)
+
+type ActorRef struct {
+	Kind ActorKind
+	ID   string
+}
+
+type ActionRequest struct {
+	ID             string
+	Actor          ActorRef
+	AccountID      AccountID
+	ProgramID      ProgramID
+	AssetID        *AssetID
+	Action         Action
+	Parameters     json.RawMessage
+	Purpose        string
+	RequestedAt    time.Time
+	Evidence       []EvidenceID
+	IdempotencyKey string
+}
+
+type HumanApproval struct {
+	ID         string
+	ApprovedBy string
+	ApprovedAt time.Time
+	Action     Action
+	ProgramID  ProgramID
+	Scope      string
+	ExpiresAt  time.Time
+	Comment    string
+}
+
+type ActionDecision struct {
+	ID             DecisionID
+	RequestID      string
+	ProgramID      ProgramID
+	Action         Action
+	Decision       Decision
+	Reasons        []string
+	GatesEvaluated []EligibilityGate
+	PolicyVersion  string
+	DecidedAt      time.Time
+	HumanApproval  *HumanApproval
+	ExpiresAt      *time.Time
+	Constraints    *Constraints
+}
