@@ -20,19 +20,21 @@ import (
 )
 
 type syncOptions struct {
-	Platform    string
-	Programs    bool
-	Account     bool
-	ProgramID   string
-	Pages       int
-	PageSize    int
-	RawDir      string
-	Session     string
-	State       string
-	Persist     bool
-	Timeout     time.Duration
-	MinInterval time.Duration
-	Close       bool
+	Platform      string
+	Programs      bool
+	PublicWelfare bool
+	Grow          bool
+	Account       bool
+	ProgramID     string
+	Pages         int
+	PageSize      int
+	RawDir        string
+	Session       string
+	State         string
+	Persist       bool
+	Timeout       time.Duration
+	MinInterval   time.Duration
+	Close         bool
 }
 
 // snapshotWriter is the PostgreSQL subset used by sync -persist.
@@ -44,13 +46,15 @@ type snapshotWriter interface {
 }
 
 type syncOutput struct {
-	Platform  string               `json:"platform"`
-	Auth      string               `json:"auth"`
-	Persisted bool                 `json:"persisted"`
-	Programs  *programsOutput      `json:"programs,omitempty"`
-	Account   *accountOutput       `json:"account,omitempty"`
-	Detail    *programDetailOutput `json:"program,omitempty"`
-	Evidence  []string             `json:"evidence,omitempty"`
+	Platform      string               `json:"platform"`
+	Auth          string               `json:"auth"`
+	Persisted     bool                 `json:"persisted"`
+	Programs      *programsOutput      `json:"programs,omitempty"`
+	PublicWelfare *programsOutput      `json:"public_welfare,omitempty"`
+	Account       *accountOutput       `json:"account,omitempty"`
+	Detail        *programDetailOutput `json:"program,omitempty"`
+	Grow          *programDetailOutput `json:"grow,omitempty"`
+	Evidence      []string             `json:"evidence,omitempty"`
 }
 
 type programDetailOutput struct {
@@ -108,9 +112,11 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&o.Platform, "platform", "vulbox", "platform: vulbox, xianzhi or butian")
 	fs.BoolVar(&o.Programs, "programs", true, "read the project/task list")
+	fs.BoolVar(&o.PublicWelfare, "public-welfare", false, "butian only: read the public-welfare SRC vendor list (-pages limits the pages)")
+	fs.BoolVar(&o.Grow, "grow", false, "butian only: read the GROW campus program rules and activity phase")
 	fs.BoolVar(&o.Account, "account", false, "read the account (requires a logged-in session)")
 	fs.StringVar(&o.ProgramID, "program", "", "read one program/task by native id (e.g. vulbox 444, xianzhi 324, butian SRC name); implies scope+policy")
-	fs.IntVar(&o.Pages, "pages", 1, "maximum list pages (1-152)")
+	fs.IntVar(&o.Pages, "pages", 1, "maximum list pages (1-200; butian public welfare has 200)")
 	fs.IntVar(&o.PageSize, "page-size", 50, "Vulbox list page size (10-100)")
 	fs.StringVar(&o.RawDir, "raw-dir", "", "local directory for redacted raw evidence (default .evidence/<platform>)")
 	fs.StringVar(&o.Session, "session", "", "agent-browser session (default vbprobe/xzprobe by platform)")
@@ -138,14 +144,17 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 	default:
 		return o, errors.New("sync: -platform must be vulbox, xianzhi or butian")
 	}
+	if (o.PublicWelfare || o.Grow) && o.Platform != "butian" {
+		return o, errors.New("sync: -public-welfare and -grow are only supported for butian")
+	}
 	if o.RawDir == "" {
 		o.RawDir = ".evidence/" + o.Platform
 	}
-	if !o.Programs && !o.Account && o.ProgramID == "" {
-		return o, errors.New("sync: choose -programs, -account and/or -program")
+	if !o.Programs && !o.PublicWelfare && !o.Grow && !o.Account && o.ProgramID == "" {
+		return o, errors.New("sync: choose -programs, -public-welfare, -grow, -account and/or -program")
 	}
-	if o.Pages < 1 || o.Pages > 152 {
-		return o, errors.New("sync: -pages must be between 1 and 152")
+	if o.Pages < 1 || o.Pages > 200 {
+		return o, errors.New("sync: -pages must be between 1 and 200")
 	}
 	if o.PageSize < 10 || o.PageSize > 100 {
 		return o, errors.New("sync: -page-size must be between 10 and 100")
@@ -239,6 +248,44 @@ func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w
 			}
 		}
 	}
+	if opts.PublicWelfare {
+		pw, ok := reader.(adapter.PublicWelfareReader)
+		if !ok {
+			return fmt.Errorf("sync: platform %s does not expose public welfare", reader.Platform())
+		}
+		batch, err := pw.SyncPublicWelfare(ctx, adapter.SyncOptions{PageSize: opts.PageSize, MaxPages: opts.Pages})
+		if err != nil {
+			return err
+		}
+		out.PublicWelfare = summarizePrograms(batch)
+		for _, ev := range batch.Evidence {
+			out.Evidence = append(out.Evidence, string(ev.ID))
+		}
+		if writer != nil {
+			if err := persistPrograms(ctx, writer, batch); err != nil {
+				return err
+			}
+		}
+	}
+	if opts.Grow {
+		gr, ok := reader.(adapter.GrowReader)
+		if !ok {
+			return fmt.Errorf("sync: platform %s does not expose a campus program", reader.Platform())
+		}
+		snap, err := gr.SyncGrow(ctx)
+		if err != nil {
+			return err
+		}
+		out.Grow = summarizeProgramSnapshot(snap)
+		for _, ev := range snap.Evidence {
+			out.Evidence = append(out.Evidence, string(ev.ID))
+		}
+		if writer != nil {
+			if err := persistProgramSnapshot(ctx, writer, snap); err != nil {
+				return err
+			}
+		}
+	}
 	if opts.Account {
 		snap, err := reader.SyncAccount(ctx)
 		if err != nil {
@@ -306,6 +353,20 @@ func persistPrograms(ctx context.Context, w snapshotWriter, b adapter.ProgramBat
 		if err := w.UpsertProgram(ctx, p); err != nil {
 			return fmt.Errorf("sync: persist program %s: %w", p.ID, err)
 		}
+	}
+	return nil
+}
+
+func persistProgramSnapshot(ctx context.Context, w snapshotWriter, snap adapter.ProgramSnapshot) error {
+	if err := persistEvidenceFacts(ctx, w, snap.Evidence, snap.Facts); err != nil {
+		return err
+	}
+	prog := snap.Program
+	if err := prog.Validate(); err != nil {
+		return fmt.Errorf("sync: persist program: %w", err)
+	}
+	if err := w.UpsertProgram(ctx, prog); err != nil {
+		return fmt.Errorf("sync: persist program %s: %w", prog.ID, err)
 	}
 	return nil
 }
@@ -399,6 +460,12 @@ func summarizeAccount(a adapter.AccountSnapshot) *accountOutput {
 		out.SeasonRank = *acct.Rank
 	}
 	return out
+}
+
+// summarizeProgramSnapshot reports a program that carries its own automation
+// policy (no separate policy snapshot).
+func summarizeProgramSnapshot(p adapter.ProgramSnapshot) *programDetailOutput {
+	return summarizeProgramDetail(p, adapter.PolicySnapshot{Automation: p.Program.Automation})
 }
 
 func summarizeProgramDetail(p adapter.ProgramSnapshot, pol adapter.PolicySnapshot) *programDetailOutput {

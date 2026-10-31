@@ -1,6 +1,7 @@
 package butian
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/adapter"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/facts"
+	butianfacts "github.com/Zn070515/BountyGrid/internal/facts/butian"
+	"github.com/Zn070515/BountyGrid/internal/state"
 )
 
 var butianBountyRE = regexp.MustCompile(`奖金范围[：:]\s*([\d,]+)\s*~\s*([\d,]+)\s*元?`)
@@ -154,6 +157,164 @@ func accountFact(ev domain.EvidenceID, accountID domain.AccountID, pred string, 
 		Confidence:       1,
 		ExtractorVersion: extractor,
 	}
+}
+
+// publicWelfareProgram maps one public-welfare vendor row. These vendors have
+// no program-level scope disclosure; assets remain UNKNOWN until a human opens
+// the vendor's assets.
+func publicWelfareProgram(v pubVendor, evID domain.EvidenceID, at time.Time) (domain.Program, []domain.ObservedFact, error) {
+	if strings.TrimSpace(v.CompanyID) == "" || strings.TrimSpace(v.CompanyName) == "" {
+		return domain.Program{}, nil, fmt.Errorf("butian: public welfare vendor missing id/name: %w", adapter.ErrUnsupported)
+	}
+	pid := domain.ProgramID("butian/pub/" + v.CompanyID)
+	status := cardFact(evID, pid, facts.PredProgramStatus, string(domain.StatusRunning), "", at)
+	paused := cardFact(evID, pid, facts.PredProgramPaused, false, "", at)
+	// A vendor listed in the public-welfare list is accepting reports, but the
+	// list states no explicit status, so the observation is less than certain.
+	status.Confidence = 0.8
+	fs := []domain.ObservedFact{
+		status, paused,
+		cardFact(evID, pid, "butian.pub.listed", true, "", at),
+		cardFact(evID, pid, facts.PredScopeVisibility, string(domain.ScopeUnknown), "", at),
+		cardFact(evID, pid, "butian.pub.company_id", v.CompanyID, "", at),
+		cardFact(evID, pid, "butian.pub.company_name", v.CompanyName, "", at),
+		cardFact(evID, pid, "butian.pub.source", publicWelfareAPI, "", at),
+	}
+	prog := domain.Program{
+		ID: pid, Platform: domain.PlatformButian, NativeID: v.CompanyID,
+		Name: v.CompanyName, Type: domain.TypePublicWelfareSRC,
+		Status: domain.ProgramState{
+			Status: domain.StatusRunning, Reason: "listed_in_public_welfare_api",
+			ObservedAt: at, ValidUntil: at.Add(30 * time.Minute), Confidence: 0.8,
+			Inputs: []domain.FactID{status.ID, paused.ID}, Evidence: []domain.EvidenceID{evID},
+		},
+		Eligibility: domain.EligibilityState{
+			Decision: domain.Eligible, EvaluatedAt: at, PolicyVersion: extractor,
+		},
+		Scope: domain.Scope{
+			Visibility:    domain.ScopeUnknown,
+			Access:        domain.ScopeAccessUnknown,
+			ContentsKnown: false,
+			ObservedAt:    at,
+			Evidence:      []domain.EvidenceID{evID},
+		},
+		Reward:      domain.RewardPolicy{TaxBasis: domain.TaxUnknown},
+		Automation:  conservativeAutomation(),
+		Evidence:    []domain.EvidenceID{evID},
+		ObservedAt:  at,
+		NextCheckAt: at.Add(30 * time.Minute),
+	}
+	if err := prog.Validate(); err != nil {
+		return domain.Program{}, nil, fmt.Errorf("butian: invalid public welfare program %s: %w", pid, err)
+	}
+	return prog, fs, nil
+}
+
+// capturedText is one rendered page plus the Evidence that stores it.
+type capturedText struct {
+	Text       string
+	EvidenceID domain.EvidenceID
+}
+
+// growProgram derives the single GROW campus program. Each page is parsed by
+// the versioned GrowExtractor so every fact keeps the EvidenceID of the page
+// that stated it; the state is then derived from the combined FactSet.
+func growProgram(ctx context.Context, pages []capturedText, at time.Time) (domain.Program, []domain.ObservedFact, error) {
+	pid := domain.ProgramID("butian/grow")
+	if len(pages) == 0 {
+		return domain.Program{}, nil, fmt.Errorf("butian: GROW has no captured page: %w", adapter.ErrUnsupported)
+	}
+	var fs []domain.ObservedFact
+	var evIDs []domain.EvidenceID
+	seenEV := make(map[domain.EvidenceID]struct{})
+	for _, p := range pages {
+		got, err := (butianfacts.GrowExtractor{}).Extract(ctx, facts.Input{
+			Platform: domain.PlatformButian, ProgramID: &pid, Text: p.Text,
+			CapturedAt: at, EvidenceID: p.EvidenceID,
+		})
+		if err != nil {
+			return domain.Program{}, nil, err
+		}
+		fs = append(fs, got...)
+		if _, ok := seenEV[p.EvidenceID]; !ok {
+			seenEV[p.EvidenceID] = struct{}{}
+			evIDs = append(evIDs, p.EvidenceID)
+		}
+	}
+	in, err := state.ProgramInputFromFacts(facts.NewFactSet(fs))
+	if err != nil {
+		return domain.Program{}, nil, err
+	}
+	if in.RegistrationStart == nil || in.RegistrationEnd == nil || in.Start == nil || in.End == nil {
+		return domain.Program{}, nil, fmt.Errorf("butian: GROW registration/activity dates missing: %w", adapter.ErrUnsupported)
+	}
+	st, err := state.DeriveProgramState(in, at, 30*time.Minute)
+	if err != nil {
+		return domain.Program{}, nil, err
+	}
+
+	// Gates come only from phrases the page actually states. The rules modal
+	// always shows a 报名时间 window, so PROGRAM_SIGNUP is required whenever
+	// the rules page was captured.
+	gates := []domain.EligibilityGate{{
+		Kind: domain.GateProgramSignup, Required: true,
+		Satisfied: domain.GateUnsatisfied, Blocking: true,
+		Evidence: []domain.EvidenceID{growEvidence(pages, "报名时间")},
+	}}
+	for _, c := range []struct {
+		kind    domain.GateKind
+		needles []string
+	}{
+		{domain.GateStudentVerification, []string{"学生认证待完成", "学生认证未完成", "尚未完成学生认证"}},
+		{domain.GateTeamMembership, []string{"尚未加入校园团队", "未加入校园团队"}},
+	} {
+		if ev := growEvidence(pages, c.needles...); ev != "" {
+			gates = append(gates, domain.EligibilityGate{
+				Kind: c.kind, Required: true,
+				Satisfied: domain.GateUnsatisfied, Blocking: true,
+				Evidence: []domain.EvidenceID{ev},
+			})
+		}
+	}
+	scope := domain.Scope{
+		Visibility:    domain.ScopeGatedBySignup,
+		Access:        domain.ScopeAccessNotGranted,
+		ContentsKnown: false,
+		ObservedAt:    at,
+		Evidence:      evIDs,
+	}
+	prog := domain.Program{
+		ID: pid, Platform: domain.PlatformButian, NativeID: "grow",
+		Name: "补天 GROW", Type: domain.TypeCampusProgram,
+		Status: st,
+		Eligibility: domain.EligibilityState{
+			Decision: domain.HumanActionNeeded, Gates: gates,
+			EvaluatedAt: at, PolicyVersion: extractor,
+		},
+		Scope:       scope,
+		Reward:      domain.RewardPolicy{TaxBasis: domain.TaxUnknown},
+		Automation:  conservativeAutomation(),
+		Evidence:    evIDs,
+		ObservedAt:  at,
+		NextCheckAt: at.Add(30 * time.Minute),
+	}
+	if err := prog.Validate(); err != nil {
+		return domain.Program{}, nil, fmt.Errorf("butian: invalid GROW program: %w", err)
+	}
+	return prog, fs, nil
+}
+
+// growEvidence returns the EvidenceID of the first page containing any needle,
+// or "" when no page states it.
+func growEvidence(pages []capturedText, needles ...string) domain.EvidenceID {
+	for _, n := range needles {
+		for _, p := range pages {
+			if strings.Contains(p.Text, n) {
+				return p.EvidenceID
+			}
+		}
+	}
+	return ""
 }
 
 func truncate(s string, n int) string {

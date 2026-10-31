@@ -233,6 +233,209 @@ func (r *Reader) SyncPrograms(ctx context.Context, opts adapter.SyncOptions) (ad
 	return batch, nil
 }
 
+// SyncPublicWelfare reads the public-welfare vendor list through the page's
+// own observed GET (/Reward/pub?p=N). The list carries company IDs and names,
+// not asset scope; scope remains UNKNOWN.
+func (r *Reader) SyncPublicWelfare(ctx context.Context, opts adapter.SyncOptions) (adapter.ProgramBatch, error) {
+	maxPages := opts.MaxPages
+	if maxPages <= 0 {
+		maxPages = 1
+	}
+	if err := r.ensureButianPage(ctx); err != nil {
+		return adapter.ProgramBatch{}, err
+	}
+	var batch adapter.ProgramBatch
+	seen := make(map[string]struct{})
+	totalPages, pageSize, lastLen := 0, 0, 0
+	lastPage := false
+	for page := 1; page <= maxPages; page++ {
+		apiURL := fmt.Sprintf("%s?p=%d", publicWelfareAPI, page)
+		body, contentType, status, err := r.fetchJSON(ctx, apiURL)
+		if err != nil {
+			return adapter.ProgramBatch{}, err
+		}
+		if status != 200 {
+			return adapter.ProgramBatch{}, fmt.Errorf("butian: public welfare HTTP %d", status)
+		}
+		var resp publicWelfareResponse
+		if err := json.Unmarshal(body, &resp); err != nil {
+			// Without X-Requested-With the platform serves the HTML shell
+			// instead of JSON; never treat that as an empty vendor list.
+			return adapter.ProgramBatch{}, fmt.Errorf("butian: public welfare returned %s, not JSON: %w", contentType, adapter.ErrUnsupported)
+		}
+		if resp.Status != 1 {
+			return adapter.ProgramBatch{}, fmt.Errorf("butian: public welfare code %d: %s", resp.Status, resp.Message)
+		}
+		at := r.now().UTC()
+		ev, err := r.capture(domain.SourceProgram, "public-welfare", fmt.Sprintf("page-%d", page),
+			apiURL, "Butian 公益SRC", string(body), at)
+		if err != nil {
+			return adapter.ProgramBatch{}, err
+		}
+		batch.Evidence = append(batch.Evidence, ev)
+		for _, v := range resp.Data.List {
+			if _, ok := seen[v.CompanyID]; ok {
+				continue
+			}
+			prog, fs, err := publicWelfareProgram(v, ev.ID, at)
+			if errors.Is(err, adapter.ErrUnsupported) {
+				batch.Unsupported = append(batch.Unsupported, v.CompanyID)
+				continue
+			}
+			if err != nil {
+				return adapter.ProgramBatch{}, err
+			}
+			seen[v.CompanyID] = struct{}{}
+			batch.Programs = append(batch.Programs, prog)
+			batch.Facts = append(batch.Facts, fs...)
+		}
+		if pageSize == 0 {
+			pageSize = len(resp.Data.List)
+		}
+		lastLen = len(resp.Data.List)
+		if resp.Data.Count > 0 {
+			totalPages = resp.Data.Count
+		}
+		if lastLen == 0 || (totalPages > 0 && resp.Data.Current >= totalPages) {
+			lastPage = totalPages > 0 && resp.Data.Current >= totalPages
+			break
+		}
+	}
+	batch.ObservedCount = len(batch.Programs)
+	switch {
+	case lastPage && pageSize > 0:
+		// Every page was read, so the tail is known exactly.
+		batch.EstimatedTotal = (totalPages-1)*pageSize + lastLen
+	case totalPages > 0 && pageSize > 0:
+		// Only some pages were read; total is an upper bound.
+		batch.EstimatedTotal = totalPages * pageSize
+		batch.Estimated = true
+	default:
+		batch.EstimatedTotal = len(batch.Programs)
+	}
+	return batch, nil
+}
+
+func (r *Reader) ensureButianPage(ctx context.Context) error {
+	u, err := r.browser.GetURL(ctx)
+	if err != nil || !strings.Contains(u, "butian.net") {
+		// The public-welfare list is public; any butian.net origin works and
+		// does not depend on the login session.
+		if err := r.browser.Open(ctx, homeURL); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
+			return fmt.Errorf("butian: open home: %w", err)
+		}
+		_ = r.browser.WaitLoad(ctx)
+	}
+	return nil
+}
+
+// fetchJSON performs the page's own observed GET. X-Requested-With is what the
+// platform's XHR sends; without it /Reward/pub answers with the HTML shell.
+func (r *Reader) fetchJSON(ctx context.Context, apiURL string) ([]byte, string, int, error) {
+	script := fmt.Sprintf(`(async()=>{const r=await fetch(%q,{method:"GET",credentials:"include",headers:{"X-Requested-With":"XMLHttpRequest"}});const ct=r.headers.get("content-type")||"";const t=await r.text();return JSON.stringify({status:r.status,content_type:ct,body:t});})()`, apiURL)
+	out, err := r.browser.Eval(ctx, script)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("butian: observed GET %s: %w", apiURL, err)
+	}
+	raw, err := unwrapEval(out)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	var env struct {
+		Status      int    `json:"status"`
+		ContentType string `json:"content_type"`
+		Body        string `json:"body"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, "", 0, fmt.Errorf("butian: decode observed GET: %w", err)
+	}
+	return []byte(env.Body), env.ContentType, env.Status, nil
+}
+
+// SyncGrow opens the GROW rules modal and the activity center. Each page is a
+// separate Evidence record: the rules modal states the registration/activity
+// dates, the activity center states the monthly phase. The program state is
+// derived from the combined facts; nothing is merged into one page's evidence.
+func (r *Reader) SyncGrow(ctx context.Context) (adapter.ProgramSnapshot, error) {
+	at := r.now().UTC()
+	if err := r.browser.Open(ctx, growURL); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
+		return adapter.ProgramSnapshot{}, fmt.Errorf("butian: open GROW: %w", err)
+	}
+	_ = r.browser.WaitLoad(ctx)
+	_ = r.browser.WaitFn(ctx, "document.body.innerText.includes('查看规则')")
+	if err := r.clickButtonText(ctx, "查看规则"); err != nil {
+		return adapter.ProgramSnapshot{}, err
+	}
+	_ = r.browser.WaitFn(ctx, "document.body.innerText.includes('报名时间')")
+	rulesText, err := r.pageText(ctx)
+	if err != nil {
+		return adapter.ProgramSnapshot{}, err
+	}
+	rulesEv, err := r.capture(domain.SourcePolicy, "grow", "rules", growURL, "Butian GROW 规则", rulesText, at)
+	if err != nil {
+		return adapter.ProgramSnapshot{}, err
+	}
+	if err := r.browser.Open(ctx, activeCenterURL); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
+		return adapter.ProgramSnapshot{}, fmt.Errorf("butian: open activity center: %w", err)
+	}
+	_ = r.browser.WaitLoad(ctx)
+	activeText, err := r.pageText(ctx)
+	if err != nil {
+		return adapter.ProgramSnapshot{}, err
+	}
+	activeEv, err := r.capture(domain.SourcePolicy, "grow", "activity", activeCenterURL, "Butian 活动中心", activeText, at)
+	if err != nil {
+		return adapter.ProgramSnapshot{}, err
+	}
+	pages := []capturedText{{Text: rulesText, EvidenceID: rulesEv.ID}}
+	// The activity center may rotate the GROW campaign out; only parse it when
+	// the page explicitly mentions GROW, otherwise the extractor has no subject.
+	if strings.Contains(strings.ToUpper(activeText), "GROW") {
+		pages = append(pages, capturedText{Text: activeText, EvidenceID: activeEv.ID})
+	}
+	prog, fs, err := growProgram(ctx, pages, at)
+	if err != nil {
+		return adapter.ProgramSnapshot{}, err
+	}
+	return adapter.ProgramSnapshot{
+		Program: prog, Scope: prog.Scope, Facts: fs,
+		Evidence: []domain.Evidence{rulesEv, activeEv},
+	}, nil
+}
+
+// pageText returns the rendered body text of the current page.
+func (r *Reader) pageText(ctx context.Context) (string, error) {
+	return r.evalString(ctx, "(()=>document.body?(document.body.innerText||document.body.textContent||''):'')()")
+}
+
+func (r *Reader) clickButtonText(ctx context.Context, text string) error {
+	script := fmt.Sprintf(`(() => {
+		const all=[...document.querySelectorAll('button,a,[role=button],div,span')];
+		const b=all.find(x=>x.children.length===0 && (x.innerText||'').trim()===%q);
+		if(!b) return JSON.stringify({clicked:false});
+		b.click();
+		return JSON.stringify({clicked:true});
+	})()`, text)
+	out, err := r.browser.Eval(ctx, script)
+	if err != nil {
+		return fmt.Errorf("butian: click %q: %w", text, err)
+	}
+	raw, err := unwrapEval(out)
+	if err != nil {
+		return err
+	}
+	var ack struct {
+		Clicked bool `json:"clicked"`
+	}
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		return fmt.Errorf("butian: decode click result: %w", err)
+	}
+	if !ack.Clicked {
+		return fmt.Errorf("butian: button %q not found", text)
+	}
+	return nil
+}
+
 func (r *Reader) extractCards(ctx context.Context) ([]srcCard, int, bool, error) {
 	var all []srcCard
 	total := 0
