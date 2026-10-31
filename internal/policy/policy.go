@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -12,6 +13,10 @@ import (
 )
 
 const DefaultPolicyVersion = "policy-v1"
+
+// MinExecutionConfidence is the floor from architecture/evidence-facts.md:
+// a fact below 0.8 cannot by itself drive an execution decision.
+const MinExecutionConfidence domain.Confidence = 0.8
 
 type ApprovalLedger interface {
 	Consume(ctx context.Context, approvalID string) error
@@ -33,7 +38,7 @@ func (l *MemoryApprovalLedger) Consume(ctx context.Context, approvalID string) e
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if _, ok := l.consumed[approvalID]; ok {
-		return fmt.Errorf("approval already consumed")
+		return domain.ErrApprovalConsumed
 	}
 	l.consumed[approvalID] = struct{}{}
 	return nil
@@ -125,10 +130,24 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		}
 	}
 
-	// 0. Freshness is required for execution/submission, not for viewing.
+	// 0a. The decision must be about exactly the account/program in the
+	// request. Without this binding a caller could evaluate one Program and
+	// attribute the ALLOW to another request.
+	if dc.Account.ID != dc.Request.AccountID || dc.Program.ID != dc.Request.ProgramID {
+		return decide(domain.DecisionDeny, "CONTEXT_MISMATCH"), nil
+	}
+	if dc.Account.Platform != dc.Program.Platform {
+		return decide(domain.DecisionDeny, "PLATFORM_MISMATCH"), nil
+	}
+
+	// 0b. Freshness and confidence are required for execution/submission, not
+	// for viewing.
 	if requiresFreshState(dc.Request.Action) {
-		if dc.Program.Status.ValidUntil.IsZero() || dc.Program.Status.ValidUntil.Before(now) {
+		if dc.Program.Status.ValidUntil.IsZero() || !dc.Program.Status.ValidUntil.After(now) {
 			return decide(domain.DecisionRequireMoreEvidence, "STALE_PROGRAM_STATE"), nil
+		}
+		if dc.Program.Status.Confidence < MinExecutionConfidence {
+			return decide(domain.DecisionRequireMoreEvidence, "LOW_CONFIDENCE_STATE"), nil
 		}
 	}
 
@@ -184,13 +203,21 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		}
 	}
 
-	// 6. Asset must be explicitly in scope.
+	// 6. Asset must be explicitly in scope, and it must be the asset named by
+	// the request. Checking a different in-scope asset would authorize the
+	// wrong target.
 	if dc.Request.Action.NeedsAsset() {
 		if dc.Request.AssetID == nil || dc.Asset == nil {
 			return decide(domain.DecisionDeny, "ASSET_REQUIRED"), nil
 		}
-		if dc.Asset.ProgramID != "" && dc.Asset.ProgramID != dc.Request.ProgramID {
+		if *dc.Request.AssetID != dc.Asset.ID {
+			return decide(domain.DecisionDeny, "ASSET_MISMATCH"), nil
+		}
+		if dc.Asset.ProgramID != dc.Request.ProgramID {
 			return decide(domain.DecisionDeny, "ASSET_PROGRAM_MISMATCH"), nil
+		}
+		if dc.Asset.Platform != "" && dc.Asset.Platform != dc.Program.Platform {
+			return decide(domain.DecisionDeny, "ASSET_PLATFORM_MISMATCH"), nil
 		}
 		switch dc.Program.Scope.CheckAsset(*dc.Asset) {
 		case domain.ScopeMatchIncluded:
@@ -220,7 +247,11 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		case domain.CapUnknown:
 			return decide(domain.DecisionRequireMoreEvidence, "AUTOMATION_UNKNOWN"), nil
 		case domain.CapConditional:
-			base = domain.DecisionRequireHuman
+			// CONDITIONAL can add a human gate to an otherwise allowed or
+			// human-gated action, but it must never loosen a hard DENY.
+			if base != domain.DecisionDeny {
+				base = domain.DecisionRequireHuman
+			}
 		case domain.CapAllowed:
 			if overridableByAutomation(dc.Request.Action) {
 				base = domain.DecisionAllow
@@ -245,7 +276,10 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 				return decide(domain.DecisionRequireHuman, "NO_APPROVAL_LEDGER"), nil
 			}
 			if err := e.ledger.Consume(ctx, dc.HumanApproval.ID); err != nil {
-				return decide(domain.DecisionRequireHuman, "APPROVAL_ALREADY_CONSUMED"), nil
+				if errors.Is(err, domain.ErrApprovalConsumed) {
+					return decide(domain.DecisionRequireHuman, "APPROVAL_ALREADY_CONSUMED"), nil
+				}
+				return domain.ActionDecision{}, fmt.Errorf("policy: consume approval: %w", err)
 			}
 		}
 	}
@@ -253,7 +287,16 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 }
 
 func (e *Engine) allow(dc DecisionContext, now time.Time, decide func(domain.Decision, ...string) domain.ActionDecision) (domain.ActionDecision, error) {
+	// An ALLOW must not outlive the state or approval it was derived from.
 	expires := now.Add(5 * time.Minute)
+	// Only cap by a still-fresh state; view actions may deliberately proceed
+	// with stale state and must not get an already-expired ALLOW.
+	if until := dc.Program.Status.ValidUntil; until.After(now) && until.Before(expires) {
+		expires = until
+	}
+	if a := dc.HumanApproval; a != nil && !a.ExpiresAt.IsZero() && a.ExpiresAt.Before(expires) {
+		expires = a.ExpiresAt
+	}
 	out := decide(domain.DecisionAllow)
 	out.ExpiresAt = &expires
 	out.Constraints = &dc.Program.Constraints
@@ -287,6 +330,9 @@ func validateApproval(a *domain.HumanApproval, req domain.ActionRequest, resourc
 	}
 	if a.ParametersHash != parametersHash(req.Parameters) {
 		return fmt.Errorf("approval parameters mismatch")
+	}
+	if a.ApprovedAt.After(now) {
+		return fmt.Errorf("approval is from the future")
 	}
 	if a.ExpiresAt.IsZero() || !a.ExpiresAt.After(now) {
 		return fmt.Errorf("approval expired")
@@ -350,13 +396,25 @@ func automationCapability(p domain.AutomationPolicy, a domain.Action) (domain.Ca
 
 func checkUsage(dc DecisionContext) error {
 	for _, limit := range dc.Program.Constraints.PerInterfaceDailyLimits {
+		if limit.Interface == "" || limit.Amount <= 0 {
+			return fmt.Errorf("INVALID_DAILY_LIMIT")
+		}
 		if used := dc.UsageToday[limit.Interface]; used >= limit.Amount {
 			return fmt.Errorf("DAILY_LIMIT_EXCEEDED:%s", limit.Interface)
 		}
 	}
-	if cap := dc.Program.Constraints.BudgetCap; cap != nil && dc.BudgetSpent != nil &&
-		cap.Currency == dc.BudgetSpent.Currency && dc.BudgetSpent.Amount >= cap.Amount {
-		return fmt.Errorf("BUDGET_EXCEEDED")
+	if cap := dc.Program.Constraints.BudgetCap; cap != nil {
+		if cap.Amount <= 0 || cap.Currency == "" {
+			return fmt.Errorf("INVALID_BUDGET_CAP")
+		}
+		if dc.BudgetSpent != nil {
+			if cap.Currency != dc.BudgetSpent.Currency {
+				return fmt.Errorf("BUDGET_CURRENCY_MISMATCH")
+			}
+			if dc.BudgetSpent.Amount >= cap.Amount {
+				return fmt.Errorf("BUDGET_EXCEEDED")
+			}
+		}
 	}
 	return nil
 }

@@ -2,13 +2,15 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrApprovalConsumed = errors.New("postgres: approval already consumed")
+// ErrApprovalConsumed is the same sentinel the in-memory ledger returns, so
+// policy can distinguish reuse from an infrastructure failure.
+var ErrApprovalConsumed = domain.ErrApprovalConsumed
 
 // PostgresApprovalLedger makes single-use human approvals durable across
 // process restarts. INSERT ... ON CONFLICT DO NOTHING is the atomic gate.

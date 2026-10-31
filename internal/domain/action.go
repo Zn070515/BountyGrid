@@ -2,8 +2,13 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrApprovalConsumed is returned when a single-use approval has already been
+// spent. Other ledger errors are infrastructure failures and must surface.
+var ErrApprovalConsumed = errors.New("approval already consumed")
 
 type ActorRef struct {
 	Kind ActorKind

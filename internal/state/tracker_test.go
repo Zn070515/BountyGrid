@@ -34,6 +34,26 @@ func TestTrackerInvalidatesByFact(t *testing.T) {
 	}
 }
 
+func TestTrackerRerecordMovesDependencies(t *testing.T) {
+	tr := NewTracker()
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	if err := tr.Record(Derivation{StateID: "s1", Inputs: []domain.FactID{"f1"}, ValidUntil: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Record(Derivation{StateID: "s1", Inputs: []domain.FactID{"f2"}, ValidUntil: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.InvalidateFact("f1"); len(got) != 0 {
+		t.Fatalf("stale input invalidated state: %v", got)
+	}
+	if !tr.Valid("s1", now) {
+		t.Fatal("state should still be valid")
+	}
+	if got := tr.InvalidateFact("f2"); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("current input invalidated = %v, want [s1]", got)
+	}
+}
+
 func TestTrackerExpiry(t *testing.T) {
 	tr := NewTracker()
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)

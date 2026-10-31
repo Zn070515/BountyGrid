@@ -220,9 +220,21 @@ func (e *Engine) Decide(ctx context.Context, req domain.ActionRequest) (domain.A
     dc, err := e.loadContext(ctx, req)
     if err != nil { return domain.ActionDecision{}, err }
 
-    // 0. 证据新鲜度：执行/提交要求新鲜；查看规则/项目不要求
-    if requiresFreshState(req.Action) && !e.evidenceFresh(dc) {
-        return requireMoreEvidence(req, "STALE_PROGRAM_STATE"), nil
+    // 0a. 决策上下文必须与请求一致，不能用一个 Program 的结论服务另一个请求
+    if dc.Account.ID != req.AccountID || dc.Program.ID != req.ProgramID ||
+       dc.Account.Platform != dc.Program.Platform {
+        return deny(req, "CONTEXT_MISMATCH"), nil
+    }
+
+    // 0b. 证据新鲜度与置信度：执行/提交要求新鲜且 confidence >= 0.8；
+    //     查看规则/项目不要求
+    if requiresFreshState(req.Action) {
+        if !e.evidenceFresh(dc) {
+            return requireMoreEvidence(req, "STALE_PROGRAM_STATE"), nil
+        }
+        if dc.Program.Status.Confidence < 0.8 {
+            return requireMoreEvidence(req, "LOW_CONFIDENCE_STATE"), nil
+        }
     }
 
     // 1. 账号能力
@@ -265,10 +277,16 @@ func (e *Engine) Decide(ctx context.Context, req domain.ActionRequest) (domain.A
         return deny(req, "SCOPE_GATED"), nil
     }
 
-    // 6. Asset 必须显式属于 Scope
+    // 6. Asset 必须显式属于 Scope，且必须是请求指定的那个资产
     if req.Action.NeedsAsset() {
         if req.AssetID == nil || dc.Asset == nil {
             return deny(req, "ASSET_REQUIRED"), nil
+        }
+        if *req.AssetID != dc.Asset.ID {
+            return deny(req, "ASSET_MISMATCH"), nil
+        }
+        if dc.Asset.ProgramID != req.ProgramID {
+            return deny(req, "ASSET_PROGRAM_MISMATCH"), nil
         }
         switch dc.Program.Scope.CheckAsset(*dc.Asset) {
         case domain.ScopeMatchIncluded:
@@ -290,7 +308,10 @@ func (e *Engine) Decide(ctx context.Context, req domain.ActionRequest) (domain.A
         case domain.CapUnknown:
             return requireMoreEvidence(req, "AUTOMATION_UNKNOWN"), nil
         case domain.CapConditional:
-            base = domain.DecisionRequireHuman
+            // CONDITIONAL 只能加人工门槛，不能把硬拒绝降级为可审批动作
+            if base != domain.DecisionDeny {
+                base = domain.DecisionRequireHuman
+            }
         case domain.CapAllowed:
             if overridableByAutomation(req.Action) {
                 base = domain.DecisionAllow
@@ -349,6 +370,8 @@ single_use（human-only 动作必须 true）
 ## 9. 决策缓存
 
 - `ActionDecision` 可缓存，但必须带 `ExpiresAt`。
+- `ExpiresAt` 取 `now+5m`、`Program.Status.ValidUntil`、`HumanApproval.ExpiresAt` 三者中最早的时间；决策不能比它所依据的状态或授权活得更久。
+- ApprovalLedger 只有返回 `domain.ErrApprovalConsumed` 才映射为 `REQUIRE_HUMAN`；数据库/网络故障必须向上返回错误，不能伪装成“审批已使用”。
 - 项目状态 TTL 内有效；状态变化/证据 supersede 时立即失效。
 - 执行前 Action Gateway 必须二次校验 `ExpiresAt` 与 `Program.Status`。
 
@@ -394,3 +417,7 @@ single_use（human-only 动作必须 true）
 11. `ACTIVE_HTTP` 缺 Asset / Asset 不在 Scope → DENY；Conditional Asset → REQUIRE_HUMAN。
 12. `AutomationPolicy=FORBIDDEN`（如联想禁止 webshell 上传）→ DENY，人工审批也不能覆盖。
 13. `REPORT_SUBMIT` 审批 single-use → 第二次使用 REQUIRE_HUMAN。
+14. `DecisionContext` 的 account/program/platform 与请求不一致，或 `Asset.ID != Request.AssetID` → DENY。
+15. `ContentsKnown=true` 且 `Include` 为空 → 任意资产 EXCLUDED；`*.example.com` 不匹配 apex。
+16. `Program.Status.Confidence < 0.8` → 执行类 REQUIRE_MORE_EVIDENCE；查看类不受影响。
+17. 同一 Evidence 重跑抽取幂等；同 Fact ID 不同内容 → 拒绝。
