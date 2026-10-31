@@ -155,13 +155,28 @@ func selectResearch(sorted []Scheduled, opts Options) []Scheduled {
 				continue
 			}
 			if containsProgram(selected, s.Program.ID) {
+				continue
+			}
+			p := s.Program.Platform
+			if len(selected) < opts.TopK {
+				if perPlatform[p] >= opts.MaxPerPlatform {
+					continue
+				}
+				selected = append(selected, s)
+				perPlatform[p]++
 				break
 			}
-			if len(selected) < opts.TopK {
-				selected = append(selected, s)
-			} else if len(selected) > 0 {
-				selected[len(selected)-1] = s
+			// Replacing the last slot must still respect the platform quota;
+			// otherwise the reserved enterprise program pushes a platform over
+			// its configured cap.
+			last := selected[len(selected)-1]
+			lp := last.Program.Platform
+			if lp != p && perPlatform[p]+1 > opts.MaxPerPlatform {
+				continue
 			}
+			selected[len(selected)-1] = s
+			perPlatform[lp]--
+			perPlatform[p]++
 			break
 		}
 	}

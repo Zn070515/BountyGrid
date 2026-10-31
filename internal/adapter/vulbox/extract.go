@@ -116,7 +116,7 @@ func parseSRCScope(text string) (include, exclude, notes []string, found bool) {
 		if line == "" {
 			continue
 		}
-		if strings.Contains(line, "暂不收录") || strings.Contains(line, "暂不收录") {
+		if strings.Contains(line, "不收录") {
 			if m := reAnyPattern.FindString(strings.ToLower(line)); m != "" {
 				add(&exclude, seenE, m)
 			} else {

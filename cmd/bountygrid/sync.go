@@ -109,7 +109,7 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 	fs.StringVar(&o.Platform, "platform", "vulbox", "platform: vulbox, xianzhi or butian")
 	fs.BoolVar(&o.Programs, "programs", true, "read the project/task list")
 	fs.BoolVar(&o.Account, "account", false, "read the account (requires a logged-in session)")
-	fs.StringVar(&o.ProgramID, "program", "", "read one program/task by native id (e.g. vulbox 444); implies scope+policy")
+	fs.StringVar(&o.ProgramID, "program", "", "read one program/task by native id (e.g. vulbox 444, xianzhi 324, butian SRC name); implies scope+policy")
 	fs.IntVar(&o.Pages, "pages", 1, "maximum list pages (1-152)")
 	fs.IntVar(&o.PageSize, "page-size", 50, "Vulbox list page size (10-100)")
 	fs.StringVar(&o.RawDir, "raw-dir", "", "local directory for redacted raw evidence (default .evidence/<platform>)")

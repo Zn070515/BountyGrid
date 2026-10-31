@@ -248,7 +248,10 @@ func atoiSafe(s string) int {
 
 func parseCompliance(text string) *bool {
 	switch {
-	case strings.Contains(text, "合规考核未完成"), strings.Contains(text, "本季度合规考核"):
+	// Only an explicit "not completed" marker means false. The bare phrase
+	// "本季度合规考核" also appears on completed pages ("本季度合规考核已完成"),
+	// so it must not be treated as failure.
+	case strings.Contains(text, "合规考核未完成"):
 		v := false
 		return &v
 	case strings.Contains(text, "合规考核已完成"), strings.Contains(text, "考核通过"), strings.Contains(text, "已通过合规考核"):

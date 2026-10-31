@@ -79,6 +79,9 @@ func TestParseCompliance(t *testing.T) {
 	if v := parseCompliance("合规考核已完成"); v == nil || !*v {
 		t.Fatalf("compliance = %v, want true", v)
 	}
+	if v := parseCompliance("本季度合规考核已完成，可提交漏洞"); v == nil || !*v {
+		t.Fatalf("quarterly completed compliance = %v, want true", v)
+	}
 	if v := parseCompliance("无关文本"); v != nil {
 		t.Fatalf("compliance = %v, want nil", v)
 	}

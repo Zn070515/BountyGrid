@@ -64,6 +64,20 @@ func TestEngineMissingCompetitionLowersConfidence(t *testing.T) {
 	}
 }
 
+func TestEngineMissingTop10ShareLowersConfidence(t *testing.T) {
+	comp := &domain.CompetitionSnapshot{
+		ID: "c1", Platform: domain.PlatformButian, Scope: "PLATFORM", ObservedAt: testNow,
+		DuplicatePressure: ptrFloat(0.2), Saturation: ptrFloat(0.2), Confidence: 1,
+	}
+	opp, err := NewEngine().Evaluate(Input{Program: scoringProgram("p1", 1000, 10000, domain.TypeBrandSRC), Competition: comp, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opp.Confidence != missingShareConf {
+		t.Fatalf("confidence = %v, want capped %v", opp.Confidence, missingShareConf)
+	}
+}
+
 func TestEngineNoReward(t *testing.T) {
 	p := scoringProgram("p1", 1, 2, domain.TypeBrandSRC)
 	p.Reward.Min, p.Reward.Max = nil, nil

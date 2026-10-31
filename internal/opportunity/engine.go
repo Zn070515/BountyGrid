@@ -14,6 +14,10 @@ import (
 
 var ErrNoReward = errors.New("opportunity: no reward range")
 
+// missingShareConf caps scoring confidence when the competition snapshot omits
+// a share and the engine falls back to a conservative 0.5 estimate.
+const missingShareConf domain.Confidence = 0.5
+
 type Weights struct {
 	Min, Median, Max float64
 	Top10            float64
@@ -94,6 +98,11 @@ func (e Engine) Evaluate(in Input) (domain.Opportunity, error) {
 			sat = clamp01(*c.Saturation)
 		}
 		conf = c.Confidence
+		if c.Top10Share == nil {
+			// A guessed 0.5 share must not inherit the snapshot's full
+			// confidence; missing top10 share caps confidence at 0.5.
+			conf = minConf(conf, missingShareConf)
+		}
 	}
 	penalty := e.Weights.Top10*top10 + e.Weights.Duplicate*dup + e.Weights.Saturation*sat
 	penalty = math.Min(penalty, 0.95)

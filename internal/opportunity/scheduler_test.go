@@ -93,6 +93,30 @@ func TestScheduleEnterpriseReserve(t *testing.T) {
 	}
 }
 
+func TestScheduleEnterpriseReserveRespectsPlatformQuota(t *testing.T) {
+	b1 := candidate("b1", domain.StatusRunning, true, true, true, 100000, domain.TypeBrandSRC)
+	b1.Program.Platform = domain.PlatformVulbox
+	b2 := candidate("b2", domain.StatusRunning, true, true, true, 90000, domain.TypeBrandSRC)
+	b2.Program.Platform = domain.PlatformVulbox
+	x := candidate("x", domain.StatusRunning, true, true, true, 80000, domain.TypeBrandSRC)
+	x.Program.Platform = domain.PlatformXianzhi
+	e := candidate("e", domain.StatusRunning, true, true, true, 1000, domain.TypeEnterpriseSRC)
+	e.Program.Platform = domain.PlatformVulbox
+
+	res := Schedule(NewEngine(), []Candidate{b1, b2, x, e}, Options{
+		TopK: 3, MaxPerPlatform: 2, ReserveEnterprise: true, Now: testNow,
+	})
+	vulbox := 0
+	for _, s := range res.ResearchQueue {
+		if s.Program.Platform == domain.PlatformVulbox {
+			vulbox++
+		}
+	}
+	if vulbox > 2 {
+		t.Fatalf("vulbox research = %d, want <= 2 (platform quota): %+v", vulbox, res.ResearchQueue)
+	}
+}
+
 func TestScheduleCooldown(t *testing.T) {
 	c := candidate("p1", domain.StatusRunning, true, true, true, 10000, domain.TypeBrandSRC)
 	res := Schedule(NewEngine(), []Candidate{c}, Options{TopK: 1, Now: testNow, Existing: map[domain.ProgramID]time.Time{"p1": testNow.Add(-time.Hour)}})
