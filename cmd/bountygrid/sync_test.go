@@ -44,6 +44,91 @@ func (f *fakeReader) SyncPolicy(context.Context, domain.ProgramID) (adapter.Poli
 	return f.policy, f.policyErr
 }
 
+type fakeWriter struct {
+	evidence []domain.Evidence
+	facts    []domain.ObservedFact
+	accounts []domain.Account
+	programs []domain.Program
+	err      error
+}
+
+func (w *fakeWriter) PutEvidence(ctx context.Context, e domain.Evidence) error {
+	if w.err != nil {
+		return w.err
+	}
+	w.evidence = append(w.evidence, e)
+	return nil
+}
+func (w *fakeWriter) PutFacts(ctx context.Context, fs []domain.ObservedFact) error {
+	if w.err != nil {
+		return w.err
+	}
+	w.facts = append(w.facts, fs...)
+	return nil
+}
+func (w *fakeWriter) UpsertAccount(ctx context.Context, a domain.Account) error {
+	if w.err != nil {
+		return w.err
+	}
+	w.accounts = append(w.accounts, a)
+	return nil
+}
+func (w *fakeWriter) UpsertProgram(ctx context.Context, p domain.Program) error {
+	if w.err != nil {
+		return w.err
+	}
+	w.programs = append(w.programs, p)
+	return nil
+}
+
+func TestExecuteSyncPersistsPrograms(t *testing.T) {
+	f := &fakeReader{programs: adapter.ProgramBatch{
+		Programs: []domain.Program{{ID: "vulbox/444"}},
+		Facts:    []domain.ObservedFact{{ID: "f1"}},
+		Evidence: []domain.Evidence{{ID: "ev1"}},
+	}}
+	w := &fakeWriter{}
+	var buf bytes.Buffer
+	if err := executeSync(context.Background(), f, syncOptions{Programs: true}, &buf, w); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.evidence) != 1 || len(w.facts) != 1 || len(w.programs) != 1 {
+		t.Fatalf("persisted = %d/%d/%d", len(w.evidence), len(w.facts), len(w.programs))
+	}
+	var out syncOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Persisted {
+		t.Fatal("output should report persisted=true")
+	}
+}
+
+func TestExecuteSyncPersistsAccount(t *testing.T) {
+	f := &fakeReader{account: adapter.AccountSnapshot{
+		Account:  domain.Account{ID: "vulbox/account"},
+		Facts:    []domain.ObservedFact{{ID: "f1"}},
+		Evidence: []domain.Evidence{{ID: "ev1"}},
+	}}
+	w := &fakeWriter{}
+	var buf bytes.Buffer
+	if err := executeSync(context.Background(), f, syncOptions{Account: true}, &buf, w); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.accounts) != 1 || len(w.facts) != 1 || len(w.evidence) != 1 {
+		t.Fatalf("persisted = %+v", w)
+	}
+}
+
+func TestExecuteSyncPersistErrorSurfaces(t *testing.T) {
+	f := &fakeReader{programs: adapter.ProgramBatch{Evidence: []domain.Evidence{{ID: "ev1"}}}}
+	w := &fakeWriter{err: errors.New("db down")}
+	var buf bytes.Buffer
+	if err := executeSync(context.Background(), f, syncOptions{Programs: true}, &buf, w); err == nil {
+		t.Fatal("persist error should surface")
+	}
+}
+
 func TestExecuteSyncPrograms(t *testing.T) {
 	prog := domain.Program{ID: "vulbox/444", Name: "联想", Type: domain.TypeEnterpriseSRC}
 	prog.Status.Status = domain.StatusRunning
@@ -57,7 +142,7 @@ func TestExecuteSyncPrograms(t *testing.T) {
 		Estimated:      true,
 	}}
 	var buf bytes.Buffer
-	err := executeSync(context.Background(), f, syncOptions{Programs: true}, &buf)
+	err := executeSync(context.Background(), f, syncOptions{Programs: true}, &buf, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +167,7 @@ func TestExecuteSyncAccount(t *testing.T) {
 	acct.Capability.CanSubmit = true
 	f := &fakeReader{account: adapter.AccountSnapshot{Account: acct, Facts: []domain.ObservedFact{{ID: "f1"}}}}
 	var buf bytes.Buffer
-	if err := executeSync(context.Background(), f, syncOptions{Account: true}, &buf); err != nil {
+	if err := executeSync(context.Background(), f, syncOptions{Account: true}, &buf, nil); err != nil {
 		t.Fatal(err)
 	}
 	var out syncOutput
@@ -118,7 +203,7 @@ func TestExecuteSyncProgramDetail(t *testing.T) {
 	}
 	f := &fakeReader{program: snap, policy: pol}
 	var buf bytes.Buffer
-	if err := executeSync(context.Background(), f, syncOptions{ProgramID: "444"}, &buf); err != nil {
+	if err := executeSync(context.Background(), f, syncOptions{ProgramID: "444"}, &buf, nil); err != nil {
 		t.Fatal(err)
 	}
 	var out syncOutput
@@ -155,7 +240,7 @@ func TestParseSyncOptionsAllowsProgramOnly(t *testing.T) {
 func TestExecuteSyncSurfacesAuthRequired(t *testing.T) {
 	f := &fakeReader{accountErr: adapter.ErrAuthRequired}
 	var buf bytes.Buffer
-	err := executeSync(context.Background(), f, syncOptions{Account: true}, &buf)
+	err := executeSync(context.Background(), f, syncOptions{Account: true}, &buf, nil)
 	if !errors.Is(err, adapter.ErrAuthRequired) {
 		t.Fatalf("err = %v, want ErrAuthRequired", err)
 	}
@@ -183,6 +268,9 @@ func TestParseSyncOptionsDefaults(t *testing.T) {
 	}
 	if opts.Platform != "vulbox" || opts.Session != "vbprobe" || opts.RawDir != ".evidence/vulbox" {
 		t.Fatalf("defaults = %+v", opts)
+	}
+	if opts.Persist {
+		t.Fatal("persist must be opt-in")
 	}
 }
 

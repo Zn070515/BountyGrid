@@ -94,6 +94,7 @@
 
 - `internal/adapter/butian` 已实现 `AuthStatus/SyncAccount/SyncPrograms/SyncProgram/SyncScope/SyncPolicy`。
 - 37 专属SRC 已实测：从项目大厅已渲染 DOM 的 `.plan-exclusive-src .company-card` 读取，**37/37，259 Fact，1 Evidence**，全部 `RUNNING/PRIVATE_EXCLUSIVE/HUMAN_ACTION_REQUIRED`（报名 + 实战认证）。
+- 快照持久化已接入 `sync -persist`：Evidence → Facts → Program/Account；实测 Vulbox 50 项目/750 Fact/1 Evidence 落库。
 - 卡片无原生 company ID，ProgramID = 公司名 SHA-1 前缀；后续有原生 ID 时迁移。
 - 账号中心/提交页的浏览器导航报 `os error 10060`（curl 302 可达），反爬/验证码会话阻止新导航；账号 Gate 代码已实现但未实测，`ComplianceExam` 未知时强制 `CanSubmit=false`。
 - 公益SRC `/Reward/pub` 可用（200 页/30 条）但未接入；GROW 页面未联调（`GrowExtractor` 已有单测）。

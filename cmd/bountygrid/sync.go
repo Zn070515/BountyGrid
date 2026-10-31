@@ -16,6 +16,7 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/adapter/xianzhi"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/sidecar"
+	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 )
 
 type syncOptions struct {
@@ -28,18 +29,28 @@ type syncOptions struct {
 	RawDir      string
 	Session     string
 	State       string
+	Persist     bool
 	Timeout     time.Duration
 	MinInterval time.Duration
 	Close       bool
 }
 
+// snapshotWriter is the PostgreSQL subset used by sync -persist.
+type snapshotWriter interface {
+	PutEvidence(ctx context.Context, e domain.Evidence) error
+	PutFacts(ctx context.Context, fs []domain.ObservedFact) error
+	UpsertAccount(ctx context.Context, a domain.Account) error
+	UpsertProgram(ctx context.Context, p domain.Program) error
+}
+
 type syncOutput struct {
-	Platform string               `json:"platform"`
-	Auth     string               `json:"auth"`
-	Programs *programsOutput      `json:"programs,omitempty"`
-	Account  *accountOutput       `json:"account,omitempty"`
-	Detail   *programDetailOutput `json:"program,omitempty"`
-	Evidence []string             `json:"evidence,omitempty"`
+	Platform  string               `json:"platform"`
+	Auth      string               `json:"auth"`
+	Persisted bool                 `json:"persisted"`
+	Programs  *programsOutput      `json:"programs,omitempty"`
+	Account   *accountOutput       `json:"account,omitempty"`
+	Detail    *programDetailOutput `json:"program,omitempty"`
+	Evidence  []string             `json:"evidence,omitempty"`
 }
 
 type programDetailOutput struct {
@@ -104,6 +115,7 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 	fs.StringVar(&o.RawDir, "raw-dir", "", "local directory for redacted raw evidence (default .evidence/<platform>)")
 	fs.StringVar(&o.Session, "session", "", "agent-browser session (default vbprobe/xzprobe by platform)")
 	fs.StringVar(&o.State, "state", "", "optional saved browser state JSON; usually the running session already holds the login")
+	fs.BoolVar(&o.Persist, "persist", false, "write Evidence/Facts/Account/Program to PostgreSQL")
 	fs.DurationVar(&o.Timeout, "timeout", 60*time.Second, "per-command timeout")
 	fs.DurationVar(&o.MinInterval, "min-interval", 2*time.Second, "minimum spacing between browser commands")
 	fs.BoolVar(&o.Close, "close", false, "close the browser session when done (default: keep the login alive)")
@@ -156,7 +168,20 @@ func runSync(ctx context.Context, args []string) error {
 	if opts.Close {
 		defer func() { _ = client.Close(context.Background()) }()
 	}
-	return executeSync(ctx, reader, opts, os.Stdout)
+	var writer snapshotWriter
+	if opts.Persist {
+		d, err := dsn()
+		if err != nil {
+			return err
+		}
+		pool, err := postgres.Open(ctx, d)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		writer = postgres.NewRepo(pool)
+	}
+	return executeSync(ctx, reader, opts, os.Stdout, writer)
 }
 
 func newReader(opts syncOptions) (adapter.Reader, *sidecar.Client, error) {
@@ -187,8 +212,8 @@ func newReader(opts syncOptions) (adapter.Reader, *sidecar.Client, error) {
 	return reader, client, nil
 }
 
-func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w io.Writer) error {
-	out := syncOutput{Platform: string(reader.Platform()), Auth: "UNCHECKED"}
+func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w io.Writer, writer snapshotWriter) error {
+	out := syncOutput{Platform: string(reader.Platform()), Auth: "UNCHECKED", Persisted: writer != nil}
 	if opts.Account {
 		auth, err := reader.AuthStatus(ctx)
 		if err != nil {
@@ -208,6 +233,11 @@ func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w
 		for _, ev := range batch.Evidence {
 			out.Evidence = append(out.Evidence, string(ev.ID))
 		}
+		if writer != nil {
+			if err := persistPrograms(ctx, writer, batch); err != nil {
+				return err
+			}
+		}
 	}
 	if opts.Account {
 		snap, err := reader.SyncAccount(ctx)
@@ -217,6 +247,11 @@ func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w
 		out.Account = summarizeAccount(snap)
 		for _, ev := range snap.Evidence {
 			out.Evidence = append(out.Evidence, string(ev.ID))
+		}
+		if writer != nil {
+			if err := persistAccount(ctx, writer, snap); err != nil {
+				return err
+			}
 		}
 	}
 	if opts.ProgramID != "" {
@@ -240,11 +275,89 @@ func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w
 		for _, ev := range policy.Evidence {
 			out.Evidence = append(out.Evidence, string(ev.ID))
 		}
+		if writer != nil {
+			prog := snap.Program
+			prog.Automation = policy.Automation
+			prog.Constraints = policy.Constraints
+			evs := uniqueEvidence(append(append([]domain.Evidence{}, snap.Evidence...), policy.Evidence...))
+			fs := uniqueFacts(append(append([]domain.ObservedFact{}, snap.Facts...), policy.Facts...))
+			if err := persistEvidenceFacts(ctx, writer, evs, fs); err != nil {
+				return err
+			}
+			if err := prog.Validate(); err != nil {
+				return fmt.Errorf("sync: persist program: %w", err)
+			}
+			if err := writer.UpsertProgram(ctx, prog); err != nil {
+				return fmt.Errorf("sync: persist program %s: %w", prog.ID, err)
+			}
+		}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(out)
+}
+
+func persistPrograms(ctx context.Context, w snapshotWriter, b adapter.ProgramBatch) error {
+	if err := persistEvidenceFacts(ctx, w, b.Evidence, b.Facts); err != nil {
+		return err
+	}
+	for _, p := range b.Programs {
+		if err := w.UpsertProgram(ctx, p); err != nil {
+			return fmt.Errorf("sync: persist program %s: %w", p.ID, err)
+		}
+	}
+	return nil
+}
+
+func persistAccount(ctx context.Context, w snapshotWriter, snap adapter.AccountSnapshot) error {
+	if err := persistEvidenceFacts(ctx, w, snap.Evidence, snap.Facts); err != nil {
+		return err
+	}
+	if err := w.UpsertAccount(ctx, snap.Account); err != nil {
+		return fmt.Errorf("sync: persist account %s: %w", snap.Account.ID, err)
+	}
+	return nil
+}
+
+func persistEvidenceFacts(ctx context.Context, w snapshotWriter, evs []domain.Evidence, fs []domain.ObservedFact) error {
+	for _, ev := range uniqueEvidence(evs) {
+		if err := w.PutEvidence(ctx, ev); err != nil {
+			return fmt.Errorf("sync: persist evidence %s: %w", ev.ID, err)
+		}
+	}
+	if fs = uniqueFacts(fs); len(fs) > 0 {
+		if err := w.PutFacts(ctx, fs); err != nil {
+			return fmt.Errorf("sync: persist facts: %w", err)
+		}
+	}
+	return nil
+}
+
+func uniqueEvidence(evs []domain.Evidence) []domain.Evidence {
+	seen := make(map[domain.EvidenceID]struct{}, len(evs))
+	out := make([]domain.Evidence, 0, len(evs))
+	for _, ev := range evs {
+		if _, ok := seen[ev.ID]; ok {
+			continue
+		}
+		seen[ev.ID] = struct{}{}
+		out = append(out, ev)
+	}
+	return out
+}
+
+func uniqueFacts(fs []domain.ObservedFact) []domain.ObservedFact {
+	seen := make(map[domain.FactID]struct{}, len(fs))
+	out := make([]domain.ObservedFact, 0, len(fs))
+	for _, f := range fs {
+		if _, ok := seen[f.ID]; ok {
+			continue
+		}
+		seen[f.ID] = struct{}{}
+		out = append(out, f)
+	}
+	return out
 }
 
 func summarizePrograms(b adapter.ProgramBatch) *programsOutput {
