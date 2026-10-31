@@ -227,6 +227,13 @@ Opportunity Engine 用这些更新：
 
 没有历史数据时，使用保守先验并在 `Confidence` 中体现；不能把宣传最高赏金当期望值。
 
+## 5.1 Phase 4 实现记录（2026-10-31）
+
+- `internal/opportunity.Engine`：`E[reward]=P(valid)×(0.25min+0.5median+0.25max)×tier×campaign×(1−duplicate)`；`penalty=0.4 top10+0.35 duplicate+0.25 saturation`；`score=E[reward]×(1−penalty)/cost×confidence`。缺 Snapshot 时 penalty=0.5 三项、confidence=0.2。`Inputs[]` 可回放。
+- `Scheduler`：RUNNING 硬过滤 + cooldown；CanSubmit/Eligibility/Scope 只进 HumanActionQueue；Top-K/平台/项目配额/企业SRC保留位；Persist 写 `opportunities` + `research_tasks`（`QUEUED`/`HUMAN_ACTION_REQUIRED`），不执行。
+- 实测 Vulbox：9 RUNNING 可评分 → 0 research / 9 human（账号能力未观测）、40 paused/ended 排除；无平台动作。
+- 未接入：CompetitionSnapshot 采集、Harness 执行、人工队列 UI、Ledger 反馈。
+
 ## 6. 反模式
 
 1. 用“最高赏金”排序。

@@ -545,6 +545,10 @@ func TestParseIdentityText(t *testing.T) {
 	if bank == nil || !*bank {
 		t.Fatalf("bank = %v, want true", bank)
 	}
+	identity, _ = parseIdentityText("个人中心\n实名认证 已认证")
+	if identity == nil || !*identity {
+		t.Fatalf("identity = %v, want true", identity)
+	}
 }
 
 func TestParseJoinedProjects(t *testing.T) {
