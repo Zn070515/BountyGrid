@@ -200,6 +200,22 @@ Scope:     unsigned task detail returns NotSignUp/报名后可见 -> GATED_BY_SI
 - 账号同步可跑通；个人资料页只有“实名认证”标签、无文本状态，`identity_verified` 暂为 nil（fail-closed）。
 - 已报名任务的资产范围解析尚未验证；当前对未报名任务 fail-closed 返回 GATED，不猜 Scope。
 
+#### Phase 1 Butian 实现记录（2026-10-31）
+
+```text
+Project hall: https://www.butian.net/Reward/plan/2
+Cards:        .plan-exclusive-src .company-card (37)
+Fields:       .name, text 奖金范围：50 ~ 20,000元, button 提交漏洞
+API:          /Reward/corps 被验证码保护（status 0, “换个姿势”）；不要自动绕过
+Public:       /Reward/pub status 1, count=200, 30 vendors/page（可用）
+Account:      /WhiteHat/Center/baseData、sourceStatus 返回 request error
+```
+
+- 专属SRC 列表只在人类完成验证码、页面自身 XHR 成功后才渲染；Reader 读取已渲染 DOM，不调用 `/Reward/corps`，不 reload（reload 会丢失页面内验证结果）。0 卡片/暂无数据返回 `ErrGated`，不能写成空列表。
+- 卡片无原生 company ID；ProgramID 使用公司名 SHA-1 前缀。Scope 统一 `GATED_BY_SIGNUP + NOT_GRANTED`；Eligibility 含 `PROGRAM_SIGNUP` 与 Program-scoped `PRACTICAL_CERTIFICATION` 两个人工 Gate。
+- 账号中心/提交页导航在本次实测中报 `os error 10060`（curl 302），代码对未知合规考核强制 `CanSubmit=false`；待网络/反爬恢复后实测。
+- 公益SRC `/Reward/pub` 可用但未实现；GROW 页面尚未联调。
+
 ### 4.3 补天
 
 ```text

@@ -196,8 +196,18 @@ func TestParseSyncOptionsXianzhi(t *testing.T) {
 	}
 }
 
+func TestParseSyncOptionsButian(t *testing.T) {
+	opts, err := parseSyncOptions([]string{"-platform", "butian"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Session != "btprobe" || opts.RawDir != ".evidence/butian" {
+		t.Fatalf("opts = %+v", opts)
+	}
+}
+
 func TestParseSyncOptionsRejectsUnknownPlatform(t *testing.T) {
-	if _, err := parseSyncOptions([]string{"-platform", "butian"}); err == nil {
+	if _, err := parseSyncOptions([]string{"-platform", "unknown"}); err == nil {
 		t.Fatal("unknown platform should be rejected")
 	}
 }

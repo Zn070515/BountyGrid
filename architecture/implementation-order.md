@@ -90,6 +90,15 @@
 - 奇安信 SSO 会话；账号 Capability（合规考核/实战认证）；37 专属SRC；公益SRC 分页；活动/GROW。
 - 退出条件：`CanSubmit=false` 正确派生；GROW 日期 8/25-11/30 与月度阶段 10/01-10/31 分开；专属SRC Scope GATED。
 
+**当前实现（2026-10-31）**：
+
+- `internal/adapter/butian` 已实现 `AuthStatus/SyncAccount/SyncPrograms/SyncProgram/SyncScope/SyncPolicy`。
+- 37 专属SRC 已实测：从项目大厅已渲染 DOM 的 `.plan-exclusive-src .company-card` 读取，**37/37，259 Fact，1 Evidence**，全部 `RUNNING/PRIVATE_EXCLUSIVE/HUMAN_ACTION_REQUIRED`（报名 + 实战认证）。
+- 卡片无原生 company ID，ProgramID = 公司名 SHA-1 前缀；后续有原生 ID 时迁移。
+- 账号中心/提交页的浏览器导航报 `os error 10060`（curl 302 可达），反爬/验证码会话阻止新导航；账号 Gate 代码已实现但未实测，`ComplianceExam` 未知时强制 `CanSubmit=false`。
+- 公益SRC `/Reward/pub` 可用（200 页/30 条）但未接入；GROW 页面未联调（`GrowExtractor` 已有单测）。
+- 退出条件仍差：账号 `CanSubmit=false` 实测、GROW 日期实测、公益SRC 分页接入。
+
 ## 2. Fact/State 层
 
 ### 2.1 Extractor 框架
