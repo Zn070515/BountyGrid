@@ -166,7 +166,11 @@ go run ./cmd/bountygrid sync -programs=false -account=false -program 444
 - 顺序：Evidence → Facts → Program/Account；Evidence 先落库，Fact 必须带 EvidenceRef，然后才 upsert Program/Account。
 - 原始页面仍只写本地 `.evidence/`；数据库只存 Evidence 元数据/hash/RawRef、Fact、Program/Account JSON。
 - 幂等：Evidence/Fact ID 确定性；同 ID 同内容重跑是 no-op，Program/Account 用 upsert。新一次同步产生新 Evidence/Fact（append-only observation）。
-- 实测（2026-10-31，本地 `bountygrid-pg`）：Vulbox 第 1 页 50 项目 → `programs=50`、`observed_facts=750`、`evidence=1`，`persisted=true`。
+- 实测（2026-10-31，本地 `bountygrid-pg`）：
+  - Vulbox 第 1 页 50 项目 → `programs=50`、`observed_facts=750`、`evidence=1`
+  - Xianzhi 5 页 91 任务 → `programs=91`、`observed_facts=1058`、`evidence=5`（54 ENDED / 34 RUNNING / 3 PAUSED）
+  - Vulbox 444 详情 → Scope `PUBLIC/GRANTED`、`FileUpload=FORBIDDEN`、`AIAnalysis=CONDITIONAL`
+  - 累计 `programs=141`、`observed_facts=1830`、`evidence=8`；`evidence_refs` 为空 0 条，confidence 越界 0 条。
 
 ```bash
 go run ./cmd/bountygrid sync -platform vulbox -programs -pages=1 -persist
