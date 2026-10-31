@@ -67,7 +67,7 @@
 **当前实现（2026-10-31）**：
 
 - `AuthStatus`、`SyncPrograms`、`SyncAccount` 已实现；公开项目列表实测通过：第 1 页 10 项、`estimated_total=1513`、150 条 Fact、1 条 Evidence，所有 Fact 有 EvidenceRef。
-- 账号实测通过：见习白帽 / exp 10 / 信誉 100 / 排名 9999+ / 实名 / `CanSubmit=true` / `CanPayout=false` / 已加入 2。
+- 账号实测通过：见习白帽 / exp 10 / 信誉 100 / 排名 9999+ / 实名 / `CanSubmit=true` / `CanPayout=false` / 已加入 2。个人中心有促销抽屉遮挡，`readPage` 只读关闭并等待“已实名”后抽取；修复后调度器为联想 444 产出 `QUEUED` research task。
 - 企业SRC详情已实现并实测联想 444：Scope `PUBLIC+GRANTED+known`、include 9 条、exclude `*.sunits.com`、`FileUpload=FORBIDDEN`、`AIAnalysis=CONDITIONAL`；Scope/Policy 各有独立 Evidence。
 - 普通/高级项目详情页、已加入项目 ID 回填、平台 FAQ 策略合并仍未完成；非企业SRC仍返回 `ErrUnsupported`（不猜）。
 - 退出条件仍差：普通项目 Scope/Policy、Xianzhi/Butian Reader。

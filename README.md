@@ -138,6 +138,8 @@ bash probes/butian/grow-dates.sh
           FileUpload=FORBIDDEN，AIAnalysis=CONDITIONAL，HumanVerificationRequired=true
 ```
 
+> 用户中心页面会弹出促销抽屉遮挡个人资料。`readPage` 现在会只读关闭抽屉并等待“已实名”出现后再抽取；修复后 `identity_verified=true`、已加入 2、`CanSubmit=true`。调度器据此为联想 444 产生 `QUEUED` research task。
+
 ### Xianzhi Reader（任务列表已实测）
 
 - `internal/adapter/xianzhi`：`AuthStatus`、`SyncAccount`、`SyncPrograms`（5 页/91 任务）、`SyncProgram`、`SyncScope`（未报名 → `GATED_BY_SIGNUP + NOT_GRANTED`）、`SyncPolicy`（保守 `UNKNOWN`）。
@@ -217,7 +219,7 @@ go run ./cmd/bountygrid decide -authorize <decision-id>
   - `penalty = 0.4·top10_share + 0.35·duplicate + 0.25·saturation`；缺 CompetitionSnapshot 时用保守 0.5/0.5/0.5，并把 Confidence 降到 0.2。
   - `score = E[reward] × (1 − penalty) / max(cost,1) × confidence`；`Inputs[]` 记录 p_valid/权重/竞争/成本/置信度。**不按最高赏金排序。**
 - `Scheduler`：硬过滤 `RUNNING` + cooldown；`CanSubmit=false` / `Eligibility != ELIGIBLE` / `Scope.Access != GRANTED` 只进 HumanActionQueue，不进入执行队列；Top-K、每平台/每项目配额、企业SRC保留位；产出 `ResearchTask` 状态 `QUEUED` 或 `HUMAN_ACTION_REQUIRED`，**没有 Harness 执行**。
-- 实测（2026-10-31）：Vulbox 9 个 RUNNING 可评分程序 → 0 research / 9 human（`ACCOUNT_CAPABILITY`，账号能力未观测，fail-closed）；40 个 PAUSED/ENDED 被排除、1 个无赏金数据；DB `opportunities=9`、`research_tasks=9 HUMAN_ACTION_REQUIRED`，无平台动作。研究队列路径由单测覆盖（需要完整账号能力快照）。
+- 实测（2026-10-31）：Vulbox 9 个 RUNNING 可评分程序 → **1 research（联想 444，`QUEUED`）/ 8 human（`PROGRAM_GATE`，未加入）**；40 个 PAUSED/ENDED 被排除、1 个无赏金数据；DB `research_tasks` = 1 `QUEUED` + 11 `HUMAN_ACTION_REQUIRED`，无平台动作。账号能力修复前是 0 research / 9 human（`ACCOUNT_CAPABILITY`，fail-closed），见下。
 
 ```bash
 go run ./cmd/bountygrid schedule -platform vulbox -top 5 -persist
