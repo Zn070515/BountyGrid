@@ -189,7 +189,7 @@ Observed API: /WhiteHat/Center/baseData; /Company/Info/assetRange 等
 |------|------|
 | 登录过期/验证码 | `AUTH_REQUIRED`；人工重新登录；不重试爆破 |
 | 页面改版/选择器失效 | 抽取器报错；保留 Evidence；不写猜测 Fact |
-| Scope 返回 NotSignUp | 返回 `GATED_BY_SIGNUP`，不返回空 Scope |
+| Scope 返回 NotSignUp | 返回 `GATED_BY_SIGNUP + Access=NOT_GRANTED`，不返回空 Scope |
 | NDA 弹窗 | 停止；返回 `GATED_BY_NDA`；不点击同意 |
 | 合规考核弹窗 | 返回 `ACCOUNT_GATE`；不参加 |
 | 项目暂停/结束 | 更新 `ProgramState`；撤销未执行任务 |

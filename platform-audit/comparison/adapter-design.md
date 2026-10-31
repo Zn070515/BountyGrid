@@ -211,7 +211,7 @@ Actor + PlatformAccount + Program + Asset + Action + Time
 
 ```text
 VIEW_RULES          → ALLOW
-READ_SCOPE          → ALLOW (PUBLIC) / REQUIRE_HUMAN (GATED)
+READ_SCOPE          → ALLOW (Access=GRANTED) / REQUIRE_HUMAN (GATED)
 PASSIVE_ANALYSIS    → ALLOW (conditional)
 ACTIVE_HTTP         → CONDITIONAL
 AUTOMATED_SCAN      → DENY (default)
