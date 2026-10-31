@@ -238,6 +238,21 @@ butian   top10=0.500* active=30 rewarded=10 pool=—       confidence=0.5
 - 重新调度后：Vulbox 9 个 human（confidence 0.5、penalty 0.645），Xianzhi 3 个 human（confidence 0.7、penalty 0.608）；`opportunities=12`、`research_tasks=12 HUMAN_ACTION_REQUIRED`。仍无 research，因为账号能力未观测（fail-closed）。
 - `PutOpportunity` 冲突更新现在刷新全部反规范化列（expected_return/per_cost/penalty/confidence/evaluated_at/data），避免“JSON 已更新、列还是旧值”。
 
+### Harness / Tool Registry · `harness`
+
+- 每个工具声明 `RequiredAction`；Harness 用工具的动作覆盖请求，强制 `Action Gateway Evaluate → ALLOW → Authorize → Execute`。`DENY/REQUIRE_HUMAN` 直接停止，工具不会被调用。
+- 沙箱：默认拒绝所有 egress，`-allowed-hosts` 支持 `*.example.org`（只匹配子域，不匹配 apex）；`http/https` 以外 scheme 拒绝。
+- 预算：每次执行前检查 `-budget`（CNY）与请求数；超限不执行。`Destructive` 工具默认禁用，需显式 `-allow-destructive`。
+- 内置工具仅 `view_rules`、`read_scope`、`report_draft`（本地只读，不发起网络/扫描/提交）。本仓库仍不进行任何真实测试。
+- 实测（2026-10-31）：
+  - `view_rules` → ALLOW → Authorize → 输出 `read-only view_rules completed`
+  - 缺失账号 → DENY `CONTEXT_NOT_FOUND`，工具未执行
+  - DB：`action_decisions=5`、`tool.executed=1`
+
+```bash
+go run ./cmd/bountygrid harness -tool view_rules -request ./request.json
+```
+
 ### Butian Reader（37 专属SRC 已实测，账号/GROW 待网络恢复）
 
 - `internal/adapter/butian`：`AuthStatus`、`SyncAccount`（合规考核/实战认证/实名/银行卡，保守 fail-closed）、`SyncPrograms`（37 专属SRC）、`SyncProgram`、`SyncScope`（未报名 GATED）、`SyncPolicy`（保守 `UNKNOWN`）。

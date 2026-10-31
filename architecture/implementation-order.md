@@ -181,6 +181,8 @@
 - 沙箱/网络白名单/预算。
 - 退出条件：工具无法绕过 Policy；越权请求被 DENY。
 
+**当前实现（2026-10-31）**：`internal/harness` 的 Registry 校验工具名/动作/重复；Harness 强制 Evaluate→ALLOW→Authorize→Execute，DENY/REQUIRE_HUMAN 不调用工具；Sandbox 默认拒绝 egress（通配符只匹配子域），Budget 在执行前检查；Destructive 默认禁用。内置 `view_rules/read_scope/report_draft` 只读工具；`tool.executed` 审计。实测 ALLOW 执行、缺失账号 DENY 且工具未执行；`action_decisions=5`、`tool.executed=1`。仍差：Model Router、真实执行工具（本仓库禁止真实测试）、ResearchTask 自动领取。
+
 ### 5.2 Model Router
 
 - 路由/预算/数据分级/审计。

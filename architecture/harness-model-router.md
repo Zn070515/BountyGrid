@@ -205,6 +205,14 @@ type Router interface {
 - 预算耗尽 → 任务挂起，等待人工决定。
 - 发现敏感数据 → 立即停止、删除本地副本、记录事件；按平台要求报备。
 
+## 5.1 Phase 5 实现记录（2026-10-31）
+
+- `internal/harness`：Registry 校验工具名/RequiredAction/重复；Harness 强制 `Evaluate → ALLOW → Authorize → Execute`，`DENY/REQUIRE_HUMAN` 不调用工具；`DeniedError` 带决策。
+- Sandbox：默认拒绝 egress；`-allowed-hosts` 精确匹配，`*.example.org` 只匹配子域；`http/https` 以外拒绝。Budget：执行前检查 `MaxCost`/`MaxRequests`，成功后 Charge。Destructive 默认禁用。
+- 内置工具 `view_rules/read_scope/report_draft`：本地只读，不发起网络/扫描/提交。`tool.executed` 写入审计；决策审计由 Action Gateway 负责。
+- 实测：`view_rules` ALLOW → Authorize → 执行成功；缺失账号 DENY `CONTEXT_NOT_FOUND`，工具未执行；`action_decisions=5`、`tool.executed=1`。
+- 未实现：Model Router、ResearchTask 自动领取、真实执行工具（本仓库禁止真实测试）。
+
 ## 6. 审计事件
 
 - `harness.task.started/stopped`
