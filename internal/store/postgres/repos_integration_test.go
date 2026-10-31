@@ -176,6 +176,27 @@ func TestRepoRoundTrip(t *testing.T) {
 		t.Fatalf("state upsert did not refresh metadata: %s %v", ruleVersion, confidence)
 	}
 
+	// Superseding an input fact invalidates the derived state.
+	f2 := f
+	f2.ID = factID + "-new"
+	f2.ObservedAt = now.Add(time.Second)
+	f2.Value = "PAUSED"
+	if err := r.PutFacts(ctx, []domain.ObservedFact{f2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SupersedeFact(ctx, factID, f2.ID); err != nil {
+		t.Fatal(err)
+	}
+	var expired bool
+	if err := r.Pool.QueryRow(ctx,
+		`SELECT valid_until <= now() FROM derived_states WHERE id=$1`, stateID,
+	).Scan(&expired); err != nil {
+		t.Fatal(err)
+	}
+	if !expired {
+		t.Fatal("derived state was not invalidated by fact supersede")
+	}
+
 	expires := now.Add(5 * time.Minute)
 	d := domain.ActionDecision{
 		ID: domain.DecisionID("it-dec-" + suffix), RequestID: "it-req-" + suffix, ProgramID: progID,

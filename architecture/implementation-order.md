@@ -114,6 +114,14 @@
 - TTL/ValidUntil；输入 Fact 变化使下游失效。
 - 退出条件：GROW 案例、Vulbox 暂停/重开、Xianzhi NotSignUp 三个回归测试通过。
 
+**当前实现（2026-10-31）**：
+
+- `bountygrid derive -platform ...` 从 PostgreSQL 读取 Fact → `ProgramInputFromFacts` → `DeriveProgramState/ScopeVisibility/RegistrationOpen` → `PutState`。
+- 实测 Xianzhi 273 + Vulbox 100 = **373** 条 `derived_states`；`inputs` 为空 0、confidence 越界 0、已过期 0。
+- Fact supersede 已在 PostgreSQL 同一事务内失效下游 State（`valid_until=now()`，`inputs` GIN 索引）；集成测试覆盖。
+- 显式 `RUNNING` 不再覆盖已过的 inclusive end（修复 live 发现的问题）。
+- 仍差：AccountAbility/Competition 状态派生、Adapter 自动触发 re-derive、GROW/Vulbox 暂停重开回归接入 CLI。
+
 ## 3. Policy Engine
 
 ### 3.1 Eligibility

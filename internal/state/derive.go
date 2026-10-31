@@ -122,12 +122,19 @@ func DeriveProgramState(in ProgramInput, now time.Time, ttl time.Duration) (doma
 	case in.Paused:
 		status = domain.StatusPaused
 		reason = "paused_fact"
-	case in.Status != nil:
+	case in.Status != nil && (*in.Status == domain.StatusPaused || *in.Status == domain.StatusEnded):
+		// An explicit pause/stop is authoritative even if a date window says
+		// otherwise.
 		status = *in.Status
 		reason = "explicit_status_fact"
 	case in.End != nil && now.After(*in.End):
+		// A passed inclusive end date wins over a stale explicit RUNNING
+		// fact. Platforms often keep the old status for hours after the end.
 		status = domain.StatusEnded
 		reason = "after_end"
+	case in.Status != nil:
+		status = *in.Status
+		reason = "explicit_status_fact"
 	case in.Start != nil && now.Before(*in.Start):
 		status = domain.StatusUpcoming
 		reason = "before_start"

@@ -176,6 +176,23 @@ go run ./cmd/bountygrid sync -programs=false -account=false -program 444
 go run ./cmd/bountygrid sync -platform vulbox -programs -pages=1 -persist
 ```
 
+### 派生状态 · `derive`
+
+- `bountygrid derive -platform vulbox|xianzhi` 从已落库 Fact 重新计算状态，写入 `derived_states`：
+  - `PROGRAM_STATE` ← `DeriveProgramState`（显式 PAUSED/ENDED 优先；已过的 inclusive end 不会被陈旧的 RUNNING 覆盖）
+  - `SCOPE_VISIBILITY` ← `DeriveScopeVisibility`
+  - `REGISTRATION_STATE` ← `DeriveRegistrationOpen`（有 canonical 报名窗口时才写）
+- 状态 ID 稳定（`state/<program>/<subject>`），`inputs` 记录 Fact ID；`derived_states.state` 为 JSONB 字符串。
+- Fact supersede：PostgreSQL `SupersedeFact` 在同一事务里把 `inputs` 含该 Fact 的 State 的 `valid_until` 置为 `now()`；`inputs` 有 GIN 索引。状态不会悄悄继续使用被推翻的证据。
+- 实测（2026-10-31）：Xianzhi 91 项目 → 273 状态（91/91/91），Vulbox 50 → 100 状态，合计 **373**；`inputs` 为空 0 条、confidence 越界 0 条、已过期 0 条。
+  - `xianzhi/324 = RUNNING / GATED_BY_SIGNUP / registration CLOSED`
+  - `vulbox/444 = RUNNING / PUBLIC`（详情同步的最新 Scope Fact 覆盖列表的 UNKNOWN）
+
+```bash
+go run ./cmd/bountygrid derive -platform xianzhi
+go run ./cmd/bountygrid derive -platform vulbox
+```
+
 ### Butian Reader（37 专属SRC 已实测，账号/GROW 待网络恢复）
 
 - `internal/adapter/butian`：`AuthStatus`、`SyncAccount`（合规考核/实战认证/实名/银行卡，保守 fail-closed）、`SyncPrograms`（37 专属SRC）、`SyncProgram`、`SyncScope`（未报名 GATED）、`SyncPolicy`（保守 `UNKNOWN`）。

@@ -133,9 +133,12 @@ func taskProgram(c taskCard, evID domain.EvidenceID, at time.Time) (domain.Progr
 	}
 	if t := unixMillis(c.RegistrationBegin); t != nil {
 		fs = append(fs, taskFact(evID, pid, "xianzhi.task.registration_start", *t, facts.UnitDateTime, at))
+		// Canonical predicate for the Fact -> State deriver.
+		fs = append(fs, taskFact(evID, pid, facts.PredRegistrationStart, *t, facts.UnitDateTime, at))
 	}
 	if t := unixMillis(c.RegistrationEnd); t != nil {
 		fs = append(fs, taskFact(evID, pid, "xianzhi.task.registration_end", *t, facts.UnitDateTime, at))
+		fs = append(fs, taskFact(evID, pid, facts.PredRegistrationEnd, *t, facts.UnitDateTime, at))
 	}
 
 	name := strings.TrimSpace(c.Name)

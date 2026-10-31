@@ -208,8 +208,9 @@ CREATE TABLE derived_states (
 ```
 
 - `valid_until` 到期 → 重新派生。
-- 任一输入 Fact 被 supersede → 所有下游 State 失效。
+- 任一输入 Fact 被 supersede → 所有下游 State 失效。PostgreSQL 实现：`SupersedeFact` 在同一事务里把 `inputs` 含该 Fact 的 `derived_states.valid_until` 置为 `now()`；`inputs` 有 GIN 索引。重新派生用 `bountygrid derive`。
 - State 不能手写；只能由规则计算。
+- 显式 `program.status=RUNNING` 不能覆盖已过的 inclusive end；只有显式 `PAUSED/ENDED` 优先于日期窗口。
 
 ## 5. PolicyDecision
 
