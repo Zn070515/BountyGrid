@@ -2,7 +2,7 @@
 
 漏洞赏金统一控制层（Go）。当前阶段：**平台配置审计完成 + 完整架构设计定稿**，尚未开始真实资产测试。
 
-- GitHub：https://github.com/Zn070515/BountyGrid
+- GitHub（public）：https://github.com/Zn070515/BountyGrid
 - 本地仓库：`~/Desktop/BountyGrid`（`main` 跟踪 `origin/main`）
 
 ## 目录
