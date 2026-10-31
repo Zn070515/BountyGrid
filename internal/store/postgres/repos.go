@@ -126,6 +126,30 @@ func (r *Repo) GetProgram(ctx context.Context, id domain.ProgramID) (domain.Prog
 	return p, nil
 }
 
+func (r *Repo) ListPrograms(ctx context.Context, platform domain.Platform) ([]domain.Program, error) {
+	rows, err := r.Pool.Query(ctx, `
+		SELECT data FROM programs
+		WHERE ($1 = '' OR platform = $1)
+		ORDER BY id`, string(platform))
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list programs: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Program
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var p domain.Program
+		if err := json.Unmarshal(data, &p); err != nil {
+			return nil, fmt.Errorf("postgres: decode program: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repo) ListProgramsDue(ctx context.Context, now time.Time, limit int) ([]domain.Program, error) {
 	if limit <= 0 {
 		limit = 100
@@ -370,6 +394,13 @@ func (r *Repo) SupersedeFact(ctx context.Context, id, by domain.FactID) error {
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	// Any derived state that consumed this fact is no longer valid. The state
+	// rows keep their inputs for audit; the expiry forces re-derivation.
+	if _, err := tx.Exec(ctx, `
+		UPDATE derived_states SET valid_until = now()
+		WHERE inputs ? $1 AND valid_until > now()`, string(id)); err != nil {
+		return fmt.Errorf("postgres: invalidate derived states: %w", err)
 	}
 	return tx.Commit(ctx)
 }

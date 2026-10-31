@@ -64,6 +64,32 @@ func TestGrowEndsAfterActivityEnd(t *testing.T) {
 	}
 }
 
+func TestExplicitRunningCannotOverridePassedEnd(t *testing.T) {
+	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
+	running := domain.StatusRunning
+	end := now.Add(-time.Hour)
+	st, err := DeriveProgramState(ProgramInput{Status: &running, End: &end}, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != domain.StatusEnded {
+		t.Fatalf("status = %s, want ENDED (passed end wins over stale RUNNING)", st.Status)
+	}
+}
+
+func TestExplicitPausedStillWinsOverEnd(t *testing.T) {
+	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
+	paused := domain.StatusPaused
+	end := now.Add(-time.Hour)
+	st, err := DeriveProgramState(ProgramInput{Status: &paused, End: &end}, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != domain.StatusPaused {
+		t.Fatalf("status = %s, want PAUSED", st.Status)
+	}
+}
+
 func TestDeriveProgramStatePausedAndUpcoming(t *testing.T) {
 	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 11, 30, 0, 0, 0, 0, time.UTC)

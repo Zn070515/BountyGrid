@@ -44,7 +44,7 @@ go vet ./...
 go build ./...
 ```
 
-`cmd/bountygrid` supports `migrate`, `rollback`, `ping`, `sync`, and `version`. Migrations are embedded SQL under `internal/store/postgres/migrations/`; add a new numbered file for schema changes, never edit an applied migration.
+`cmd/bountygrid` supports `migrate`, `rollback`, `ping`, `sync`, `derive`, and `version`. Migrations are embedded SQL under `internal/store/postgres/migrations/`; add a new numbered file for schema changes, never edit an applied migration.
 
 `sync` is the Phase 1 read-only Reader entry point (`-platform vulbox|xianzhi|butian`). It uses the `agent-browser` sidecar (`internal/sidecar`) and the existing `vbprobe`/`xzprobe`/`btprobe` session on this machine; pass `-session` on other environments. `-programs` reads the public list, `-account` reads the logged-in account, and `-program <native-id>` reads one program's Scope/Policy. `-persist` writes Evidence → Facts → Program/Account to PostgreSQL (Evidence first; Facter carry EvidenceRef); raw pages stay in `.evidence/` (gitignored). It never clicks, fills, signs up, accepts NDA, or submits; the only scripted clicks are pagination/rule modals. Keep the session alive (`-close=false` is the default) so the manual login is not discarded.
 
@@ -58,7 +58,7 @@ Evidence raw files and screenshots stay local. The database stores metadata, has
 
 ## Engineering rules
 
-- **No state without evidence.** Every `ObservedFact` needs `evidence_refs`, `observed_at`, `confidence`, and `extractor_version`; every `DerivedState` needs inputs and `valid_until`.
+- **No state without evidence.** Every `ObservedFact` needs `evidence_refs`, `observed_at`, `confidence`, and `extractor_version`; every `DerivedState` needs inputs and `valid_until`. States are recomputed by `bountygrid derive`; a superseded Fact expires every state whose `inputs` contains it. An explicit `RUNNING` fact must not override a passed inclusive end date.
 - **Eligibility is `Decision + Gates[]`.** Never collapse it to a single enum. Account-level gates (`COMPLIANCE_EXAM`, `PRACTICAL_CERTIFICATION`, `BANK_BINDING`) live in `AccountCapability`, not `Program.Gates`. A gate only invalidates the capability it governs: `BANK_BINDING`/`PAYOUT_SETUP` block payout, not submission; `COMPLIANCE_EXAM`/`IDENTITY_VERIFIED` block submission.
 - **Scope must not degrade.** `Visibility` is disclosure; `Access` is the current account's access. If `Access != GRANTED`, `ContentsKnown` is false and include/exclude/conditional lists are empty. A signed-up account may be `GATED_BY_SIGNUP + GRANTED`; never rewrite disclosure to PUBLIC to mean "unlocked".
 - **Policy is action-level.** Evaluate `Actor + Account + Program + Asset + Action + Time`. `VIEW_RULES`, `READ_SCOPE`, `ACTIVE_HTTP`, `REPORT_SUBMIT`, and `PAYOUT` have different decisions. Eligibility is only evaluated for participation actions; viewing rules/program is not gated by eligibility.

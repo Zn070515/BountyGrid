@@ -93,7 +93,7 @@ func TestTaskProgramRunningGated(t *testing.T) {
 
 	wantStart := time.UnixMilli(sampleTask().TaskBegin).UTC()
 	wantRegStart := time.UnixMilli(sampleTask().RegistrationBegin).UTC()
-	var seenStatus, seenStart, seenRegStart bool
+	var seenStatus, seenStart, seenRegStart, seenCanonicalRegStart bool
 	for _, f := range fs {
 		if len(f.EvidenceRefs) == 0 {
 			t.Fatalf("fact without evidence: %+v", f)
@@ -105,10 +105,12 @@ func TestTaskProgramRunningGated(t *testing.T) {
 			seenStart = f.Value == wantStart
 		case "xianzhi.task.registration_start":
 			seenRegStart = f.Value == wantRegStart
+		case facts.PredRegistrationStart:
+			seenCanonicalRegStart = f.Value == wantRegStart
 		}
 	}
-	if !seenStatus || !seenStart || !seenRegStart {
-		t.Fatalf("missing facts: status=%v start=%v regStart=%v", seenStatus, seenStart, seenRegStart)
+	if !seenStatus || !seenStart || !seenRegStart || !seenCanonicalRegStart {
+		t.Fatalf("missing facts: status=%v start=%v regStart=%v canonicalRegStart=%v", seenStatus, seenStart, seenRegStart, seenCanonicalRegStart)
 	}
 }
 
