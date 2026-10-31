@@ -123,6 +123,7 @@ func TestProgramValidation(t *testing.T) {
 }
 
 func TestActionDecisionHumanOnlyNeedsApproval(t *testing.T) {
+	expires := now().Add(5 * time.Minute)
 	d := ActionDecision{
 		ID:            "d1",
 		RequestID:     "r1",
@@ -131,6 +132,7 @@ func TestActionDecisionHumanOnlyNeedsApproval(t *testing.T) {
 		Decision:      DecisionAllow,
 		PolicyVersion: "test-1",
 		DecidedAt:     now(),
+		ExpiresAt:     &expires,
 	}
 	if err := d.Validate(); err == nil {
 		t.Fatal("ALLOW REPORT_SUBMIT without approval should be invalid")
@@ -139,12 +141,105 @@ func TestActionDecisionHumanOnlyNeedsApproval(t *testing.T) {
 		ID:         "h1",
 		ApprovedBy: "human",
 		ApprovedAt: now(),
+		RequestID:  "r1",
 		Action:     ActionReportSubmit,
 		ProgramID:  "p1",
 		ExpiresAt:  now().Add(time.Hour),
+		SingleUse:  true,
 	}
 	if err := d.Validate(); err != nil {
 		t.Fatalf("approved REPORT_SUBMIT should be valid: %v", err)
+	}
+}
+
+func TestActionDecisionAllowRequiresExpiry(t *testing.T) {
+	d := ActionDecision{
+		ID: "d1", RequestID: "r1", ProgramID: "p1",
+		Action: ActionViewRules, Decision: DecisionAllow,
+		PolicyVersion: "test-1", DecidedAt: now(),
+	}
+	if err := d.Validate(); err == nil {
+		t.Fatal("ALLOW without expires_at should be invalid")
+	}
+	expires := now().Add(time.Minute)
+	d.ExpiresAt = &expires
+	if err := d.Validate(); err != nil {
+		t.Fatalf("ALLOW with expires_at should be valid: %v", err)
+	}
+}
+
+func TestActionDecisionHumanOnlyApprovalMustBeSingleUse(t *testing.T) {
+	expires := now().Add(time.Minute)
+	d := ActionDecision{
+		ID: "d1", RequestID: "r1", ProgramID: "p1",
+		Action: ActionReportSubmit, Decision: DecisionAllow,
+		PolicyVersion: "test-1", DecidedAt: now(), ExpiresAt: &expires,
+		HumanApproval: &HumanApproval{
+			ID: "h1", ApprovedBy: "human", ApprovedAt: now(),
+			RequestID: "r1", Action: ActionReportSubmit, ProgramID: "p1",
+			ExpiresAt: now().Add(time.Hour),
+		},
+	}
+	if err := d.Validate(); err == nil {
+		t.Fatal("human-only ALLOW with reusable approval should be invalid")
+	}
+	d.HumanApproval.SingleUse = true
+	if err := d.Validate(); err != nil {
+		t.Fatalf("single-use approval should be valid: %v", err)
+	}
+}
+
+func TestAccountProgramScopedGateDoesNotInvalidateCanSubmit(t *testing.T) {
+	pid := ProgramID("p1")
+	identity, compliance := true, true
+	a := Account{
+		ID: "acc1", Platform: PlatformButian, ObservedAt: now(),
+		IdentityVerified: &identity, ComplianceExamCompleted: &compliance,
+		Capability: AccountCapability{CanSubmit: true},
+		Gates: []EligibilityGate{{
+			Kind: GatePracticalCertification, ProgramID: &pid,
+			Required: true, Satisfied: GateUnsatisfied, Blocking: true,
+		}},
+	}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("program-scoped gate must not invalidate account-wide CanSubmit: %v", err)
+	}
+}
+
+func TestFactRequiresID(t *testing.T) {
+	acc := AccountID("acc1")
+	f := ObservedFact{
+		Subject: SubjectAccount, Platform: PlatformButian, AccountID: &acc,
+		Predicate: "level", ObservedAt: now(), EvidenceRefs: []EvidenceID{"e1"},
+		Confidence: 1, ExtractorVersion: "test-1",
+	}
+	if err := f.Validate(); err == nil {
+		t.Fatal("fact without id should be invalid")
+	}
+}
+
+func TestDerivedStateRequiresID(t *testing.T) {
+	s := DerivedState{
+		Subject: StateProgramState, Platform: PlatformButian,
+		State: "RUNNING", Inputs: []FactID{"f1"},
+		ObservedAt: now(), DerivedAt: now(), ValidUntil: now().Add(time.Hour),
+		Confidence: 1, RuleVersion: "test-1",
+	}
+	if err := s.Validate(); err == nil {
+		t.Fatal("state without id should be invalid")
+	}
+}
+
+func TestProgramRejectsInvalidExecutionConstraints(t *testing.T) {
+	p := validProgram()
+	p.Constraints.PerInterfaceDailyLimits = []DailyLimit{{Interface: "item_api", Amount: 0}}
+	if err := p.Validate(); err == nil {
+		t.Fatal("zero daily limit should be invalid")
+	}
+	p.Constraints.PerInterfaceDailyLimits = nil
+	p.Constraints.BudgetCap = &Money{Amount: 0, Currency: "CNY"}
+	if err := p.Validate(); err == nil {
+		t.Fatal("zero budget cap should be invalid")
 	}
 }
 

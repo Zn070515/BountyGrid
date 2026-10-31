@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -48,6 +49,7 @@ func TestRepoRoundTrip(t *testing.T) {
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM research_tasks WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM opportunities WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM action_decisions WHERE program_id=$1`, progID)
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM derived_states WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM observed_facts WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM evidence WHERE id=$1`, evID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM programs WHERE id=$1`, progID)
@@ -73,7 +75,19 @@ func TestRepoRoundTrip(t *testing.T) {
 		Status:      domain.ProgramState{Status: domain.StatusRunning, ObservedAt: now, ValidUntil: now.Add(time.Hour), Confidence: 1},
 		Eligibility: domain.EligibilityState{Decision: domain.Eligible, EvaluatedAt: now, PolicyVersion: "it"},
 		Scope:       domain.Scope{Visibility: domain.ScopePublic, Access: domain.ScopeAccessGranted, ContentsKnown: true, ObservedAt: now},
-		ObservedAt:  now,
+		Reward:      domain.RewardPolicy{TaxBasis: domain.TaxUnknown},
+		Automation: domain.AutomationPolicy{
+			AIAnalysis: domain.CapUnknown, AutonomousAgent: domain.CapUnknown,
+			ActiveHTTP: domain.CapUnknown, BrowserAutomation: domain.CapUnknown,
+			AutomatedScanning: domain.CapUnknown, DirectoryEnumeration: domain.CapUnknown,
+			SubdomainDiscovery: domain.CapUnknown, HighConcurrency: domain.CapUnknown,
+			BruteForce: domain.CapUnknown, CredentialStuffing: domain.CapUnknown,
+			FileUpload: domain.CapUnknown, StateMutation: domain.CapUnknown,
+			RCEVerification: domain.CapUnknown, SensitiveDataRead: domain.CapUnknown,
+			InternalNetwork: domain.CapUnknown, LateralMovement: domain.CapUnknown,
+			DoS: domain.CapUnknown,
+		},
+		ObservedAt: now,
 	}
 	if err := r.UpsertProgram(ctx, prog); err != nil {
 		t.Fatal(err)
@@ -108,12 +122,66 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err != nil || len(gotFacts) != 1 {
 		t.Fatalf("facts: %+v %v", gotFacts, err)
 	}
+	// Re-running the same extraction is idempotent; reusing an ID for
+	// different content is rejected.
+	if err := r.PutFacts(ctx, []domain.ObservedFact{f}); err != nil {
+		t.Fatalf("idempotent re-put: %v", err)
+	}
+	conflict := f
+	conflict.Value = "PAUSED"
+	if err := r.PutFacts(ctx, []domain.ObservedFact{conflict}); err == nil {
+		t.Fatal("conflicting fact content should be rejected")
+	}
+	if err := r.SupersedeFact(ctx, factID, factID); err == nil {
+		t.Fatal("self-supersede should be rejected")
+	}
 
+	otherProgID := domain.ProgramID("it-other-prog-" + suffix)
+	otherFact := f
+	otherFact.ID = factID + "-other"
+	otherFact.ProgramID = &otherProgID
+	if err := r.PutFacts(ctx, []domain.ObservedFact{otherFact}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM observed_facts WHERE program_id=$1`, otherProgID)
+	})
+	if err := r.SupersedeFact(ctx, factID, otherFact.ID); err == nil {
+		t.Fatal("cross-entity supersede should be rejected")
+	}
+
+	stateID := domain.StateID("it-state-" + suffix)
+	st := domain.DerivedState{
+		ID: stateID, Subject: domain.StateProgramState, Platform: domain.PlatformButian,
+		ProgramID: &progID, State: "RUNNING", Inputs: []domain.FactID{factID},
+		ObservedAt: now, DerivedAt: now, ValidUntil: now.Add(time.Hour),
+		Confidence: 0.9, RuleVersion: "it-v1",
+	}
+	if err := r.PutState(ctx, st); err != nil {
+		t.Fatal(err)
+	}
+	st.RuleVersion = "it-v2"
+	st.Confidence = 1
+	if err := r.PutState(ctx, st); err != nil {
+		t.Fatal(err)
+	}
+	var ruleVersion string
+	var confidence float64
+	if err := r.Pool.QueryRow(ctx,
+		`SELECT rule_version, confidence FROM derived_states WHERE id=$1`, stateID,
+	).Scan(&ruleVersion, &confidence); err != nil {
+		t.Fatal(err)
+	}
+	if ruleVersion != "it-v2" || confidence != 1 {
+		t.Fatalf("state upsert did not refresh metadata: %s %v", ruleVersion, confidence)
+	}
+
+	expires := now.Add(5 * time.Minute)
 	d := domain.ActionDecision{
 		ID: domain.DecisionID("it-dec-" + suffix), RequestID: "it-req-" + suffix, ProgramID: progID,
 		Action: domain.ActionViewRules, Decision: domain.DecisionAllow,
 		Reasons: []string{}, GatesEvaluated: []domain.EligibilityGate{},
-		PolicyVersion: "it", DecidedAt: now,
+		PolicyVersion: "it", DecidedAt: now, ExpiresAt: &expires,
 	}
 	if err := r.PutDecision(ctx, d); err != nil {
 		t.Fatal(err)
@@ -164,6 +232,12 @@ func TestRepoRoundTrip(t *testing.T) {
 	events, err := auditStore.List(ctx, audit.Filter{EntityID: string(progID)})
 	if err != nil || len(events) == 0 {
 		t.Fatalf("audit list: %+v %v", events, err)
+	}
+	if _, err := auditStore.Append(ctx, audit.Event{
+		Type: "it.bad", EntityType: "program", EntityID: string(progID), RecordedAt: now,
+		Payload: json.RawMessage(`{"phone":"13800138000"}`),
+	}); err == nil {
+		t.Fatal("audit store must reject payloads containing sensitive values")
 	}
 
 	ledger := NewPostgresApprovalLedger(r.Pool)

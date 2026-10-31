@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"sync"
 	"time"
@@ -50,12 +51,17 @@ func (s *MemoryStore) Put(ctx context.Context, fs []domain.ObservedFact) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id := range seen {
-		if _, ok := s.facts[id]; ok {
-			return errors.New("facts: fact is immutable: id already exists")
+	// Re-running the same extractor over the same Evidence is idempotent. A
+	// reused ID with different content is a conflict, not an overwrite.
+	for _, f := range fs {
+		if existing, ok := s.facts[f.ID]; ok && !existing.Equal(f) {
+			return errors.New("facts: fact is immutable: id exists with different content")
 		}
 	}
 	for _, f := range fs {
+		if _, ok := s.facts[f.ID]; ok {
+			continue
+		}
 		s.facts[f.ID] = cloneFact(f)
 		s.order = append(s.order, f.ID)
 	}
@@ -93,8 +99,11 @@ func (s *MemoryStore) Supersede(ctx context.Context, id domain.FactID, by domain
 	if !ok {
 		return ErrFactNotFound
 	}
-	if old.Subject != next.Subject || old.Predicate != next.Predicate {
-		return errors.New("facts: supersede must keep subject and predicate")
+	if old.Subject != next.Subject || old.Predicate != next.Predicate ||
+		!reflect.DeepEqual(old.AccountID, next.AccountID) ||
+		!reflect.DeepEqual(old.ProgramID, next.ProgramID) ||
+		!reflect.DeepEqual(old.AssetID, next.AssetID) {
+		return errors.New("facts: supersede must keep subject, predicate and subject entity")
 	}
 	// Reject cycles: walking from `by` must never reach `id`.
 	for cur := by; cur != ""; {

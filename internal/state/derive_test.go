@@ -131,6 +131,54 @@ func TestProgramStateKeepsProvenance(t *testing.T) {
 	}
 }
 
+func TestProgramStatePropagatesFactConfidence(t *testing.T) {
+	in, err := ProgramInputFromFacts(growFacts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Confidence != 0.9 {
+		t.Fatalf("input confidence = %v, want 0.9", in.Confidence)
+	}
+	st, err := DeriveProgramState(in, time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Confidence != 0.9 {
+		t.Fatalf("state confidence = %v, want 0.9", st.Confidence)
+	}
+}
+
+func TestProgramStateUsesLowestInputConfidence(t *testing.T) {
+	fs := growFacts(t)
+	for i := range fs {
+		if fs[i].Predicate == facts.PredRegistrationEnd {
+			fs[i].Confidence = 0.5
+		}
+	}
+	in, err := ProgramInputFromFacts(fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Confidence != 0.5 {
+		t.Fatalf("input confidence = %v, want 0.5", in.Confidence)
+	}
+	st, err := DeriveProgramState(in, time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Confidence != 0.5 {
+		t.Fatalf("state confidence = %v, want 0.5", st.Confidence)
+	}
+}
+
+func TestProgramInputRejectsInvalidFactConfidence(t *testing.T) {
+	fs := growFacts(t)
+	fs[0].Confidence = 7.5
+	if _, err := ProgramInputFromFacts(fs); err == nil {
+		t.Fatal("out-of-range fact confidence should be rejected")
+	}
+}
+
 func TestGrowInclusiveEnd(t *testing.T) {
 	in, err := ProgramInputFromFacts(growFacts(t))
 	if err != nil {

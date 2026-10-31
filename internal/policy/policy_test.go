@@ -2,11 +2,16 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
+
+type failingLedger struct{}
+
+func (failingLedger) Consume(context.Context, string) error { return errors.New("ledger unavailable") }
 
 var testNow = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 
@@ -338,9 +343,9 @@ func TestAssetRequiredAndOutOfScope(t *testing.T) {
 		t.Fatalf("missing asset decision = %s %v", d.Decision, d.Reasons)
 	}
 
-	aid := domain.AssetID("a1")
-	r.AssetID = &aid
-	out := &domain.Asset{ID: "a2", ProgramID: "p1", Value: "other.com", InScope: true}
+	outID := domain.AssetID("a3")
+	r.AssetID = &outID
+	out := &domain.Asset{ID: "a3", ProgramID: "p1", Value: "other.com", InScope: true}
 	d, err = e.Decide(context.Background(), DecisionContext{Request: r, Account: testAccount(true), Program: p, Asset: out, Now: testNow})
 	if err != nil {
 		t.Fatal(err)
@@ -349,6 +354,8 @@ func TestAssetRequiredAndOutOfScope(t *testing.T) {
 		t.Fatalf("out-of-scope decision = %s %v", d.Decision, d.Reasons)
 	}
 
+	aid := domain.AssetID("a1")
+	r.AssetID = &aid
 	in := &domain.Asset{ID: "a1", ProgramID: "p1", Value: "example.com", InScope: true}
 	d, err = e.Decide(context.Background(), DecisionContext{Request: r, Account: testAccount(true), Program: p, Asset: in, Now: testNow})
 	if err != nil {
@@ -391,6 +398,242 @@ func TestEvaluateEligibilityButianCompliance(t *testing.T) {
 	}
 	if st.Decision != domain.HumanActionNeeded {
 		t.Fatalf("decision = %s, want HUMAN_ACTION_REQUIRED", st.Decision)
+	}
+}
+
+func executableProgram() domain.Program {
+	p := testProgram(domain.StatusRunning, domain.ScopePublic)
+	p.Scope.Include = []domain.Asset{
+		{ID: "a1", Value: "a1.example.com", InScope: true},
+		{ID: "a2", Value: "a2.example.com", InScope: true},
+	}
+	p.Automation.ActiveHTTP = domain.CapAllowed
+	return p
+}
+
+func assetRequest(id domain.AssetID) domain.ActionRequest {
+	r := req(domain.ActionActiveHTTP)
+	r.AssetID = &id
+	return r
+}
+
+func scopedAsset(id domain.AssetID, value string) *domain.Asset {
+	return &domain.Asset{ID: id, ProgramID: "p1", Value: value, InScope: true}
+}
+
+func TestPolicyRejectsContextMismatch(t *testing.T) {
+	e := NewEngine()
+	p := testProgram(domain.StatusRunning, domain.ScopePublic)
+	base := DecisionContext{Request: req(domain.ActionViewRules), Account: testAccount(true), Program: p, Now: testNow}
+
+	acc := testAccount(true)
+	acc.ID = "other-account"
+	dc := base
+	dc.Account = acc
+	if d, err := e.Decide(context.Background(), dc); err != nil || d.Decision != domain.DecisionDeny || d.Reasons[0] != "CONTEXT_MISMATCH" {
+		t.Fatalf("account mismatch = %s %v (err=%v), want DENY CONTEXT_MISMATCH", d.Decision, d.Reasons, err)
+	}
+
+	prog := p
+	prog.ID = "other-program"
+	dc = base
+	dc.Program = prog
+	if d, err := e.Decide(context.Background(), dc); err != nil || d.Decision != domain.DecisionDeny || d.Reasons[0] != "CONTEXT_MISMATCH" {
+		t.Fatalf("program mismatch = %s %v (err=%v), want DENY CONTEXT_MISMATCH", d.Decision, d.Reasons, err)
+	}
+
+	prog = p
+	prog.Platform = domain.PlatformVulbox
+	dc = base
+	dc.Program = prog
+	if d, err := e.Decide(context.Background(), dc); err != nil || d.Decision != domain.DecisionDeny || d.Reasons[0] != "PLATFORM_MISMATCH" {
+		t.Fatalf("platform mismatch = %s %v (err=%v), want DENY PLATFORM_MISMATCH", d.Decision, d.Reasons, err)
+	}
+}
+
+func TestPolicyBindsAssetToRequest(t *testing.T) {
+	e := NewEngine()
+	p := executableProgram()
+
+	// The request names a2 but the context supplies the in-scope a1. Without an
+	// identity binding the scope check would authorize the wrong asset.
+	d, err := e.Decide(context.Background(), DecisionContext{
+		Request: assetRequest("a2"), Account: testAccount(true), Program: p,
+		Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "ASSET_MISMATCH" {
+		t.Fatalf("asset mismatch = %s %v, want DENY ASSET_MISMATCH", d.Decision, d.Reasons)
+	}
+
+	// An asset that is not bound to the requested program must not authorize.
+	d, err = e.Decide(context.Background(), DecisionContext{
+		Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+		Asset: &domain.Asset{ID: "a1", Value: "a1.example.com", InScope: true}, Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "ASSET_PROGRAM_MISMATCH" {
+		t.Fatalf("unbound asset = %s %v, want DENY ASSET_PROGRAM_MISMATCH", d.Decision, d.Reasons)
+	}
+}
+
+func TestConditionalAssetRequiresHuman(t *testing.T) {
+	e := NewEngine()
+	p := testProgram(domain.StatusRunning, domain.ScopePublic)
+	p.Scope.Conditional = []domain.Asset{{ID: "a1", Value: "example.com", InScope: true}}
+	p.Automation.ActiveHTTP = domain.CapAllowed
+	d, err := e.Decide(context.Background(), DecisionContext{
+		Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+		Asset: scopedAsset("a1", "example.com"), Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireHuman || d.Reasons[0] != "ASSET_CONDITIONAL" {
+		t.Fatalf("conditional = %s %v, want REQUIRE_HUMAN ASSET_CONDITIONAL", d.Decision, d.Reasons)
+	}
+}
+
+func TestLowConfidenceStateBlocksExecution(t *testing.T) {
+	e := NewEngine()
+	p := executableProgram()
+	p.Status.Confidence = 0.5
+	d, err := e.Decide(context.Background(), DecisionContext{
+		Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+		Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireMoreEvidence || d.Reasons[0] != "LOW_CONFIDENCE_STATE" {
+		t.Fatalf("low confidence = %s %v, want REQUIRE_MORE_EVIDENCE LOW_CONFIDENCE_STATE", d.Decision, d.Reasons)
+	}
+
+	// Viewing is not execution: low-confidence state must not hide the rules.
+	d, err = e.Decide(context.Background(), DecisionContext{
+		Request: req(domain.ActionViewRules), Account: testAccount(true), Program: p, Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow {
+		t.Fatalf("view rules with low confidence = %s, want ALLOW", d.Decision)
+	}
+}
+
+func TestInvalidConstraintConfigFailsClosed(t *testing.T) {
+	e := NewEngine()
+	p := executableProgram()
+	p.Constraints.PerInterfaceDailyLimits = []domain.DailyLimit{{Interface: "item_api", Amount: 0}}
+	d, err := e.Decide(context.Background(), DecisionContext{
+		Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+		Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "INVALID_DAILY_LIMIT" {
+		t.Fatalf("invalid daily limit = %s %v, want DENY INVALID_DAILY_LIMIT", d.Decision, d.Reasons)
+	}
+}
+
+func TestBudgetCurrencyMismatchFailsClosed(t *testing.T) {
+	e := NewEngine()
+	p := executableProgram()
+	p.Constraints.BudgetCap = &domain.Money{Amount: 100, Currency: "CNY"}
+	d, err := e.Decide(context.Background(), DecisionContext{
+		Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+		Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+		BudgetSpent: &domain.Money{Amount: 0, Currency: "USD"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "BUDGET_CURRENCY_MISMATCH" {
+		t.Fatalf("budget mismatch = %s %v, want DENY BUDGET_CURRENCY_MISMATCH", d.Decision, d.Reasons)
+	}
+}
+
+func TestConditionalAutomationCannotLoosenHardDeny(t *testing.T) {
+	e := NewEngine()
+	p := executableProgram()
+	p.Automation.DoS = domain.CapConditional
+	r := req(domain.ActionDoS)
+	aid := domain.AssetID("a1")
+	r.AssetID = &aid
+	d, err := e.Decide(context.Background(), DecisionContext{
+		Request: r, Account: testAccount(true), Program: p,
+		Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+		HumanApproval: approval(domain.ActionDoS, ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "ACTION_DENIED" {
+		t.Fatalf("conditional DoS = %s %v, want DENY ACTION_DENIED", d.Decision, d.Reasons)
+	}
+}
+
+func TestDecisionExpiryCappedByStateAndApproval(t *testing.T) {
+	e := NewEngine()
+	p := executableProgram()
+	p.Status.ValidUntil = testNow.Add(30 * time.Second)
+	d, err := e.Decide(context.Background(), DecisionContext{
+		Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+		Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow || d.ExpiresAt == nil || !d.ExpiresAt.Equal(p.Status.ValidUntil) {
+		t.Fatalf("expiry = %v, want state valid_until %v", d.ExpiresAt, p.Status.ValidUntil)
+	}
+
+	p2 := testProgram(domain.StatusRunning, domain.ScopePublic)
+	appr := approval(domain.ActionReportSubmit, "report1")
+	appr.ExpiresAt = testNow.Add(2 * time.Minute)
+	d, err = e.Decide(context.Background(), DecisionContext{
+		Request: req(domain.ActionReportSubmit), Account: testAccount(true), Program: p2,
+		Now: testNow, ResourceID: "report1", HumanApproval: appr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow || d.ExpiresAt == nil || !d.ExpiresAt.Equal(appr.ExpiresAt) {
+		t.Fatalf("expiry = %v, want approval expiry %v", d.ExpiresAt, appr.ExpiresAt)
+	}
+}
+
+func TestViewRulesWithStaleStateGetsLiveExpiry(t *testing.T) {
+	e := NewEngine()
+	p := testProgram(domain.StatusPaused, domain.ScopePublic)
+	p.Status.ValidUntil = testNow.Add(-time.Hour)
+	d, err := e.Decide(context.Background(), DecisionContext{
+		Request: req(domain.ActionViewRules), Account: testAccount(true), Program: p, Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow || d.ExpiresAt == nil || !d.ExpiresAt.After(testNow) {
+		t.Fatalf("view rules with stale state = %s %v, want ALLOW with future expiry", d.Decision, d.ExpiresAt)
+	}
+}
+
+func TestApprovalLedgerFailureSurfaces(t *testing.T) {
+	e := NewEngine()
+	e.SetApprovalLedger(failingLedger{})
+	_, err := e.Decide(context.Background(), DecisionContext{
+		Request: req(domain.ActionReportSubmit), Account: testAccount(true),
+		Program: testProgram(domain.StatusRunning, domain.ScopePublic),
+		Now:     testNow, ResourceID: "report1",
+		HumanApproval: approval(domain.ActionReportSubmit, "report1"),
+	})
+	if err == nil {
+		t.Fatal("ledger infrastructure failure must surface as an error, not REQUIRE_HUMAN")
 	}
 }
 

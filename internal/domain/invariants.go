@@ -31,6 +31,9 @@ func (e Evidence) Validate() error {
 }
 
 func (f ObservedFact) Validate() error {
+	if f.ID == "" {
+		return fmt.Errorf("fact: id is empty")
+	}
 	if !f.Platform.Valid() {
 		return fmt.Errorf("fact %s: invalid platform %q", f.ID, f.Platform)
 	}
@@ -73,6 +76,9 @@ func (f ObservedFact) Validate() error {
 }
 
 func (s DerivedState) Validate() error {
+	if s.ID == "" {
+		return fmt.Errorf("state: id is empty")
+	}
 	if !s.Platform.Valid() {
 		return fmt.Errorf("state %s: invalid platform %q", s.ID, s.Platform)
 	}
@@ -190,6 +196,11 @@ func (a Account) Validate() error {
 	}
 	if a.Capability.CanSubmit {
 		for _, g := range a.Gates {
+			// Program-scoped gates constrain one program's submission, not the
+			// account-wide capability (e.g. Butian practical certification).
+			if g.ProgramID != nil {
+				continue
+			}
 			if g.Required && g.Blocking && g.Satisfied == GateUnsatisfied {
 				return fmt.Errorf("account %s: CanSubmit with blocking gate %s", a.ID, g.Kind)
 			}
@@ -213,6 +224,9 @@ func (s Scope) Validate() error {
 	}
 	if s.Visibility == ScopePublic && s.Access != ScopeAccessGranted {
 		return fmt.Errorf("scope: public disclosure requires GRANTED access")
+	}
+	if s.Visibility == ScopeUnknown && s.ContentsKnown {
+		return fmt.Errorf("scope: unknown disclosure cannot have known contents")
 	}
 	if s.ObservedAt.IsZero() {
 		return fmt.Errorf("scope: observed_at is zero")
@@ -255,6 +269,12 @@ func (p Program) Validate() error {
 	if p.Status.ValidUntil.IsZero() || !p.Status.ValidUntil.After(p.Status.ObservedAt) {
 		return fmt.Errorf("program %s: status valid_until must be after observed_at", p.ID)
 	}
+	if !p.Status.Confidence.Valid() {
+		return fmt.Errorf("program %s: status confidence %v out of range", p.ID, p.Status.Confidence)
+	}
+	if err := p.Constraints.Validate(); err != nil {
+		return fmt.Errorf("program %s: %w", p.ID, err)
+	}
 	if err := p.Eligibility.Validate(); err != nil {
 		return fmt.Errorf("program %s: %w", p.ID, err)
 	}
@@ -285,6 +305,39 @@ func (p Program) Validate() error {
 	return nil
 }
 
+// Validate rejects malformed execution constraints. A zero/negative limit is
+// ambiguous and would otherwise fail open or block everything unexpectedly.
+func (c Constraints) Validate() error {
+	if c.MaxRPS != nil && *c.MaxRPS <= 0 {
+		return fmt.Errorf("constraints: max_rps must be positive")
+	}
+	if c.MaxConcurrency != nil && *c.MaxConcurrency <= 0 {
+		return fmt.Errorf("constraints: max_concurrency must be positive")
+	}
+	for _, l := range c.PerInterfaceDailyLimits {
+		if l.Interface == "" {
+			return fmt.Errorf("constraints: daily limit interface is empty")
+		}
+		if l.Amount <= 0 {
+			return fmt.Errorf("constraints: daily limit %s must be positive", l.Interface)
+		}
+	}
+	if c.BudgetCap != nil {
+		if c.BudgetCap.Amount <= 0 {
+			return fmt.Errorf("constraints: budget cap must be positive")
+		}
+		if c.BudgetCap.Currency == "" {
+			return fmt.Errorf("constraints: budget cap currency is empty")
+		}
+	}
+	for _, w := range c.AllowedTimeWindows {
+		if w.Start.IsZero() || w.End.IsZero() || !w.End.After(w.Start) {
+			return fmt.Errorf("constraints: invalid allowed time window")
+		}
+	}
+	return nil
+}
+
 func (r ActionRequest) Validate() error {
 	if r.ID == "" {
 		return fmt.Errorf("action request: id is empty")
@@ -297,6 +350,9 @@ func (r ActionRequest) Validate() error {
 	}
 	if r.AccountID == "" || r.ProgramID == "" {
 		return fmt.Errorf("action request %s: account_id/program_id required", r.ID)
+	}
+	if r.AssetID != nil && *r.AssetID == "" {
+		return fmt.Errorf("action request %s: asset_id is set but empty", r.ID)
 	}
 	if r.RequestedAt.IsZero() {
 		return fmt.Errorf("action request %s: requested_at is zero", r.ID)
@@ -320,8 +376,20 @@ func (d ActionDecision) Validate() error {
 	if d.PolicyVersion == "" {
 		return fmt.Errorf("decision %s: policy_version is empty", d.ID)
 	}
-	if d.Decision == DecisionAllow && d.Action.HumanOnly() && d.HumanApproval == nil {
-		return fmt.Errorf("decision %s: ALLOW for human-only action without approval", d.ID)
+	if d.Decision == DecisionAllow {
+		// ALLOW is executable and must carry an expiry so the Action Gateway can
+		// re-check it before execution.
+		if d.ExpiresAt == nil || d.ExpiresAt.IsZero() || !d.ExpiresAt.After(d.DecidedAt) {
+			return fmt.Errorf("decision %s: ALLOW requires expires_at after decided_at", d.ID)
+		}
+	}
+	if d.Decision == DecisionAllow && d.Action.HumanOnly() {
+		if d.HumanApproval == nil {
+			return fmt.Errorf("decision %s: ALLOW for human-only action without approval", d.ID)
+		}
+		if !d.HumanApproval.SingleUse {
+			return fmt.Errorf("decision %s: human-only approval must be single-use", d.ID)
+		}
 	}
 	if d.HumanApproval != nil {
 		if d.HumanApproval.ApprovedBy == "" || d.HumanApproval.ApprovedAt.IsZero() {
@@ -330,11 +398,19 @@ func (d ActionDecision) Validate() error {
 		if d.HumanApproval.Action != d.Action {
 			return fmt.Errorf("decision %s: approval action mismatch", d.ID)
 		}
-		if d.HumanApproval.ProgramID != "" && d.ProgramID != "" && d.HumanApproval.ProgramID != d.ProgramID {
-			return fmt.Errorf("decision %s: approval program mismatch", d.ID)
-		}
-		if d.HumanApproval.RequestID != "" && d.RequestID != "" && d.HumanApproval.RequestID != d.RequestID {
-			return fmt.Errorf("decision %s: approval request mismatch", d.ID)
+		if d.Decision == DecisionAllow {
+			if d.HumanApproval.ProgramID != d.ProgramID {
+				return fmt.Errorf("decision %s: approval program mismatch", d.ID)
+			}
+			if d.HumanApproval.RequestID != d.RequestID {
+				return fmt.Errorf("decision %s: approval request mismatch", d.ID)
+			}
+			if d.HumanApproval.ApprovedAt.After(d.DecidedAt) {
+				return fmt.Errorf("decision %s: approval is from the future", d.ID)
+			}
+			if d.HumanApproval.ExpiresAt.IsZero() || !d.HumanApproval.ExpiresAt.After(d.DecidedAt) {
+				return fmt.Errorf("decision %s: approval expired before decision", d.ID)
+			}
 		}
 	}
 	return nil

@@ -115,9 +115,9 @@ bash probes/butian/grow-dates.sh
 |---|---|---|
 | Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
 | 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
-| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 未开始 |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 下一步（Vulbox Reader 优先） |
 | Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
-| Phase 4 | Opportunity / Scheduler | 下一步 |
+| Phase 4 | Opportunity / Scheduler | Phase 1 Reader 接入之后 |
 | Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
 
 ### Phase 0 + core kernel hardening
@@ -137,6 +137,19 @@ bash probes/butian/grow-dates.sh
 - PostgreSQL 增加 repositories、`0002_constraints.sql` 与 down migration / `rollback` CLI
 - GitHub Actions CI：migrate + unit/integration test + vet + build
 
+### Phase 0/1 second review hardening
+
+- Policy 校验决策上下文与请求一致：`AccountID/ProgramID/Platform` 不一致直接 `DENY`；`Asset.ID` 必须等于请求 `AssetID`，且资产必须属于该 Program
+- `AutomationPolicy=CONDITIONAL` 只增加人工门槛，不能把硬拒绝（DoS/内网/横向）降为可审批动作
+- `ALLOW` 的 `ExpiresAt` 收敛到 `Program.Status.ValidUntil` 与 `HumanApproval.ExpiresAt` 的较早者；审批账本故障向上返回错误，而不是伪装成“已使用”
+- `Scope.CheckAsset` 改为 fail-closed：`ContentsKnown=true` 但 `Include` 为空时不再放行任意资产；`*.example.com` 不再匹配 apex `example.com`
+- 执行类决策要求 `Program.Status.Confidence >= 0.8`；State 的置信度来自输入 Fact 的最小值，不再硬编码 0.9
+- 约束配置（daily limit / budget cap）非法时 fail-closed；预算币种不一致直接 `DENY`
+- Fact 重跑幂等：同 ID 同内容为 no-op，同 ID 不同内容报错；supersede 必须保持 subject/predicate/实体一致，PostgreSQL 增加自环与环检测
+- Repository 写入前执行 Domain `Validate`；PostgreSQL AuditStore 与内存实现一致地拒绝含敏感值的 payload；DerivedState 冲突更新刷新全部派生元数据
+- `DerivationTracker` 重新记录同一 State 时迁移依赖，避免旧 Fact 误失效当前 State
+- Domain 不变量收紧：Fact/State 必须有 ID；`ALLOW` 必须带 `ExpiresAt`；human-only 审批必须 single-use；Program-scoped gate 不再使账号级 `CanSubmit` 失效
+
 ## 文档入口 · Docs
 
 | 文档 | 它约束什么 |
@@ -154,6 +167,7 @@ bash probes/butian/grow-dates.sh
 | [`architecture/research-lifecycle.md`](architecture/research-lifecycle.md) | Finding/Verification/Report/Submission/Ledger |
 | [`architecture/implementation-order.md`](architecture/implementation-order.md) | 依赖顺序实现计划（非 MVP 切分） |
 | [`docs/advices/2026-10-31-phase-0-1-hardening.md`](docs/advices/2026-10-31-phase-0-1-hardening.md) | 对复核意见的逐项修复记录 |
+| [`docs/advices/2026-10-31-phase-0-1-second-review.md`](docs/advices/2026-10-31-phase-0-1-second-review.md) | 第二次复核结论、已修问题与遗留项 |
 | [`CLAUDE.md`](CLAUDE.md) | 编码代理的运行约定与仓库红线 |
 
 ## 工程原则 · Engineering rules

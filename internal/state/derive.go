@@ -20,16 +20,30 @@ type ProgramInput struct {
 	ScopeVisibility   domain.ScopeVisibility
 	FactIDs           []domain.FactID
 	Evidence          []domain.EvidenceID
+	// Confidence is the minimum confidence of the facts used by the derivation.
+	// It is zero when no facts were present, which keeps the result unexecutable.
+	Confidence domain.Confidence
 }
 
 func ProgramInputFromFacts(fs facts.FactSet) (ProgramInput, error) {
 	var in ProgramInput
 	seenFact := make(map[domain.FactID]struct{})
 	seenEvidence := make(map[domain.EvidenceID]struct{})
+	minConfidence := domain.Confidence(1)
+	haveConfidence := false
+	badConfidence := ""
 	record := func(pred string) {
 		f, ok := fs.Fact(pred)
 		if !ok {
 			return
+		}
+		if !f.Confidence.Valid() {
+			badConfidence = string(f.ID)
+			return
+		}
+		if !haveConfidence || f.Confidence < minConfidence {
+			minConfidence = f.Confidence
+			haveConfidence = true
 		}
 		if _, ok := seenFact[f.ID]; !ok {
 			seenFact[f.ID] = struct{}{}
@@ -82,6 +96,12 @@ func ProgramInputFromFacts(fs facts.FactSet) (ProgramInput, error) {
 		}
 		in.ScopeVisibility = v
 	}
+	if badConfidence != "" {
+		return in, fmt.Errorf("state: fact %s has confidence out of range", badConfidence)
+	}
+	if haveConfidence {
+		in.Confidence = minConfidence
+	}
 	return in, nil
 }
 
@@ -89,6 +109,9 @@ func ProgramInputFromFacts(fs facts.FactSet) (ProgramInput, error) {
 // not mutate the program; the caller stores the result with evidence.
 func DeriveProgramState(in ProgramInput, now time.Time, ttl time.Duration) (domain.ProgramState, error) {
 	now = now.UTC()
+	if !in.Confidence.Valid() {
+		return domain.ProgramState{}, fmt.Errorf("state: confidence %v out of range", in.Confidence)
+	}
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}
@@ -121,7 +144,7 @@ func DeriveProgramState(in ProgramInput, now time.Time, ttl time.Duration) (doma
 		Reason:     reason,
 		ObservedAt: now,
 		ValidUntil: now.Add(ttl),
-		Confidence: 0.9,
+		Confidence: in.Confidence,
 		Inputs:     in.FactIDs,
 		Evidence:   in.Evidence,
 	}, nil

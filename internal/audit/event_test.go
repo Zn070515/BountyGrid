@@ -55,3 +55,15 @@ func TestEventRejectsInvalidPayload(t *testing.T) {
 		t.Fatal("invalid json payload should be rejected")
 	}
 }
+
+func TestEventRejectsSensitivePayload(t *testing.T) {
+	s := NewMemoryStore()
+	_, err := s.Append(context.Background(), Event{
+		Type:       "account.observed",
+		Payload:    json.RawMessage(`{"phone":"13800138000"}`),
+		RecordedAt: time.Now().UTC(),
+	})
+	if err == nil {
+		t.Fatal("payload with a phone number should be rejected")
+	}
+}

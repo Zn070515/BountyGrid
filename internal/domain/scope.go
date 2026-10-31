@@ -22,9 +22,9 @@ func (s Scope) CheckAsset(a Asset) ScopeMatch {
 			return ScopeMatchConditional
 		}
 	}
-	if len(s.Include) == 0 {
-		return ScopeMatchIncluded
-	}
+	// A known scope with no included assets includes nothing. Returning
+	// INCLUDED here would turn a missing/empty include list into "everything is
+	// in scope", which is the opposite of the fail-closed contract.
 	for _, inc := range s.Include {
 		if assetMatches(inc, a) {
 			return ScopeMatchIncluded
@@ -47,8 +47,9 @@ func assetMatches(pattern, a Asset) bool {
 	}
 	if strings.HasPrefix(p, "*.") {
 		suffix := p[1:] // ".example.com"
-		apex := strings.TrimPrefix(p, "*.")
-		return strings.HasSuffix(v, suffix) || v == apex
+		// Wildcards match descendants only. Treating the apex as a match would
+		// silently widen a "*.example.com" scope to "example.com".
+		return len(v) > len(suffix) && strings.HasSuffix(v, suffix)
 	}
 	return false
 }

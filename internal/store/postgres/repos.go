@@ -31,6 +31,9 @@ func mustJSON(v any) (string, error) {
 // ---------- Account ----------
 
 func (r *Repo) UpsertAccount(ctx context.Context, a domain.Account) error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
 	data, err := mustJSON(a)
 	if err != nil {
 		return err
@@ -78,6 +81,9 @@ func (r *Repo) GetAccount(ctx context.Context, id domain.AccountID) (domain.Acco
 // ---------- Program ----------
 
 func (r *Repo) UpsertProgram(ctx context.Context, p domain.Program) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
 	data, err := mustJSON(p)
 	if err != nil {
 		return err
@@ -150,6 +156,9 @@ func (r *Repo) ListProgramsDue(ctx context.Context, now time.Time, limit int) ([
 // ---------- Evidence ----------
 
 func (r *Repo) PutEvidence(ctx context.Context, e domain.Evidence) error {
+	if err := e.Validate(); err != nil {
+		return err
+	}
 	redactions, err := mustJSON(e.Redactions)
 	if err != nil {
 		return err
@@ -192,6 +201,16 @@ func (r *Repo) GetEvidence(ctx context.Context, id domain.EvidenceID) (domain.Ev
 // ---------- Facts ----------
 
 func (r *Repo) PutFacts(ctx context.Context, fs []domain.ObservedFact) error {
+	seen := make(map[domain.FactID]struct{}, len(fs))
+	for _, f := range fs {
+		if err := f.Validate(); err != nil {
+			return err
+		}
+		if _, dup := seen[f.ID]; dup {
+			return errors.New("postgres: duplicate fact id in batch")
+		}
+		seen[f.ID] = struct{}{}
+	}
 	tx, err := r.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("postgres: begin facts: %w", err)
@@ -206,15 +225,28 @@ func (r *Repo) PutFacts(ctx context.Context, fs []domain.ObservedFact) error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO observed_facts
 				(id, subject, platform, account_id, program_id, asset_id, predicate,
 				 value, unit, observed_at, evidence_refs, confidence, extractor_version)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11::jsonb,$12,$13)`,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11::jsonb,$12,$13)
+			ON CONFLICT (id) DO NOTHING`,
 			f.ID, f.Subject, f.Platform, f.AccountID, f.ProgramID, f.AssetID,
 			f.Predicate, value, f.Unit, f.ObservedAt, refs, f.Confidence, f.ExtractorVersion,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("postgres: put fact %s: %w", f.ID, err)
+		}
+		if tag.RowsAffected() == 0 {
+			// Re-running an extractor is idempotent; reusing an ID for different
+			// content is a conflict and must not overwrite immutable facts.
+			existing, err := getFact(ctx, tx, f.ID)
+			if err != nil {
+				return err
+			}
+			if !existing.Equal(f) {
+				return fmt.Errorf("postgres: fact %s: id exists with different content", f.ID)
+			}
 		}
 	}
 	return tx.Commit(ctx)
@@ -233,61 +265,121 @@ func (r *Repo) ListFactsByProgram(ctx context.Context, id domain.ProgramID) ([]d
 	defer rows.Close()
 	var out []domain.ObservedFact
 	for rows.Next() {
-		var f domain.ObservedFact
-		var value, refs []byte
-		var accountID, programID, assetID *string
-		if err := rows.Scan(&f.ID, &f.Subject, &f.Platform, &accountID, &programID,
-			&assetID, &f.Predicate, &value, &f.Unit, &f.ObservedAt, &refs,
-			&f.Confidence, &f.ExtractorVersion); err != nil {
+		f, err := scanFact(rows)
+		if err != nil {
 			return nil, err
 		}
-		if accountID != nil {
-			v := domain.AccountID(*accountID)
-			f.AccountID = &v
-		}
-		if programID != nil {
-			v := domain.ProgramID(*programID)
-			f.ProgramID = &v
-		}
-		if assetID != nil {
-			v := domain.AssetID(*assetID)
-			f.AssetID = &v
-		}
-		_ = json.Unmarshal(value, &f.Value)
-		_ = json.Unmarshal(refs, &f.EvidenceRefs)
 		out = append(out, f)
 	}
 	return out, rows.Err()
 }
 
+func getFact(ctx context.Context, tx pgx.Tx, id domain.FactID) (domain.ObservedFact, error) {
+	row := tx.QueryRow(ctx, `
+		SELECT id, subject, platform, account_id, program_id, asset_id, predicate,
+		       value, unit, observed_at, evidence_refs, confidence, extractor_version
+		FROM observed_facts WHERE id=$1`, id)
+	f, err := scanFact(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ObservedFact{}, ErrNotFound
+		}
+		return domain.ObservedFact{}, err
+	}
+	return f, nil
+}
+
+func scanFact(row pgx.Row) (domain.ObservedFact, error) {
+	var f domain.ObservedFact
+	var value, refs []byte
+	var accountID, programID, assetID *string
+	if err := row.Scan(&f.ID, &f.Subject, &f.Platform, &accountID, &programID,
+		&assetID, &f.Predicate, &value, &f.Unit, &f.ObservedAt, &refs,
+		&f.Confidence, &f.ExtractorVersion); err != nil {
+		return domain.ObservedFact{}, err
+	}
+	if accountID != nil {
+		v := domain.AccountID(*accountID)
+		f.AccountID = &v
+	}
+	if programID != nil {
+		v := domain.ProgramID(*programID)
+		f.ProgramID = &v
+	}
+	if assetID != nil {
+		v := domain.AssetID(*assetID)
+		f.AssetID = &v
+	}
+	if len(value) > 0 {
+		_ = json.Unmarshal(value, &f.Value)
+	}
+	if len(refs) > 0 {
+		_ = json.Unmarshal(refs, &f.EvidenceRefs)
+	}
+	return f, nil
+}
+
 func (r *Repo) SupersedeFact(ctx context.Context, id, by domain.FactID) error {
+	if id == by {
+		return errors.New("postgres: self-supersede is not allowed")
+	}
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: begin supersede: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	var same bool
-	err := r.Pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT a.subject = b.subject AND a.predicate = b.predicate
+		       AND COALESCE(a.account_id,'') = COALESCE(b.account_id,'')
+		       AND COALESCE(a.program_id,'') = COALESCE(b.program_id,'')
+		       AND COALESCE(a.asset_id,'') = COALESCE(b.asset_id,'')
 		FROM observed_facts a, observed_facts b
 		WHERE a.id=$1 AND b.id=$2`, id, by).Scan(&same)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		return err
 	}
 	if !same {
-		return errors.New("postgres: supersede subject/predicate mismatch")
+		return errors.New("postgres: supersede must keep subject, predicate and subject entity")
 	}
-	tag, err := r.Pool.Exec(ctx, `UPDATE observed_facts SET superseded_by=$2 WHERE id=$1`, id, by)
+
+	var cycle bool
+	err = tx.QueryRow(ctx, `
+		WITH RECURSIVE chain(id) AS (
+			VALUES ($2::text)
+			UNION
+			SELECT f.superseded_by FROM observed_facts f
+			JOIN chain c ON f.id = c.id
+			WHERE f.superseded_by IS NOT NULL
+		)
+		SELECT EXISTS (SELECT 1 FROM chain WHERE id = $1)`, id, by).Scan(&cycle)
+	if err != nil {
+		return fmt.Errorf("postgres: supersede cycle check: %w", err)
+	}
+	if cycle {
+		return errors.New("postgres: supersede cycle")
+	}
+
+	tag, err := tx.Exec(ctx, `UPDATE observed_facts SET superseded_by=$2 WHERE id=$1`, id, by)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // ---------- Derived state ----------
 
 func (r *Repo) PutState(ctx context.Context, s domain.DerivedState) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
 	state, err := mustJSON(s.State)
 	if err != nil {
 		return err
@@ -302,7 +394,12 @@ func (r *Repo) PutState(ctx context.Context, s domain.DerivedState) error {
 			 observed_at, derived_at, valid_until, confidence, rule_version)
 		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12)
 		ON CONFLICT (id) DO UPDATE SET
-			state=EXCLUDED.state, inputs=EXCLUDED.inputs, valid_until=EXCLUDED.valid_until`,
+			subject=EXCLUDED.subject, platform=EXCLUDED.platform,
+			account_id=EXCLUDED.account_id, program_id=EXCLUDED.program_id,
+			state=EXCLUDED.state, inputs=EXCLUDED.inputs,
+			observed_at=EXCLUDED.observed_at, derived_at=EXCLUDED.derived_at,
+			valid_until=EXCLUDED.valid_until, confidence=EXCLUDED.confidence,
+			rule_version=EXCLUDED.rule_version`,
 		s.ID, s.Subject, s.Platform, s.AccountID, s.ProgramID, state, inputs,
 		s.ObservedAt, s.DerivedAt, s.ValidUntil, s.Confidence, s.RuleVersion)
 	if err != nil {
@@ -314,6 +411,9 @@ func (r *Repo) PutState(ctx context.Context, s domain.DerivedState) error {
 // ---------- Decisions ----------
 
 func (r *Repo) PutDecision(ctx context.Context, d domain.ActionDecision) error {
+	if err := d.Validate(); err != nil {
+		return err
+	}
 	reasons, err := mustJSON(d.Reasons)
 	if err != nil {
 		return err

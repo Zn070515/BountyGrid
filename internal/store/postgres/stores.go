@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
@@ -18,6 +19,14 @@ type AuditStore struct {
 func NewAuditStore(pool *pgxpool.Pool) *AuditStore { return &AuditStore{Pool: pool} }
 
 func (s *AuditStore) Append(ctx context.Context, e audit.Event) (int64, error) {
+	if e.RecordedAt.IsZero() {
+		e.RecordedAt = time.Now().UTC()
+	}
+	// Keep parity with the in-memory store: reject invalid JSON and payloads
+	// containing secrets before they reach PostgreSQL.
+	if err := e.Validate(); err != nil {
+		return 0, err
+	}
 	var id int64
 	payload := string(e.Payload)
 	if payload == "" {

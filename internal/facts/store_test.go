@@ -31,10 +31,10 @@ func TestMemoryStoreBatchIsAtomic(t *testing.T) {
 	if err := s.Put(ctx, []domain.ObservedFact{fact("f1", PredProgramStatus, now, "RUNNING")}); err != nil {
 		t.Fatal(err)
 	}
-	// f1 already exists; f2 must not be written.
+	// f1 already exists with different content; f2 must not be written.
 	err := s.Put(ctx, []domain.ObservedFact{
 		fact("f2", PredProgramStatus, now, "PAUSED"),
-		fact("f1", PredProgramStatus, now, "RUNNING"),
+		fact("f1", PredProgramStatus, now, "PAUSED"),
 	})
 	if err == nil {
 		t.Fatal("expected duplicate error")
@@ -79,5 +79,54 @@ func TestSupersedeRejectsInvalidEdges(t *testing.T) {
 	}
 	if err := s.Supersede(ctx, "f2", "f1"); err == nil {
 		t.Fatal("cycle must fail")
+	}
+}
+
+func TestPutIsIdempotentForIdenticalFact(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	now := time.Now().UTC()
+	f := fact("f1", PredProgramStatus, now, "RUNNING")
+	if err := s.Put(ctx, []domain.ObservedFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	// Re-running the same extractor against the same Evidence must not fail.
+	if err := s.Put(ctx, []domain.ObservedFact{f}); err != nil {
+		t.Fatalf("idempotent re-put failed: %v", err)
+	}
+	got, err := s.ListByProgram(ctx, "p1")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("facts = %d (err=%v), want 1", len(got), err)
+	}
+}
+
+func TestPutRejectsConflictingFactContent(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	now := time.Now().UTC()
+	f := fact("f1", PredProgramStatus, now, "RUNNING")
+	if err := s.Put(ctx, []domain.ObservedFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	conflict := f
+	conflict.Value = "PAUSED"
+	if err := s.Put(ctx, []domain.ObservedFact{conflict}); err == nil {
+		t.Fatal("same id with different content must be rejected")
+	}
+}
+
+func TestSupersedeRequiresSameSubjectEntity(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	now := time.Now().UTC()
+	p2 := domain.ProgramID("p2")
+	f1 := fact("f1", PredProgramStatus, now, "RUNNING")
+	f2 := fact("f2", PredProgramStatus, now.Add(time.Second), "PAUSED")
+	f2.ProgramID = &p2
+	if err := s.Put(ctx, []domain.ObservedFact{f1, f2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Supersede(ctx, "f1", "f2"); err == nil {
+		t.Fatal("supersede across different subject entities must fail")
 	}
 }

@@ -361,6 +361,8 @@ type Scope struct {
 **不变量**
 
 - `Access != GRANTED` 时 `ContentsKnown=false`，`Include/Exclude/Conditional` 必须为空。
+- `Access=GRANTED` 且 `ContentsKnown=true` 但 `Include` 为空时，表示该 Scope 已知不包含可执行资产；`CheckAsset` 必须返回 `EXCLUDED`，不能把空列表解释为“全部资产”。
+- 通配符 `*.example.com` 只匹配子域，不匹配 apex `example.com`；apex 需要显式列出。
 - 报名后可以同时是 `Visibility=GATED_BY_SIGNUP`、`Access=GRANTED`、`ContentsKnown=true`；不能为了表达“已解锁”而把 Disclosure 改成 PUBLIC。
 - `Asset.InScope` 只在 `Access=GRANTED` 且 contents known 时参与判断；GATED 下的资产不能进入 Harness。
 - Scope 变更必须产生新 `ObservedFact` 与新的 `Scope` 快照，不能原地改。
@@ -799,13 +801,14 @@ LedgerEntry *─1 Submission
 
 1. 没有 EvidenceRef 的 Fact 不能落库。
 2. `Scope.Access != GRANTED` 时 `ContentsKnown == false` 且 Include/Exclude 为空；`Visibility=GATED_* + Access=GRANTED` 是合法状态。
-3. `Account.Capability.CanSubmit == false` 时 `REPORT_SUBMIT` 不得 ALLOW；`PRACTICAL_CERTIFICATION` 只按 Program 作用域生效。
-4. `Program.Status != RUNNING` 时执行类 Action 不得 ALLOW；查看类不要求。
+3. `Account.Capability.CanSubmit == false` 时 `REPORT_SUBMIT` 不得 ALLOW；`PRACTICAL_CERTIFICATION` 只按 Program 作用域生效，Program-scoped gate 不得使账号级 `CanSubmit` 失效。
+4. `Program.Status != RUNNING` 或状态置信度 `< 0.8` 时执行类 Action 不得 ALLOW；查看类不要求。
 5. `Eligibility.Decision != ELIGIBLE` 时不能创建 ResearchTask；查看规则/项目不受 Eligibility 影响。
-6. 任何 `REPORT_SUBMIT/PAYOUT/PROGRAM_SIGNUP/NDA_ACCEPT` 没有 HumanApproval 时不得 ALLOW。
-7. `ACTIVE_HTTP` 必须有 Asset，且 `Scope.CheckAsset` 必须为 INCLUDED；CONDITIONAL 需人工，EXCLUDED/UNKNOWN 不得 ALLOW。
+6. 任何 `REPORT_SUBMIT/PAYOUT/PROGRAM_SIGNUP/NDA_ACCEPT` 没有 HumanApproval 时不得 ALLOW；human-only 审批必须 single-use。
+7. `ACTIVE_HTTP` 必须有 Asset，`Asset.ID` 必须等于 `ActionRequest.AssetID`，且 `Scope.CheckAsset` 必须为 INCLUDED；CONDITIONAL 需人工，EXCLUDED/UNKNOWN 不得 ALLOW。
 8. `AutomationPolicy=FORBIDDEN` 时对应 Action 不得 ALLOW，人工审批也不能覆盖。
-7. `ActionDecision.ExpiresAt` 过期后，Harness 必须重新申请。
-8. `LedgerEntry` 金额不得为负（退款/费用单独 Kind）。
-9. `Evidence` 不得包含密码/Cookie/身份证/银行卡/手机号明文。
-10. `CompetitionSnapshot` 缺失时 Opportunity 的 Confidence 必须降低，不能默认高。
+9. `DecisionContext` 的 `Account.ID/Program.ID/Platform` 必须与 `ActionRequest` 一致，否则 DENY。
+10. `ActionDecision.ExpiresAt` 过期后，Harness 必须重新申请；`ALLOW` 决策必须携带 `ExpiresAt`。
+11. `LedgerEntry` 金额不得为负（退款/费用单独 Kind）。
+12. `Evidence` 不得包含密码/Cookie/身份证/银行卡/手机号明文。
+13. `CompetitionSnapshot` 缺失时 Opportunity 的 Confidence 必须降低，不能默认高。
