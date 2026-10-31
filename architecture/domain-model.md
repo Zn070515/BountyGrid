@@ -801,7 +801,7 @@ LedgerEntry *─1 Submission
 
 1. 没有 EvidenceRef 的 Fact 不能落库。
 2. `Scope.Access != GRANTED` 时 `ContentsKnown == false` 且 Include/Exclude 为空；`Visibility=GATED_* + Access=GRANTED` 是合法状态。
-3. `Account.Capability.CanSubmit == false` 时 `REPORT_SUBMIT` 不得 ALLOW；`PRACTICAL_CERTIFICATION` 只按 Program 作用域生效，Program-scoped gate 不得使账号级 `CanSubmit` 失效。
+3. `Account.Capability.CanSubmit == false` 时 `REPORT_SUBMIT` 不得 ALLOW；`PRACTICAL_CERTIFICATION` 只按 Program 作用域生效，Program-scoped gate 不得使账号级 `CanSubmit` 失效；`BANK_BINDING`/`PAYOUT_SETUP` 只影响 `CanPayout`，不得使 `CanSubmit` 失效。
 4. `Program.Status != RUNNING` 或状态置信度 `< 0.8` 时执行类 Action 不得 ALLOW；查看类不要求。
 5. `Eligibility.Decision != ELIGIBLE` 时不能创建 ResearchTask；查看规则/项目不受 Eligibility 影响。
 6. 任何 `REPORT_SUBMIT/PAYOUT/PROGRAM_SIGNUP/NDA_ACCEPT` 没有 HumanApproval 时不得 ALLOW；human-only 审批必须 single-use。

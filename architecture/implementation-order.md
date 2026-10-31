@@ -19,7 +19,7 @@
 | 阶段 | 状态 |
 |---|---|
 | Phase 0：domain + evidence + PostgreSQL schema/repositories/rollback + CLI | 完成 |
-| Phase 1：Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 下一步（Vulbox Reader 优先） |
+| Phase 1：Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：1.1 已完成；1.2 公开列表/账号代码已落地，账号实测待人工登录；1.3/1.4 未开始 |
 | Phase 2：Facts + State | 提前实现并硬化（Reader 接入后回填真实 Fact） |
 | Phase 3：Policy Engine | 提前实现并硬化 |
 | Phase 4：Opportunity / Scheduler | Phase 1 Reader 接入之后 |
@@ -56,11 +56,21 @@
 - 会话保存/恢复；不在日志输出 Cookie。
 - 退出条件：能打开登录页、检测会话、截图、保存 state。
 
+**当前实现**：`internal/sidecar` 包装 `agent-browser` CLI，只暴露 `open/wait/eval/get/screenshot/state save/close`；没有 click/fill。会话检测与 state 保存已由探针验证；产品 Reader 复用 `vbprobe`。剩余：把 CLI 包装升级为长期驻留 RPC（当前每次命令一个进程）时再评估。
+
 ### 1.2 Vulbox Reader
 
 - AuthStatus、SyncAccount、SyncPrograms、SyncProgram、SyncScope、SyncPolicy。
 - Facts：账号等级/经验/信誉/已加入项目；项目状态/奖励/类型；Scope 可见性；FAQ/公告。
 - 退出条件：在真实账号上生成 Account/Program/Scope/Policy 快照；所有 Fact 有 EvidenceRef；Vulbox 1513 项目标注 estimated。
+
+**当前实现（2026-10-31）**：
+
+- `AuthStatus`、`SyncPrograms`、`SyncAccount` 已实现；公开项目列表实测通过：第 1 页 10 项、`estimated_total=1513`、150 条 Fact、1 条 Evidence，所有 Fact 有 EvidenceRef。
+- 账号实测通过：见习白帽 / exp 10 / 信誉 100 / 排名 9999+ / 实名 / `CanSubmit=true` / `CanPayout=false` / 已加入 2。
+- 企业SRC详情已实现并实测联想 444：Scope `PUBLIC+GRANTED+known`、include 9 条、exclude `*.sunits.com`、`FileUpload=FORBIDDEN`、`AIAnalysis=CONDITIONAL`；Scope/Policy 各有独立 Evidence。
+- 普通/高级项目详情页、已加入项目 ID 回填、平台 FAQ 策略合并仍未完成；非企业SRC仍返回 `ErrUnsupported`（不猜）。
+- 退出条件仍差：普通项目 Scope/Policy、Xianzhi/Butian Reader。
 
 ### 1.3 Xianzhi Reader
 

@@ -206,6 +206,36 @@ func TestAccountProgramScopedGateDoesNotInvalidateCanSubmit(t *testing.T) {
 	}
 }
 
+func TestAccountBankGateDoesNotBlockSubmit(t *testing.T) {
+	identity, compliance := true, true
+	a := Account{
+		ID: "vulbox/account", Platform: PlatformVulbox, ObservedAt: now(),
+		IdentityVerified: &identity, ComplianceExamCompleted: &compliance,
+		Capability: AccountCapability{CanSubmit: true},
+		Gates: []EligibilityGate{{
+			Kind: GateBankBinding, Required: true, Satisfied: GateUnsatisfied, Blocking: true,
+		}},
+	}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("bank binding must not invalidate CanSubmit: %v", err)
+	}
+}
+
+func TestAccountPayoutGateBlocksPayout(t *testing.T) {
+	identity := true
+	a := Account{
+		ID: "vulbox/account", Platform: PlatformVulbox, ObservedAt: now(),
+		IdentityVerified: &identity,
+		Capability:       AccountCapability{CanPayout: true},
+		Gates: []EligibilityGate{{
+			Kind: GateBankBinding, Required: true, Satisfied: GateUnsatisfied, Blocking: true,
+		}},
+	}
+	if err := a.Validate(); err == nil {
+		t.Fatal("bank binding must invalidate CanPayout")
+	}
+}
+
 func TestFactRequiresID(t *testing.T) {
 	acc := AccountID("acc1")
 	f := ObservedFact{

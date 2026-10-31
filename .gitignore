@@ -8,6 +8,9 @@ tmp-img/
 probes/out/
 *.log
 
+# Redacted raw evidence captured by the Reader (stays local)
+.evidence/
+
 # Local reference material (e.g. ArtFlow README/CLAUDE snapshots)
 .reference/
 
