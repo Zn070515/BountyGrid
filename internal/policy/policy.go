@@ -117,7 +117,7 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	}
 	decide := func(d domain.Decision, reasons ...string) domain.ActionDecision {
 		return domain.ActionDecision{
-			ID:             domain.DecisionID(fmt.Sprintf("dec-%s-%d", dc.Request.ID, now.UnixNano())),
+			ID:             domain.DecisionID(decisionID(dc.Request.ID, now)),
 			RequestID:      dc.Request.ID,
 			ProgramID:      dc.Request.ProgramID,
 			Action:         dc.Request.Action,
@@ -284,6 +284,12 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		}
 	}
 	return e.allow(dc, now, decide)
+}
+
+// decisionID avoids long digit runs: the secret scanner treats 16-19 digit
+// numbers as bank cards, which would reject audit payloads containing the ID.
+func decisionID(requestID string, now time.Time) string {
+	return fmt.Sprintf("dec-%s-%s", requestID, now.UTC().Format("20060102T150405.000000000"))
 }
 
 func (e *Engine) allow(dc DecisionContext, now time.Time, decide func(domain.Decision, ...string) domain.ActionDecision) (domain.ActionDecision, error) {

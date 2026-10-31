@@ -24,6 +24,13 @@ func TestRedactAndScan(t *testing.T) {
 	}
 }
 
+func TestScanDoesNotFlagSeparatedTimestamp(t *testing.T) {
+	// Decision IDs use a separated timestamp; they must survive the scanner.
+	if got := Scan("dec-r1-20261031T155329.649161900"); len(got) != 0 {
+		t.Fatalf("separated timestamp flagged as %v", got)
+	}
+}
+
 func TestHashDeterministic(t *testing.T) {
 	a := Hash([]byte("hello"))
 	b := Hash([]byte("hello"))

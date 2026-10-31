@@ -193,6 +193,23 @@ go run ./cmd/bountygrid derive -platform xianzhi
 go run ./cmd/bountygrid derive -platform vulbox
 ```
 
+### Action Gateway · `decide`
+
+- `bountygrid decide -request <json>`：从 PostgreSQL 加载 Account/Program → Policy Engine → 持久化 `ActionDecision` + `action.decision` 审计事件。缺失上下文直接产生并持久化 `DENY CONTEXT_NOT_FOUND`。
+- `bountygrid decide -authorize <decision-id>`：执行前二次校验 —— 必须 ALLOW、未过期、human-only 有审批；执行类动作还要求 Program `RUNNING` 且 `Status.ValidUntil > now`。Gateway 本身不执行任何平台动作。
+- `REPORT_SUBMIT` 接 PostgreSQL 一次性审批账本；单位测试覆盖第二次使用返回 `REQUIRE_HUMAN`。
+- Decision ID 使用带分隔符的时间戳（不是 `UnixNano`）：19 位连续数字会被 secret scanner 误判为银行卡号，导致审计 payload 被拒绝。
+- 实测（2026-10-31）：
+  - `VIEW_RULES` → `ALLOW`，`-authorize` 返回 `authorized:true`
+  - `REPORT_SUBMIT` → `DENY ACCOUNT_CANNOT_SUBMIT`
+  - `ACTIVE_HTTP` 缺 Asset → `DENY ASSET_REQUIRED`
+  - DB：`action_decisions=3`、`audit_events(action.decision)=3`，无任何平台动作。
+
+```bash
+go run ./cmd/bountygrid decide -request ./request.json
+go run ./cmd/bountygrid decide -authorize <decision-id>
+```
+
 ### Butian Reader（37 专属SRC 已实测，账号/GROW 待网络恢复）
 
 - `internal/adapter/butian`：`AuthStatus`、`SyncAccount`（合规考核/实战认证/实名/银行卡，保守 fail-closed）、`SyncPrograms`（37 专属SRC）、`SyncProgram`、`SyncScope`（未报名 GATED）、`SyncPolicy`（保守 `UNKNOWN`）。
