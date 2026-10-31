@@ -86,3 +86,16 @@ type Reader interface {
 	SyncScope(ctx context.Context, id domain.ProgramID) (ScopeSnapshot, error)
 	SyncPolicy(ctx context.Context, id domain.ProgramID) (PolicySnapshot, error)
 }
+
+// Optional reader capabilities. A platform exposes only the extra sources it
+// can observe; callers must type-assert and treat absence as "not available",
+// never as an empty list.
+type PublicWelfareReader interface {
+	SyncPublicWelfare(ctx context.Context, opts SyncOptions) (ProgramBatch, error)
+}
+
+// GrowReader reads a campus program (Butian GROW) whose rules live in a modal
+// plus the activity center rather than in the program list.
+type GrowReader interface {
+	SyncGrow(ctx context.Context) (ProgramSnapshot, error)
+}

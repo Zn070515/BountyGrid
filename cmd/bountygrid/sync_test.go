@@ -16,6 +16,10 @@ import (
 type fakeReader struct {
 	programs    adapter.ProgramBatch
 	programsErr error
+	publicWelf  adapter.ProgramBatch
+	publicErr   error
+	grow        adapter.ProgramSnapshot
+	growErr     error
 	account     adapter.AccountSnapshot
 	accountErr  error
 	program     adapter.ProgramSnapshot
@@ -42,6 +46,12 @@ func (f *fakeReader) SyncScope(context.Context, domain.ProgramID) (adapter.Scope
 }
 func (f *fakeReader) SyncPolicy(context.Context, domain.ProgramID) (adapter.PolicySnapshot, error) {
 	return f.policy, f.policyErr
+}
+func (f *fakeReader) SyncPublicWelfare(context.Context, adapter.SyncOptions) (adapter.ProgramBatch, error) {
+	return f.publicWelf, f.publicErr
+}
+func (f *fakeReader) SyncGrow(context.Context) (adapter.ProgramSnapshot, error) {
+	return f.grow, f.growErr
 }
 
 type fakeWriter struct {
@@ -291,6 +301,121 @@ func TestParseSyncOptionsButian(t *testing.T) {
 	}
 	if opts.Session != "btprobe" || opts.RawDir != ".evidence/butian" {
 		t.Fatalf("opts = %+v", opts)
+	}
+}
+
+func TestParseSyncOptionsButianSources(t *testing.T) {
+	opts, err := parseSyncOptions([]string{"-platform", "butian", "-programs=false", "-public-welfare", "-grow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.PublicWelfare || !opts.Grow || opts.Programs {
+		t.Fatalf("opts = %+v", opts)
+	}
+}
+
+func TestParseSyncOptionsPublicWelfarePages(t *testing.T) {
+	opts, err := parseSyncOptions([]string{"-platform", "butian", "-programs=false", "-public-welfare", "-pages", "200"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Pages != 200 {
+		t.Fatalf("pages = %d", opts.Pages)
+	}
+	if _, err := parseSyncOptions([]string{"-pages", "201"}); err == nil {
+		t.Fatal("201 pages should be rejected")
+	}
+}
+
+func TestParseSyncOptionsRejectsButianSourcesElsewhere(t *testing.T) {
+	if _, err := parseSyncOptions([]string{"-platform", "vulbox", "-public-welfare"}); err == nil {
+		t.Fatal("-public-welfare must be butian-only")
+	}
+	if _, err := parseSyncOptions([]string{"-platform", "xianzhi", "-grow"}); err == nil {
+		t.Fatal("-grow must be butian-only")
+	}
+}
+
+func TestExecuteSyncPublicWelfare(t *testing.T) {
+	prog := domain.Program{ID: "butian/pub/65657", Name: "甲公司", Type: domain.TypePublicWelfareSRC}
+	prog.Status.Status = domain.StatusRunning
+	prog.Eligibility.Decision = domain.Eligible
+	f := &fakeReader{publicWelf: adapter.ProgramBatch{
+		Programs:       []domain.Program{prog},
+		Facts:          []domain.ObservedFact{{ID: "f1"}},
+		Evidence:       []domain.Evidence{{ID: "evpw"}},
+		ObservedCount:  1,
+		EstimatedTotal: 6000,
+		Estimated:      true,
+	}}
+	w := &fakeWriter{}
+	var buf bytes.Buffer
+	if err := executeSync(context.Background(), f, syncOptions{PublicWelfare: true}, &buf, w); err != nil {
+		t.Fatal(err)
+	}
+	var out syncOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.PublicWelfare == nil || out.PublicWelfare.Count != 1 || out.PublicWelfare.EstimatedTotal != 6000 {
+		t.Fatalf("public welfare output = %+v", out.PublicWelfare)
+	}
+	if len(w.programs) != 1 || w.programs[0].ID != "butian/pub/65657" || len(w.evidence) != 1 {
+		t.Fatalf("persisted = %+v", w)
+	}
+}
+
+func TestExecuteSyncGrow(t *testing.T) {
+	unknown := domain.CapUnknown
+	prog := domain.Program{
+		ID: "butian/grow", Platform: domain.PlatformButian, NativeID: "grow",
+		Name: "补天 GROW", Type: domain.TypeCampusProgram,
+		Status: domain.ProgramState{
+			Status: domain.StatusRunning, ObservedAt: testNow,
+			ValidUntil: testNow.Add(time.Hour), Confidence: 1,
+		},
+		Eligibility: domain.EligibilityState{
+			Decision: domain.HumanActionNeeded,
+			Gates: []domain.EligibilityGate{{
+				Kind: domain.GateProgramSignup, Required: true,
+				Satisfied: domain.GateUnsatisfied, Blocking: true,
+			}},
+			EvaluatedAt: testNow, PolicyVersion: "test",
+		},
+		Scope:  domain.Scope{Visibility: domain.ScopeGatedBySignup, Access: domain.ScopeAccessNotGranted, ObservedAt: testNow},
+		Reward: domain.RewardPolicy{TaxBasis: domain.TaxUnknown},
+		Automation: domain.AutomationPolicy{
+			AIAnalysis: unknown, AutonomousAgent: unknown, ActiveHTTP: unknown,
+			BrowserAutomation: unknown, AutomatedScanning: unknown,
+			DirectoryEnumeration: unknown, SubdomainDiscovery: unknown,
+			HighConcurrency: unknown, BruteForce: unknown, CredentialStuffing: unknown,
+			FileUpload: unknown, StateMutation: unknown, RCEVerification: unknown,
+			SensitiveDataRead: unknown, InternalNetwork: unknown,
+			LateralMovement: unknown, DoS: unknown,
+			HumanVerificationRequired: true,
+		},
+		ObservedAt: testNow,
+	}
+	f := &fakeReader{grow: adapter.ProgramSnapshot{
+		Program:  prog,
+		Scope:    domain.Scope{Visibility: domain.ScopeGatedBySignup, Access: domain.ScopeAccessNotGranted},
+		Facts:    []domain.ObservedFact{{ID: "fg"}},
+		Evidence: []domain.Evidence{{ID: "evg"}},
+	}}
+	w := &fakeWriter{}
+	var buf bytes.Buffer
+	if err := executeSync(context.Background(), f, syncOptions{Grow: true}, &buf, w); err != nil {
+		t.Fatal(err)
+	}
+	var out syncOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Grow == nil || out.Grow.ID != "butian/grow" || out.Grow.Eligibility != "HUMAN_ACTION_REQUIRED" {
+		t.Fatalf("grow output = %+v", out.Grow)
+	}
+	if len(w.programs) != 1 || w.programs[0].ID != "butian/grow" || len(w.facts) != 1 {
+		t.Fatalf("persisted = %+v", w)
 	}
 }
 

@@ -216,7 +216,8 @@ Account:      /WhiteHat/Center/baseData、sourceStatus 返回 request error
 - 专属SRC 列表只在人类完成验证码、页面自身 XHR 成功后才渲染；Reader 读取已渲染 DOM，不调用 `/Reward/corps`，不 reload（reload 会丢失页面内验证结果）。0 卡片/暂无数据返回 `ErrGated`，不能写成空列表。
 - 卡片无原生 company ID；ProgramID 使用公司名 SHA-1 前缀。Scope 统一 `GATED_BY_SIGNUP + NOT_GRANTED`；Eligibility 含 `PROGRAM_SIGNUP` 与 Program-scoped `PRACTICAL_CERTIFICATION` 两个人工 Gate。
 - 账号中心/提交页导航在本次实测中报 `os error 10060`（curl 302），代码对未知合规考核强制 `CanSubmit=false`；待网络/反爬恢复后实测。
-- 公益SRC `/Reward/pub` 可用但未实现；GROW 页面尚未联调。
+- 公益SRC `/Reward/pub?p=N` 已接入（2026-11-01）：页面自身的只读 GET，必须带 `X-Requested-With: XMLHttpRequest`，否则返回 HTML 壳；分页参数是 `p`（`page` 被忽略）。`count` 是总页数（200），30 条/页、末页 9 条 = 5,979 家。ProgramID `butian/pub/<company_id>`；列表只给公司 ID/名称，Scope 保持 `UNKNOWN`，状态 `RUNNING` 带 0.8 confidence 并记录 `butian.pub.listed`，不能当成“已确认在收”。
+- GROW 已联调（2026-11-01）：`/Grow` 点“查看规则”+ `/Active/center` 两页分别作为 Evidence，`GrowExtractor` 分开解析；月度阶段正则锚定 GROW 标题，避免活动中心里其他活动的日期区间被误取。Gate 只由页面明确文案产生（报名时间 → `PROGRAM_SIGNUP`；学生认证待完成；尚未加入校园团队）。
 
 ### 4.3 补天
 
@@ -230,7 +231,8 @@ Observed API: /WhiteHat/Center/baseData; /Company/Info/assetRange 等
 同步：
 
 - `SyncAccount`：实习白帽 LV1、500荣誉币、0积分/0库币/0奖金、0提交、未完成实战认证、合规考核状态。
-- `SyncPrograms`：37 专属SRC、公益SRC 200页、1 企业SRC、活动中心、GROW。
+- `SyncPrograms`：37 专属SRC（验证码保护，读已渲染 DOM）。
+- `SyncPublicWelfare`（可选能力，`-public-welfare`）：公益SRC 200 页；`SyncGrow`（可选能力，`-grow`）：GROW 校园计划；1 企业SRC 与活动中心尚未接入。
 - `SyncScope`：专属SRC资产范围报名前 `GATED_BY_SIGNUP`；公益SRC无项目级Scope。
 - `SyncPolicy`：行为规范、重申专属SRC规范、AI规范/通告、企业SRC奖励、通用2.0、GROW规则。
 - `PrepareReport`：厂商/资产范围/类别/标题/URL/类型/权重/等级/活动/任务/简述/细节/附件/修复方案/行业/地区/联系方式/匿名。

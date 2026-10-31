@@ -22,7 +22,10 @@ func (GrowExtractor) Version() string { return "1.0.0" }
 var (
 	growRegistrationRE = regexp.MustCompile(`报名时间：\s*([0-9./]+)\s*[~\-]\s*([0-9./]+)`)
 	growActivityRE     = regexp.MustCompile(`活动时间：\s*([0-9./]+)\s*[~\-]\s*([0-9./]+)`)
-	growPhaseRE        = regexp.MustCompile(`(20[0-9]{2}/[0-9]{1,2}/[0-9]{1,2})\s*-\s*(20[0-9]{2}/[0-9]{1,2}/[0-9]{1,2})`)
+	// The activity center lists several campaigns, each with its own date
+	// range. Anchor the monthly phase to the GROW title so an unrelated
+	// campaign that renders first cannot be mistaken for the GROW phase.
+	growPhaseRE = regexp.MustCompile(`GROW[^0-9]{0,80}(20[0-9]{2}/[0-9]{1,2}/[0-9]{1,2})\s*-\s*(20[0-9]{2}/[0-9]{1,2}/[0-9]{1,2})`)
 )
 
 func (GrowExtractor) Extract(ctx context.Context, in facts.Input) ([]domain.ObservedFact, error) {

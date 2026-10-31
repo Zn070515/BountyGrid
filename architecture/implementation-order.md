@@ -88,6 +88,7 @@
 ### 1.4 Butian Reader
 
 - 奇安信 SSO 会话；账号 Capability（合规考核/实战认证）；37 专属SRC；公益SRC 分页；活动/GROW。
+- 当前（2026-11-01）除 1 企业SRC 详情与活动中心列表外均已实现。
 - 退出条件：`CanSubmit=false` 正确派生；GROW 日期 8/25-11/30 与月度阶段 10/01-10/31 分开；专属SRC Scope GATED。
 
 **当前实现（2026-10-31）**：
@@ -98,8 +99,9 @@
 - 卡片无原生 company ID，ProgramID = 公司名 SHA-1 前缀；后续有原生 ID 时迁移。
 - 账号同步已成功（auth=OK）：`CanSubmit=false`（合规考核未完成 / 专属SRC实战认证），已落库。之前的账号中心导航 `os error 10060` 是瞬时浏览器连接失败，重试后成功；登录态一直在。
 - 37 专属SRC 已通过 `-persist` 落库（三平台合计 178 项目）；`derive` 产出 74 个 Butian states；`schedule` 34 human（ACCOUNT_CAPABILITY）、3 个无赏金数据。Xianzhi 91 任务只读成功，但 0 个已报名，Scope 必须 GATED；Vulbox 1 QUEUED research（444）。
-- 公益SRC `/Reward/pub` 可用（200 页/30 条）但未接入；GROW 页面未联调（`GrowExtractor` 已有单测）。
-- 退出条件仍差：账号 `CanSubmit=false` 实测、GROW 日期实测、公益SRC 分页接入。
+- 公益SRC `/Reward/pub?p=N` 已接入（`-public-welfare`，可选能力 `adapter.PublicWelfareReader`）：必须带 `X-Requested-With: XMLHttpRequest`，`p` 才是分页参数；实测 200 页/30 条、末页 9 条 = 5,979 家，Scope 保持 `UNKNOWN`，状态 `RUNNING` confidence 0.8。
+- GROW 已联调（`-grow`，可选能力 `adapter.GrowReader`）：规则弹窗 + 活动中心两页分别落 Evidence，实测报名 8/25–11/30、活动 9/1–11/30、第二期 10/01–10/31 共 6 条 Fact；月度阶段正则锚定 GROW 标题。
+- 退出条件已满足：账号 `CanSubmit=false` 实测、GROW 日期实测、公益SRC 分页接入。剩余：1 企业SRC 详情、活动中心列表。
 
 ## 2. Fact/State 层
 

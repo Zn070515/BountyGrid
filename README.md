@@ -115,7 +115,7 @@ bash probes/butian/grow-dates.sh
 |---|---|---|
 | Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
 | 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
-| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 三平台均已实测并落库（178 项目）；Vulbox 1 QUEUED research；Xianzhi 3 / Butian 34 human（报名/合规/实战认证门槛）；Butian 公益SRC/GROW 待接入 |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 三平台均已实测并落库（178 项目）；Vulbox 1 QUEUED research；Xianzhi 3 / Butian 34 human（报名/合规/实战认证门槛）；Butian 公益SRC（200 页分页）与 GROW 校园计划已接入（未落库） |
 | Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
 | Phase 4 | Opportunity / Scheduler | Phase 1 Reader 接入之后 |
 | Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
@@ -126,7 +126,7 @@ bash probes/butian/grow-dates.sh
 
 - `internal/sidecar`：`agent-browser` 只读客户端，只暴露 `open/wait/eval/get/screenshot/state save/close`；按命令限速，不提供 click/fill。
 - `internal/adapter/vulbox`：`AuthStatus`、`SyncAccount`（需登录）、`SyncPrograms`（公开项目列表，走页面自身的只读 GET）、`SyncProgram/SyncScope/SyncPolicy`（企业SRC子域，实测联想 444）；非企业SRC详情页仍 fail-closed 返回 `ErrUnsupported`。
-- `cmd/bountygrid sync`：`-programs`（默认）、`-account`、`-program <id>`、`-pages`、`-page-size`、`-session`（默认 `vbprobe`）、`-raw-dir`；输出 JSON 摘要，不打印页面原文。
+- `cmd/bountygrid sync`：`-programs`（默认）、`-public-welfare`/`-grow`（仅 butian）、`-account`、`-program <id>`、`-pages`、`-page-size`、`-session`（默认 `vbprobe`）、`-raw-dir`；输出 JSON 摘要，不打印页面原文。
 - 原始证据脱敏后写入 `.evidence/`（gitignored），数据库/仓库不保存页面原文。
 
 实测（2026-10-31）：
@@ -256,18 +256,24 @@ butian   top10=0.500* active=30 rewarded=10 pool=—       confidence=0.5
 go run ./cmd/bountygrid harness -tool view_rules -request ./request.json
 ```
 
-### Butian Reader（37 专属SRC 已实测，账号/GROW 待网络恢复）
+### Butian Reader（专属SRC / 公益SRC / GROW 已实测）
 
 - `internal/adapter/butian`：`AuthStatus`、`SyncAccount`（合规考核/实战认证/实名/银行卡，保守 fail-closed）、`SyncPrograms`（37 专属SRC）、`SyncProgram`、`SyncScope`（未报名 GATED）、`SyncPolicy`（保守 `UNKNOWN`）。
 - 专属SRC 列表从已渲染 DOM 的 `.plan-exclusive-src .company-card` 读取（不调用被验证码保护的 `/Reward/corps`）；实测 **37/37，259 Fact，1 Evidence**，全部 `RUNNING / PRIVATE_EXCLUSIVE / HUMAN_ACTION_REQUIRED`（报名 + 实战认证双门槛）。
 - 列表卡片没有原生 company ID，ProgramID 用公司名 SHA-1 前缀（`butian/src/<hex>`）；后续拿到原生 ID 时再迁移。
 - 账号同步已成功（`auth=OK`）：账号 `CanSubmit=false`（本季度合规考核未完成；专属SRC还需实战认证），已落库。之前的账号中心导航 `os error 10060` 是瞬时浏览器连接失败，重试后成功；登录态一直在。
 - 37 专属SRC 已落库（178 项目含 Vulbox 50 + Xianzhi 91）；`derive` 产出 74 个 Butian states；调度 34 human（`ACCOUNT_CAPABILITY`）、3 个无赏金数据。Xianzhi 同理：91 任务只读成功，但 0 个已报名，Scope 必须 GATED。
-- 公益SRC `/Reward/pub` 可直接返回 200 页/30 条，但尚未接入；GROW 页面/`GrowExtractor` 尚未联调。
+- 公益SRC（`-public-welfare`）：走页面自身的只读 GET `/Reward/pub?p=N`（需 `X-Requested-With: XMLHttpRequest`，否则平台返回 HTML 壳）；`p` 才是分页参数（`page` 被忽略）。实测 **200 页、30 条/页、末页 9 条 = 5,979 家**；ProgramID `butian/pub/<company_id>`，状态 `RUNNING`（confidence 0.8，原因是“在公益列表中”），**Scope 保持 `UNKNOWN`**。
+- GROW（`-grow`）：打开 `/Grow` 点“查看规则”取报名/活动日期，再打开 `/Active/center` 取月度阶段；两页分别是独立 Evidence。实测 6 条 Fact（报名 8/25–11/30、活动 9/1–11/30、第二期 10/01–10/31）、`RUNNING / HUMAN_ACTION_REQUIRED`（报名 + 学生认证 + 校园团队 3 个 Gate）、Scope `GATED_BY_SIGNUP + NOT_GRANTED`。
+- 月度阶段正则锚定在 GROW 标题后，活动中心里排在前面别的活动日期不会被误当成 GROW 阶段（`docs/advices/2026-10-31-phase-0-1-second-review.md` 第 6 条）。
 
 ```bash
 # 用户需先在 btprobe 浏览器完成验证码，使项目大厅渲染 37 张卡
 go run ./cmd/bountygrid sync -platform butian -programs
+# 公益SRC 第 1 页（-pages 最多 200）
+go run ./cmd/bountygrid sync -platform butian -programs=false -public-welfare -pages 1
+# GROW 校园计划
+go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 ```
 
 ### Phase 0 + core kernel hardening
