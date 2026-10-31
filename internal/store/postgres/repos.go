@@ -457,6 +457,51 @@ func (r *Repo) GetDecision(ctx context.Context, id domain.DecisionID) (domain.Ac
 	return d, nil
 }
 
+// ListStates returns the freshest valid state per program for a subject.
+func (r *Repo) ListStates(ctx context.Context, platform domain.Platform, subject domain.StateSubject) ([]domain.DerivedState, error) {
+	rows, err := r.Pool.Query(ctx, `
+		SELECT DISTINCT ON (program_id)
+		       id, subject, platform, account_id, program_id, state, inputs,
+		       observed_at, derived_at, valid_until, confidence, rule_version
+		FROM derived_states
+		WHERE ($1 = '' OR platform = $1) AND subject = $2 AND valid_until > now()
+		ORDER BY program_id, derived_at DESC`, string(platform), string(subject))
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list states: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.DerivedState
+	for rows.Next() {
+		var s domain.DerivedState
+		var subj, plat string
+		var accountID, programID *string
+		var stateJSON, inputsJSON []byte
+		if err := rows.Scan(&s.ID, &subj, &plat, &accountID, &programID, &stateJSON, &inputsJSON,
+			&s.ObservedAt, &s.DerivedAt, &s.ValidUntil, &s.Confidence, &s.RuleVersion); err != nil {
+			return nil, err
+		}
+		s.Subject = domain.StateSubject(subj)
+		s.Platform = domain.Platform(plat)
+		if accountID != nil {
+			v := domain.AccountID(*accountID)
+			s.AccountID = &v
+		}
+		if programID != nil {
+			v := domain.ProgramID(*programID)
+			s.ProgramID = &v
+		}
+		var stateStr string
+		if err := json.Unmarshal(stateJSON, &stateStr); err == nil {
+			s.State = stateStr
+		} else {
+			s.State = string(stateJSON)
+		}
+		_ = json.Unmarshal(inputsJSON, &s.Inputs)
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repo) PutDecision(ctx context.Context, d domain.ActionDecision) error {
 	if err := d.Validate(); err != nil {
 		return err

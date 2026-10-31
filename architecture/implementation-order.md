@@ -162,10 +162,14 @@
 - 无数据时保守先验。
 - 退出条件：不得用“最高赏金”排序；分数可解释（inputs/weights）。
 
+**当前实现（2026-10-31）**：`internal/opportunity.Engine` 已实现；`Inputs[]` 记录 p_valid、min/median/max 权重、top10/duplicate/saturation 权重、penalty、cost、confidence。缺 CompetitionSnapshot 时 penalty=0.5/0.5/0.5、confidence=0.2。单测覆盖“高最高赏金但高集中度”输给小赏金程序，以及先知 70.8%/漏洞盒子/补天 164,012 元三个竞争样本。
+
 ### 4.3 Scheduler
 
 - 硬过滤 → 打分 → 配额 → 人工队列 → 冷却 → kill switch。
 - 退出条件：PAUSED/ENDED 不派发；人工队列不自动执行。
+
+**当前实现（2026-10-31）**：`schedule` 从 PostgreSQL 读取 Program + 最新 `PROGRAM_STATE` + Account；RUNNING 才评分；CanSubmit/Eligibility/Scope 不满足只进 HumanActionQueue；Top-K/每平台/每项目配额/企业SRC保留位；Persist 写 `opportunities` 与 `research_tasks`（`QUEUED`/`HUMAN_ACTION_REQUIRED`），不执行。实测 Vulbox 9 human/0 research（账号能力未观测）、40 paused/ended 排除、无平台动作。仍差：CompetitionSnapshot 采集、Harness 执行、人工队列 UI、Ledger 反馈。
 
 ## 5. Harness + Model Router
 

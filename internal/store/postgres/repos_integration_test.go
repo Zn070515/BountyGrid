@@ -176,6 +176,23 @@ func TestRepoRoundTrip(t *testing.T) {
 		t.Fatalf("state upsert did not refresh metadata: %s %v", ruleVersion, confidence)
 	}
 
+	states, err := r.ListStates(ctx, domain.PlatformButian, domain.StateProgramState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundState := false
+	for _, s := range states {
+		if s.ID == stateID {
+			foundState = true
+			if s.State != "RUNNING" || len(s.Inputs) == 0 {
+				t.Fatalf("state roundtrip = %+v", s)
+			}
+		}
+	}
+	if !foundState {
+		t.Fatal("derived state not listed")
+	}
+
 	// Superseding an input fact invalidates the derived state.
 	f2 := f
 	f2.ID = factID + "-new"

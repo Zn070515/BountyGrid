@@ -162,7 +162,7 @@ func parseIdentityText(text string) (*bool, *bool) {
 	case strings.Contains(text, "未实名"):
 		v := false
 		identity = &v
-	case strings.Contains(text, "已实名"):
+	case strings.Contains(text, "已实名"), strings.Contains(text, "实名认证") && strings.Contains(text, "已认证"):
 		v := true
 		identity = &v
 	}
