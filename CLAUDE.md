@@ -8,7 +8,7 @@ The repository has three lines:
 
 - `platform-audit/` — the factual baseline: account state, programs, scope visibility, rules, AI policy, payout, automation boundaries.
 - `architecture/` — the full Go design: domain model, evidence/fact/state pipeline, adapters, policy engine, opportunity/scheduler, harness/model router, verification/submission/ledger.
-- `internal/` — implementation. Phase 0 (domain + evidence + PostgreSQL migrations) is complete.
+- `internal/` — implementation. Phase 0 (domain + evidence + PostgreSQL migrations) and Phase 1 (audit + facts + state + policy) are complete.
 
 Read [`README.md`](README.md) first, then [`architecture/README.md`](architecture/README.md), [`architecture/implementation-order.md`](architecture/implementation-order.md), and [`platform-audit/README.md`](platform-audit/README.md). Do not treat a page observation as a domain rule; findings flow through `Evidence → ObservedFact → DerivedState → PolicyDecision`.
 

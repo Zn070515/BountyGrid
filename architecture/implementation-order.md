@@ -14,6 +14,15 @@
 
 本机上的 `probes/` 是可丢弃的只读探针，不属于产品代码，也不进入 Go module。探针只验证平台事实/选择器/日期/会话，不报名、不签NDA、不提交、不提现。
 
+## 当前进度
+
+| 阶段 | 状态 |
+|---|---|
+| Phase 0：domain + evidence + postgres migration + CLI | 完成 |
+| Phase 1：audit + facts（含 Butian GROW 抽取器）+ state + policy | 完成 |
+| Phase 2：Adapter（Vulbox 优先）+ Opportunity/Scheduler | 下一步 |
+| Phase 3：Harness / Model Router / Verification / Submission / Ledger | 规划中 |
+
 ## 0. 基础层（无业务依赖）
 
 ### 0.1 `internal/domain`

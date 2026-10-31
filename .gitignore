@@ -14,8 +14,8 @@ probes/out/
 # Secrets / browser sessions / state
 .env
 .env.*
-auth/
-state/
+/auth/
+/state/
 .agent-browser/
 *.state.json
 
