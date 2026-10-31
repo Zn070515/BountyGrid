@@ -25,14 +25,19 @@ type ActionRequest struct {
 }
 
 type HumanApproval struct {
-	ID         string
-	ApprovedBy string
-	ApprovedAt time.Time
-	Action     Action
-	ProgramID  ProgramID
-	Scope      string
-	ExpiresAt  time.Time
-	Comment    string
+	ID             string
+	ApprovedBy     string
+	ApprovedAt     time.Time
+	RequestID      string
+	Action         Action
+	ProgramID      ProgramID
+	AssetID        *AssetID
+	ResourceID     string // report/finding/task ID for resource-scoped actions
+	ParametersHash string
+	Scope          string
+	ExpiresAt      time.Time
+	SingleUse      bool
+	Comment        string
 }
 
 type ActionDecision struct {

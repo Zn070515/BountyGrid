@@ -1,9 +1,12 @@
 package facts
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"sync"
+	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
@@ -33,18 +36,27 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) Put(ctx context.Context, fs []domain.ObservedFact) error {
+	// Validate the whole batch before touching the store; a failed Put must
+	// never leave half an observation behind.
+	seen := make(map[domain.FactID]struct{}, len(fs))
 	for _, f := range fs {
 		if err := f.Validate(); err != nil {
 			return err
 		}
+		if _, dup := seen[f.ID]; dup {
+			return errors.New("facts: duplicate id in batch")
+		}
+		seen[f.ID] = struct{}{}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, f := range fs {
-		if _, ok := s.facts[f.ID]; ok {
+	for id := range seen {
+		if _, ok := s.facts[id]; ok {
 			return errors.New("facts: fact is immutable: id already exists")
 		}
-		s.facts[f.ID] = f
+	}
+	for _, f := range fs {
+		s.facts[f.ID] = cloneFact(f)
 		s.order = append(s.order, f.ID)
 	}
 	return nil
@@ -62,7 +74,7 @@ func (s *MemoryStore) ListByProgram(ctx context.Context, id domain.ProgramID) ([
 		if _, superseded := s.supersededBy[fid]; superseded {
 			continue
 		}
-		out = append(out, f)
+		out = append(out, cloneFact(f))
 	}
 	return out, nil
 }
@@ -70,12 +82,58 @@ func (s *MemoryStore) ListByProgram(ctx context.Context, id domain.ProgramID) ([
 func (s *MemoryStore) Supersede(ctx context.Context, id domain.FactID, by domain.FactID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.facts[id]; !ok {
+	if id == by {
+		return errors.New("facts: self-supersede is not allowed")
+	}
+	old, ok := s.facts[id]
+	if !ok {
 		return ErrFactNotFound
 	}
-	if _, ok := s.facts[by]; !ok {
+	next, ok := s.facts[by]
+	if !ok {
 		return ErrFactNotFound
+	}
+	if old.Subject != next.Subject || old.Predicate != next.Predicate {
+		return errors.New("facts: supersede must keep subject and predicate")
+	}
+	// Reject cycles: walking from `by` must never reach `id`.
+	for cur := by; cur != ""; {
+		if cur == id {
+			return errors.New("facts: supersede cycle")
+		}
+		cur = s.supersededBy[cur]
 	}
 	s.supersededBy[id] = by
 	return nil
+}
+
+func cloneFact(f domain.ObservedFact) domain.ObservedFact {
+	f.EvidenceRefs = slices.Clone(f.EvidenceRefs)
+	f.Value = cloneValue(f.Value)
+	return f
+}
+
+func cloneValue(v any) any {
+	switch x := v.(type) {
+	case time.Time:
+		return x
+	case []byte:
+		return bytes.Clone(x)
+	case []string:
+		return slices.Clone(x)
+	case []any:
+		out := make([]any, len(x))
+		for i := range x {
+			out[i] = cloneValue(x[i])
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			out[k] = cloneValue(val)
+		}
+		return out
+	default:
+		return v
+	}
 }

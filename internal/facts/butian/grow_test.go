@@ -26,19 +26,22 @@ func TestGrowExtractorDates(t *testing.T) {
 
 	cases := []struct {
 		pred string
-		want time.Time
+		want string
 	}{
-		{facts.PredRegistrationStart, time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)},
-		{facts.PredRegistrationEnd, time.Date(2026, 11, 30, 0, 0, 0, 0, time.UTC)},
-		{facts.PredActivityStart, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)},
-		{facts.PredActivityEnd, time.Date(2026, 11, 30, 0, 0, 0, 0, time.UTC)},
-		{facts.PredPhaseStart, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)},
-		{facts.PredPhaseEnd, time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)},
+		{facts.PredRegistrationStart, "2026-08-24T16:00:00Z"},
+		{facts.PredRegistrationEnd, "2026-11-30T15:59:59.999999999Z"},
+		{facts.PredActivityStart, "2026-08-31T16:00:00Z"},
+		{facts.PredActivityEnd, "2026-11-30T15:59:59.999999999Z"},
+		{facts.PredPhaseStart, "2026-09-30T16:00:00Z"},
+		{facts.PredPhaseEnd, "2026-10-31T15:59:59.999999999Z"},
 	}
 	for _, c := range cases {
 		got, ok := fs.Time(c.pred)
-		if !ok || !got.Equal(c.want) {
-			t.Fatalf("%s = %v (ok=%v), want %v", c.pred, got, ok, c.want)
+		if !ok {
+			t.Fatalf("%s missing", c.pred)
+		}
+		if gotStr := got.UTC().Format(time.RFC3339Nano); gotStr != c.want {
+			t.Fatalf("%s = %s, want %s", c.pred, gotStr, c.want)
 		}
 	}
 }

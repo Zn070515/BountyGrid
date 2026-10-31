@@ -34,6 +34,11 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("postgres ok")
+	case "rollback":
+		if err := runRollback(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "rollback:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("bountygrid dev")
 	default:
@@ -43,7 +48,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|ping|version>")
+	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|version>")
 }
 
 func dsn() (string, error) {
@@ -65,6 +70,24 @@ func runPing(ctx context.Context) error {
 	}
 	defer pool.Close()
 	return pool.Ping(ctx)
+}
+
+func runRollback(ctx context.Context) error {
+	d, err := dsn()
+	if err != nil {
+		return err
+	}
+	pool, err := postgres.Open(ctx, d)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	version, err := postgres.RollbackLast(ctx, pool)
+	if err != nil {
+		return err
+	}
+	fmt.Println("rolled back", version)
+	return nil
 }
 
 func runMigrate(ctx context.Context) error {

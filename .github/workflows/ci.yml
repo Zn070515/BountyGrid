@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bountygrid
+          POSTGRES_PASSWORD: bountygrid_ci
+          POSTGRES_DB: bountygrid
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bountygrid -d bountygrid"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      GOTOOLCHAIN: go1.27.3
+      DATABASE_URL: postgres://bountygrid:bountygrid_ci@127.0.0.1:5432/bountygrid?sslmode=disable
+      TEST_DATABASE_URL: postgres://bountygrid:bountygrid_ci@127.0.0.1:5432/bountygrid?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.3"
+          cache: true
+      - name: Download modules
+        run: go mod download
+      - name: Migrate
+        run: go run ./cmd/bountygrid migrate
+      - name: Test
+        run: go test -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./...

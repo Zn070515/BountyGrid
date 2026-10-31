@@ -1,0 +1,15 @@
+DROP TABLE IF EXISTS audit_events;
+DROP TABLE IF EXISTS ledger_entries;
+DROP TABLE IF EXISTS submissions;
+DROP TABLE IF EXISTS report_drafts;
+DROP TABLE IF EXISTS verifications;
+DROP TABLE IF EXISTS findings;
+DROP TABLE IF EXISTS research_tasks;
+DROP TABLE IF EXISTS opportunities;
+DROP TABLE IF EXISTS competition_snapshots;
+DROP TABLE IF EXISTS action_decisions;
+DROP TABLE IF EXISTS derived_states;
+DROP TABLE IF EXISTS observed_facts;
+DROP TABLE IF EXISTS evidence;
+DROP TABLE IF EXISTS programs;
+DROP TABLE IF EXISTS accounts;

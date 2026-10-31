@@ -18,10 +18,37 @@ type ProgramInput struct {
 	RegistrationStart *time.Time
 	RegistrationEnd   *time.Time
 	ScopeVisibility   domain.ScopeVisibility
+	FactIDs           []domain.FactID
+	Evidence          []domain.EvidenceID
 }
 
 func ProgramInputFromFacts(fs facts.FactSet) (ProgramInput, error) {
 	var in ProgramInput
+	seenFact := make(map[domain.FactID]struct{})
+	seenEvidence := make(map[domain.EvidenceID]struct{})
+	record := func(pred string) {
+		f, ok := fs.Fact(pred)
+		if !ok {
+			return
+		}
+		if _, ok := seenFact[f.ID]; !ok {
+			seenFact[f.ID] = struct{}{}
+			in.FactIDs = append(in.FactIDs, f.ID)
+		}
+		for _, ev := range f.EvidenceRefs {
+			if _, ok := seenEvidence[ev]; !ok {
+				seenEvidence[ev] = struct{}{}
+				in.Evidence = append(in.Evidence, ev)
+			}
+		}
+	}
+	for _, p := range []string{
+		facts.PredProgramStatus, facts.PredProgramPaused, facts.PredProgramStart,
+		facts.PredProgramEnd, facts.PredActivityStart, facts.PredActivityEnd,
+		facts.PredRegistrationStart, facts.PredRegistrationEnd, facts.PredScopeVisibility,
+	} {
+		record(p)
+	}
 	if s, ok := fs.String(facts.PredProgramStatus); ok && s != "" {
 		st := domain.ProgramStatus(s)
 		if !st.Valid() {
@@ -95,6 +122,8 @@ func DeriveProgramState(in ProgramInput, now time.Time, ttl time.Duration) (doma
 		ObservedAt: now,
 		ValidUntil: now.Add(ttl),
 		Confidence: 0.9,
+		Inputs:     in.FactIDs,
+		Evidence:   in.Evidence,
 	}, nil
 }
 
@@ -134,12 +163,16 @@ func DeriveAccountCapability(gates []domain.EligibilityGate, identity, complianc
 		cap.CanSubmit = false
 	}
 	for _, g := range gates {
+		// Program-scoped gates must not affect account-wide capability.
+		if g.ProgramID != nil {
+			continue
+		}
 		if !g.Required || !g.Blocking || g.Satisfied != domain.GateUnsatisfied {
 			continue
 		}
 		cap.BlockingReasons = append(cap.BlockingReasons, g)
 		switch g.Kind {
-		case domain.GateComplianceExam, domain.GatePracticalCertification:
+		case domain.GateComplianceExam:
 			cap.CanSubmit = false
 		case domain.GateBankBinding, domain.GatePayoutSetup:
 			cap.CanPayout = false

@@ -156,7 +156,7 @@ score = score × confidence
 - `Program.Status != RUNNING` → 排除。
 - `AccountCapability.CanSubmit == false` → 只允许“人工准备”类 opportunity，不进入执行队列。
 - `Eligibility.Decision != ELIGIBLE` → 进入 `HumanActionQueue`，不是执行队列。
-- `Scope.Visibility != PUBLIC` → 只允许 `READ_SCOPE` 人工解锁，不进入测试队列。
+- `Scope.Access != GRANTED` → 只允许 `READ_SCOPE` 人工解锁，不进入测试队列；Disclosure 可以是 GATED。
 - `ActionPolicy` 对所需动作 DENY → 排除。
 
 ## 4. Scheduler

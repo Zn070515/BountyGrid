@@ -101,3 +101,57 @@ func TestDeriveAccountCapabilityButianCompliance(t *testing.T) {
 		t.Fatalf("blocking reasons = %d, want 1", len(cap.BlockingReasons))
 	}
 }
+
+func TestPracticalCertificationDoesNotBlockGeneralSubmit(t *testing.T) {
+	identity := true
+	compliance := true
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	pid := domain.ProgramID("p1")
+	gates := []domain.EligibilityGate{{
+		Kind: domain.GatePracticalCertification, ProgramID: &pid,
+		Required: true, Satisfied: domain.GateUnsatisfied, Blocking: true,
+	}}
+	cap := DeriveAccountCapability(gates, &identity, &compliance, nil, now)
+	if !cap.CanSubmit {
+		t.Fatal("program-scoped practical certification must not block general submit")
+	}
+}
+
+func TestProgramStateKeepsProvenance(t *testing.T) {
+	in, err := ProgramInputFromFacts(growFacts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := DeriveProgramState(in, time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Inputs) == 0 || len(st.Evidence) == 0 {
+		t.Fatalf("provenance missing: inputs=%v evidence=%v", st.Inputs, st.Evidence)
+	}
+}
+
+func TestGrowInclusiveEnd(t *testing.T) {
+	in, err := ProgramInputFromFacts(growFacts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2026-11-30 20:00 Asia/Shanghai is still inside the inclusive end date.
+	at := time.Date(2026, 11, 30, 12, 0, 0, 0, time.UTC)
+	open, err := DeriveRegistrationOpen(in, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !open {
+		t.Fatal("registration should be open on 2026-11-30 local time")
+	}
+	// 2026-12-01 00:00 Asia/Shanghai has passed the inclusive end.
+	after := time.Date(2026, 11, 30, 16, 0, 0, 0, time.UTC)
+	open, err = DeriveRegistrationOpen(in, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open {
+		t.Fatal("registration should be closed after local 2026-11-30")
+	}
+}

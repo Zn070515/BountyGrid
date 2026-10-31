@@ -10,6 +10,11 @@ import (
 // Canonical predicates used by state derivation. Platform-native predicates
 // may coexist; state rules only read these canonical keys.
 const (
+	UnitDate     = "date"
+	UnitDateTime = "datetime"
+)
+
+const (
 	PredProgramStatus     = "program.status"
 	PredProgramPaused     = "program.paused"
 	PredProgramStart      = "program.start"
@@ -52,13 +57,29 @@ type FactSet []domain.ObservedFact
 func NewFactSet(fs []domain.ObservedFact) FactSet { return FactSet(fs) }
 
 func (fs FactSet) find(pred string) (domain.ObservedFact, bool) {
-	for i := len(fs) - 1; i >= 0; i-- {
-		if fs[i].Predicate == pred {
-			return fs[i], true
+	best := -1
+	for i := range fs {
+		if fs[i].Predicate != pred {
+			continue
+		}
+		if best == -1 {
+			best = i
+			continue
+		}
+		// Latest observed_at wins; on a tie, the later slice entry wins.
+		if fs[i].ObservedAt.After(fs[best].ObservedAt) ||
+			(fs[i].ObservedAt.Equal(fs[best].ObservedAt) && i > best) {
+			best = i
 		}
 	}
-	return domain.ObservedFact{}, false
+	if best == -1 {
+		return domain.ObservedFact{}, false
+	}
+	return fs[best], true
 }
+
+// Fact returns the latest fact for a predicate.
+func (fs FactSet) Fact(pred string) (domain.ObservedFact, bool) { return fs.find(pred) }
 
 func (fs FactSet) Time(pred string) (time.Time, bool) {
 	f, ok := fs.find(pred)

@@ -172,9 +172,9 @@ SENSITIVE_DATA_READ（默认；仅项目明确“证明型/限额”例外）
 | Action | 默认 | 条件 |
 |--------|------|------|
 | VIEW_PROGRAM / VIEW_RULES | ALLOW | 公开页面 |
-| READ_SCOPE | ALLOW if PUBLIC；否则 REQUIRE_HUMAN | GATED_BY_SIGNUP/NDA/APPROVAL |
-| PASSIVE_ANALYSIS | ALLOW | Scope PUBLIC/已授权；不得主动请求目标 |
-| ACTIVE_HTTP | CONDITIONAL | Program RUNNING；Scope 授权；Constraints 满足 |
+| READ_SCOPE | ALLOW if Access=GRANTED 且 contents known；否则 REQUIRE_HUMAN | Disclosure 可以是 GATED_*；READ_SCOPE 本身不是执行 |
+| PASSIVE_ANALYSIS | ALLOW | Scope Access=GRANTED；不得主动请求目标 |
+| ACTIVE_HTTP | CONDITIONAL | Program RUNNING；Access=GRANTED；Asset 在 Scope；Constraints 满足 |
 | DIRECTORY_ENUMERATION | DENY | 仅项目明确允许且低影响 |
 | SUBDOMAIN_DISCOVERY | CONDITIONAL | 仅授权范围 |
 | AUTOMATED_SCAN | DENY | 仅项目明确允许（如淘天反爬）且限额满足 |
@@ -211,6 +211,8 @@ SENSITIVE_DATA_READ（默认；仅项目明确“证明型/限额”例外）
   INTERNAL_NETWORK → DENY
 ```
 
+限额与预算不是注释：`DecisionContext.UsageToday` 按 `PerInterfaceDailyLimits.Interface` 计数，`BudgetSpent` 对 `BudgetCap` 比较；达到上限直接 `DENY`（`DAILY_LIMIT_EXCEEDED` / `BUDGET_EXCEEDED`），不能靠人工审批绕过。
+
 ## 7. 决策算法
 
 ```go
@@ -218,67 +220,103 @@ func (e *Engine) Decide(ctx context.Context, req domain.ActionRequest) (domain.A
     dc, err := e.loadContext(ctx, req)
     if err != nil { return domain.ActionDecision{}, err }
 
-    // 0. 证据新鲜度
-    if !e.evidenceFresh(dc) {
-        return deny(req, "STALE_EVIDENCE"), nil
+    // 0. 证据新鲜度：执行/提交要求新鲜；查看规则/项目不要求
+    if requiresFreshState(req.Action) && !e.evidenceFresh(dc) {
+        return requireMoreEvidence(req, "STALE_PROGRAM_STATE"), nil
     }
 
-    // 1. 人工专属动作
-    if isHumanOnly(req.Action) && req.HumanApproval == nil {
-        return requireHuman(req, "HUMAN_ONLY_ACTION"), nil
+    // 1. 账号能力
+    if req.Action == domain.ActionReportSubmit && !dc.Account.Capability.CanSubmit {
+        return deny(req, "ACCOUNT_CANNOT_SUBMIT"), nil
     }
 
-    // 2. 账号能力
-    if blocksAccount(req.Action, dc.Account.Capability) {
-        return denyWith(req, "ACCOUNT_CAPABILITY", dc.Account.Capability.BlockingReasons), nil
-    }
-
-    // 3. 项目状态
-    if req.Action != domain.ActionViewProgram &&
-       req.Action != domain.ActionViewRules &&
+    // 2. 项目状态：执行/提交要求 RUNNING；查看不要求
+    if (req.Action.NeedsScope() || req.Action == domain.ActionReportSubmit) &&
        dc.Program.Status.Status != domain.StatusRunning {
         return deny(req, "PROGRAM_NOT_RUNNING"), nil
     }
 
-    // 4. 项目门槛
-    switch dc.Program.Eligibility.Decision {
-    case domain.Ineligible:
-        return deny(req, "PROGRAM_INELIGIBLE"), nil
-    case domain.HumanActionNeeded:
-        return requireHuman(req, "PROGRAM_GATE"), nil
-    case domain.EligibilityUnknown:
-        return requireMoreEvidence(req, "PROGRAM_GATE_UNKNOWN"), nil
+    // 3. 项目门槛：只有参与类动作才评估 Eligibility
+    if req.Action.EligibilityRequired() {
+        switch dc.Program.Eligibility.Decision {
+        case domain.Ineligible:
+            return deny(req, "PROGRAM_INELIGIBLE"), nil
+        case domain.HumanActionNeeded:
+            return requireHuman(req, "PROGRAM_GATE_HUMAN_ACTION"), nil
+        case domain.EligibilityUnknown:
+            return requireMoreEvidence(req, "PROGRAM_GATE_UNKNOWN"), nil
+        }
     }
 
-    // 5. Scope 可见性
-    if actionNeedsScope(req.Action) && dc.Program.Scope.Visibility != domain.ScopePublic {
+    // 4. READ_SCOPE 是人工解锁动作，不是执行
+    if req.Action == domain.ActionReadScope {
+        if dc.Program.Scope.Visibility == domain.ScopeUnknown {
+            return requireMoreEvidence(req, "SCOPE_UNKNOWN"), nil
+        }
+        if dc.Program.Scope.Access == domain.ScopeAccessGranted && dc.Program.Scope.ContentsKnown {
+            return allow(dc)
+        }
+        return requireHuman(req, "SCOPE_GATED"), nil
+    }
+
+    // 5. 执行要求 Access=GRANTED 且 contents known
+    if req.Action.NeedsScope() &&
+       (dc.Program.Scope.Access != domain.ScopeAccessGranted || !dc.Program.Scope.ContentsKnown) {
         return deny(req, "SCOPE_GATED"), nil
     }
 
-    // 6. 动作矩阵
+    // 6. Asset 必须显式属于 Scope
+    if req.Action.NeedsAsset() {
+        if req.AssetID == nil || dc.Asset == nil {
+            return deny(req, "ASSET_REQUIRED"), nil
+        }
+        switch dc.Program.Scope.CheckAsset(*dc.Asset) {
+        case domain.ScopeMatchIncluded:
+        case domain.ScopeMatchConditional:
+            return requireHuman(req, "ASSET_CONDITIONAL"), nil
+        case domain.ScopeMatchExcluded:
+            return deny(req, "ASSET_OUT_OF_SCOPE"), nil
+        default:
+            return requireMoreEvidence(req, "ASSET_SCOPE_UNKNOWN"), nil
+        }
+    }
+
+    // 7. AutomationPolicy：FORBIDDEN 不可被人工审批覆盖
     base := e.actionMatrix[req.Action]
-    if base == DecisionDeny { return deny(req, "ACTION_DENIED"), nil }
-
-    // 7. 项目/平台约束
-    if err := e.checkConstraints(dc); err != nil {
-        return deny(req, err.Error()), nil
+    if cap, ok := automationCapability(dc.Program.Automation, req.Action); ok {
+        switch cap {
+        case domain.CapForbidden:
+            return deny(req, "AUTOMATION_FORBIDDEN"), nil
+        case domain.CapUnknown:
+            return requireMoreEvidence(req, "AUTOMATION_UNKNOWN"), nil
+        case domain.CapConditional:
+            base = domain.DecisionRequireHuman
+        case domain.CapAllowed:
+            if overridableByAutomation(req.Action) {
+                base = domain.DecisionAllow
+            }
+        }
     }
 
-    // 8. 报告完整性
-    if req.Action == domain.ActionReportSubmit && !e.reportComplete(dc) {
-        return requireMoreEvidence(req, "REPORT_INCOMPLETE"), nil
+    // 8. 动作矩阵 / 人工批准
+    if base == domain.DecisionDeny { return deny(req, "ACTION_DENIED"), nil }
+    if req.Action.HumanOnly() && req.HumanApproval == nil {
+        return requireHuman(req, "HUMAN_ONLY_ACTION"), nil
     }
-
-    // 9. 人工批准
-    if base == DecisionRequireHuman && req.HumanApproval == nil {
+    if base == domain.DecisionRequireHuman && req.HumanApproval == nil {
         return requireHuman(req, "APPROVAL_REQUIRED"), nil
     }
-
-    return domain.ActionDecision{
-        Decision: domain.DecisionAllow,
-        Constraints: &dc.Program.Constraints,
-        ExpiresAt: ptr(now().Add(e.decisionTTL(req.Action))),
-    }, nil
+    if req.HumanApproval != nil {
+        if err := validateApproval(req, dc.ResourceID); err != nil {
+            return requireHuman(req, "INVALID_APPROVAL"), nil
+        }
+        if req.HumanApproval.SingleUse {
+            if err := e.ledger.Consume(ctx, req.HumanApproval.ID); err != nil {
+                return requireHuman(req, "APPROVAL_ALREADY_CONSUMED"), nil
+            }
+        }
+    }
+    return allow(dc)
 }
 ```
 
@@ -290,12 +328,19 @@ func (e *Engine) Decide(ctx context.Context, req domain.ActionRequest) (domain.A
 approval_id
 approved_by（人工账号）
 approved_at
+request_id（必须等于本次 ActionRequest）
 action（只能覆盖单个动作）
 program_id
+asset_id（与请求一致，允许两者都为空）
+resource_id（REPORT_SUBMIT 必填：report/finding ID）
+parameters_hash（请求参数 SHA-256）
 scope（项目/资产/时间窗）
 comment
-expires_at（默认 24h，提交类可 1h）
+expires_at（默认 24h，提交类更短）
+single_use（human-only 动作必须 true）
 ```
+
+`REPORT_SUBMIT` 必须做到**单报告、单审批、单消费**：审批绑定 `resource_id` 与 `parameters_hash`，由 `ApprovalLedger` 原子消费；重复使用返回 `REQUIRE_HUMAN`，不能凭一张旧审批提交多份报告。
 
 - 报告提交：审批时展示完整报告、AI披露、证据、影响、范围、重复风险。
 - 报名/NDA/合规考核/认证：审批只代表“允许打开/发起人工流程”，不代表自动完成。
@@ -346,3 +391,6 @@ expires_at（默认 24h，提交类可 1h）
 8. `HumanApproval` 过期 → REQUIRE_HUMAN。
 9. `Scope.Visibility=UNKNOWN` → 不得当空 Scope；READ_SCOPE REQUIRE_MORE_EVIDENCE。
 10. `ObservedAt` 超 TTL → REQUIRE_MORE_EVIDENCE。
+11. `ACTIVE_HTTP` 缺 Asset / Asset 不在 Scope → DENY；Conditional Asset → REQUIRE_HUMAN。
+12. `AutomationPolicy=FORBIDDEN`（如联想禁止 webshell 上传）→ DENY，人工审批也不能覆盖。
+13. `REPORT_SUBMIT` 审批 single-use → 第二次使用 REQUIRE_HUMAN。

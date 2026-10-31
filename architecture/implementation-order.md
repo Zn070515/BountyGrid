@@ -18,10 +18,14 @@
 
 | 阶段 | 状态 |
 |---|---|
-| Phase 0：domain + evidence + postgres migration + CLI | 完成 |
-| Phase 1：audit + facts（含 Butian GROW 抽取器）+ state + policy | 完成 |
-| Phase 2：Adapter（Vulbox 优先）+ Opportunity/Scheduler | 下一步 |
-| Phase 3：Harness / Model Router / Verification / Submission / Ledger | 规划中 |
+| Phase 0：domain + evidence + PostgreSQL schema/repositories/rollback + CLI | 完成 |
+| Phase 1：Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 未开始 |
+| Phase 2：Facts + State | 提前实现并硬化（Reader 接入后回填真实 Fact） |
+| Phase 3：Policy Engine | 提前实现并硬化 |
+| Phase 4：Opportunity / Scheduler | 下一步 |
+| Phase 5+：Harness / Model Router / Verification / Submission / Ledger | 规划中 |
+
+> 当前实现顺序与 canonical 阶段存在交叉：Phase 2/3 的内核先于 Phase 1 Reader 落地，这是为了先把安全不变量固定下来；不改变 Phase 1 的定义，也不把 Reader 推迟成“Phase 2”。
 
 ## 0. 基础层（无业务依赖）
 

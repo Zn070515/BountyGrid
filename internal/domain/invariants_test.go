@@ -30,12 +30,14 @@ func validProgram() Program {
 		Eligibility: validEligibility(),
 		Scope: Scope{
 			Visibility:    ScopePublic,
+			Access:        ScopeAccessGranted,
 			ContentsKnown: true,
 			ObservedAt:    now(),
 		},
 		Reward: RewardPolicy{TaxBasis: TaxUnknown},
 		Automation: AutomationPolicy{
-			AIAnalysis: CapUnknown, AutonomousAgent: CapUnknown, BrowserAutomation: CapUnknown,
+			AIAnalysis: CapUnknown, AutonomousAgent: CapUnknown, ActiveHTTP: CapUnknown,
+			BrowserAutomation: CapUnknown,
 			AutomatedScanning: CapUnknown, DirectoryEnumeration: CapUnknown, SubdomainDiscovery: CapUnknown,
 			HighConcurrency: CapUnknown, BruteForce: CapUnknown, CredentialStuffing: CapUnknown,
 			FileUpload: CapUnknown, StateMutation: CapUnknown, RCEVerification: CapUnknown,
@@ -48,6 +50,7 @@ func validProgram() Program {
 func TestScopeGatedMustNotContainAssets(t *testing.T) {
 	s := Scope{
 		Visibility:    ScopeGatedBySignup,
+		Access:        ScopeAccessNotGranted,
 		ContentsKnown: false,
 		ObservedAt:    now(),
 	}
@@ -112,6 +115,7 @@ func TestProgramValidation(t *testing.T) {
 		t.Fatalf("valid program rejected: %v", err)
 	}
 	p.Scope.Visibility = ScopeGatedByNDA
+	p.Scope.Access = ScopeAccessNotGranted
 	p.Scope.Include = []Asset{{ID: "a1", Value: "example.com"}}
 	if err := p.Validate(); err == nil {
 		t.Fatal("gated program scope with assets should be invalid")

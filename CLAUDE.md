@@ -8,7 +8,7 @@ The repository has three lines:
 
 - `platform-audit/` — the factual baseline: account state, programs, scope visibility, rules, AI policy, payout, automation boundaries.
 - `architecture/` — the full Go design: domain model, evidence/fact/state pipeline, adapters, policy engine, opportunity/scheduler, harness/model router, verification/submission/ledger.
-- `internal/` — implementation. Phase 0 (domain + evidence + PostgreSQL migrations) and Phase 1 (audit + facts + state + policy) are complete.
+- `internal/` — implementation. Phase 0 (domain + evidence + PostgreSQL repositories/rollback) is complete. The core kernel (audit + facts + state + policy, canonical Phase 2/3) is implemented early and hardened; the canonical Phase 1 Browser Sidecar/Readers are NOT started.
 
 Read [`README.md`](README.md) first, then [`architecture/README.md`](architecture/README.md), [`architecture/implementation-order.md`](architecture/implementation-order.md), and [`platform-audit/README.md`](platform-audit/README.md). Do not treat a page observation as a domain rule; findings flow through `Evidence → ObservedFact → DerivedState → PolicyDecision`.
 
@@ -58,9 +58,12 @@ Evidence raw files and screenshots stay local. The database stores metadata, has
 
 - **No state without evidence.** Every `ObservedFact` needs `evidence_refs`, `observed_at`, `confidence`, and `extractor_version`; every `DerivedState` needs inputs and `valid_until`.
 - **Eligibility is `Decision + Gates[]`.** Never collapse it to a single enum. Account-level gates (`COMPLIANCE_EXAM`, `PRACTICAL_CERTIFICATION`, `BANK_BINDING`) live in `AccountCapability`, not `Program.Gates`.
-- **Scope must not degrade.** If `Scope.Visibility != PUBLIC`, `ContentsKnown` is false and include/exclude/conditional lists are empty. `GATED/UNKNOWN` is not an empty scope.
-- **Policy is action-level.** Evaluate `Actor + Account + Program + Asset + Action + Time`. `VIEW_RULES`, `ACTIVE_HTTP`, `REPORT_SUBMIT`, and `PAYOUT` have different decisions.
-- **Human-only actions.** `REPORT_SUBMIT`, `PROGRAM_SIGNUP`, `NDA_ACCEPT`, `COMPLIANCE_EXAM`, `PRACTICAL_CERTIFICATION`, `PAYOUT`, and `BANK_BINDING` never receive `ALLOW` without a human approval.
+- **Scope must not degrade.** `Visibility` is disclosure; `Access` is the current account's access. If `Access != GRANTED`, `ContentsKnown` is false and include/exclude/conditional lists are empty. A signed-up account may be `GATED_BY_SIGNUP + GRANTED`; never rewrite disclosure to PUBLIC to mean "unlocked".
+- **Policy is action-level.** Evaluate `Actor + Account + Program + Asset + Action + Time`. `VIEW_RULES`, `READ_SCOPE`, `ACTIVE_HTTP`, `REPORT_SUBMIT`, and `PAYOUT` have different decisions. Eligibility is only evaluated for participation actions; viewing rules/program is not gated by eligibility.
+- **Execution requires an asset.** `ACTIVE_HTTP` and similar actions need an explicit `AssetID` that matches the program and `Scope.CheckAsset` (INCLUDED / CONDITIONAL / EXCLUDED / UNKNOWN).
+- **Automation policy is authoritative.** `AutomationPolicy=FORBIDDEN` cannot be overridden by human approval; `ALLOW` may override the conservative default matrix only for project-explicit actions.
+- **Human-only actions.** `REPORT_SUBMIT`, `PROGRAM_SIGNUP`, `NDA_ACCEPT`, `COMPLIANCE_EXAM`, `PRACTICAL_CERTIFICATION`, `PAYOUT`, and `BANK_BINDING` never receive `ALLOW` without a human approval. `REPORT_SUBMIT` approval is single-report, single-use, bound to `request_id/asset/resource/parameters_hash`, and consumed by an `ApprovalLedger`.
+- **Dates are business dates.** Date-only platform values are parsed in `Asia/Shanghai`; end dates are inclusive (`23:59:59.999999999`), and the fact unit is `date`, never UTC midnight.
 - **Internal endpoints are observed transports.** Xianzhi `openapi/cst/*`, Vulbox `vapi.vulbox.com/*`, and Butian AJAX endpoints are `BROWSER_OBSERVED_API`, not official APIs. Do not bypass authentication or call admin APIs.
 - **No real testing in this repository.** Do not generate payloads, run scanners, brute force, enumerate directories/subdomains, pivot into internal networks, or attempt DoS. The harness may only execute actions with an unexpired `ALLOW` decision.
 - **Secrets never enter git.** `.env.local`, screenshots (`*.png/*.jpg`), browser state, cookies, tokens, ID/bank/phone/email values are excluded. Keep it that way.

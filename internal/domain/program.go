@@ -15,7 +15,10 @@ type Asset struct {
 }
 
 type Scope struct {
+	// Visibility is disclosure (who may see the scope), not access (whether
+	// this account has been granted it).
 	Visibility         ScopeVisibility
+	Access             ScopeAccess
 	ContentsKnown      bool
 	Include            []Asset
 	Exclude            []Asset
@@ -83,6 +86,7 @@ type RewardPolicy struct {
 type AutomationPolicy struct {
 	AIAnalysis                CapabilityStatus
 	AutonomousAgent           CapabilityStatus
+	ActiveHTTP                CapabilityStatus
 	BrowserAutomation         CapabilityStatus
 	AutomatedScanning         CapabilityStatus
 	DirectoryEnumeration      CapabilityStatus
@@ -123,6 +127,7 @@ type ProgramState struct {
 	ObservedAt time.Time
 	ValidUntil time.Time
 	Confidence Confidence
+	Inputs     []FactID
 	Evidence   []EvidenceID
 }
 

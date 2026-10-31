@@ -211,6 +211,8 @@ func (s ProgramStatus) Valid() bool {
 	}
 }
 
+// ScopeVisibility describes disclosure, not whether this account has access.
+// After signup/NDA, Disclosure can remain GATED_* while Access is GRANTED.
 type ScopeVisibility string
 
 const (
@@ -229,6 +231,34 @@ func (v ScopeVisibility) Valid() bool {
 		return false
 	}
 }
+
+// ScopeAccess is the current account's access to the scope contents.
+type ScopeAccess string
+
+const (
+	ScopeAccessGranted    ScopeAccess = "GRANTED"
+	ScopeAccessNotGranted ScopeAccess = "NOT_GRANTED"
+	ScopeAccessUnknown    ScopeAccess = "UNKNOWN"
+)
+
+func (a ScopeAccess) Valid() bool {
+	switch a {
+	case ScopeAccessGranted, ScopeAccessNotGranted, ScopeAccessUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// ScopeMatch is the result of checking one asset against a scope.
+type ScopeMatch string
+
+const (
+	ScopeMatchIncluded    ScopeMatch = "INCLUDED"
+	ScopeMatchConditional ScopeMatch = "CONDITIONAL"
+	ScopeMatchExcluded    ScopeMatch = "EXCLUDED"
+	ScopeMatchUnknown     ScopeMatch = "UNKNOWN"
+)
 
 type EnvironmentType string
 
@@ -387,13 +417,46 @@ func (a Action) HumanOnly() bool {
 }
 
 // NeedsScope reports actions that require an unlocked scope.
+// NeedsScope reports actions whose execution requires granted scope contents.
+// READ_SCOPE is deliberately excluded: reading a gated scope is how a human
+// unlocks it, so it is handled separately.
 func (a Action) NeedsScope() bool {
 	switch a {
-	case ActionReadScope, ActionPassiveAnalysis, ActionActiveHTTP, ActionDirectoryEnum,
+	case ActionPassiveAnalysis, ActionActiveHTTP, ActionDirectoryEnum,
 		ActionSubdomainDiscovery, ActionAutomatedScan, ActionHighConcurrency,
 		ActionBruteForce, ActionCredentialStuffing, ActionFileUpload,
 		ActionStateMutation, ActionRCEVerify, ActionSensitiveDataRead,
 		ActionInternalNetwork, ActionLateralMovement, ActionDoS:
+		return true
+	default:
+		return false
+	}
+}
+
+// NeedsAsset reports actions that must name a specific in-scope asset.
+func (a Action) NeedsAsset() bool {
+	switch a {
+	case ActionActiveHTTP, ActionDirectoryEnum, ActionSubdomainDiscovery,
+		ActionAutomatedScan, ActionHighConcurrency, ActionBruteForce,
+		ActionCredentialStuffing, ActionFileUpload, ActionStateMutation,
+		ActionRCEVerify, ActionSensitiveDataRead, ActionInternalNetwork,
+		ActionLateralMovement, ActionDoS:
+		return true
+	default:
+		return false
+	}
+}
+
+// EligibilityRequired reports actions that require program participation.
+// Viewing rules/program and reading a gated scope are not participation.
+func (a Action) EligibilityRequired() bool {
+	switch a {
+	case ActionPassiveAnalysis, ActionActiveHTTP, ActionDirectoryEnum,
+		ActionSubdomainDiscovery, ActionAutomatedScan, ActionHighConcurrency,
+		ActionBruteForce, ActionCredentialStuffing, ActionFileUpload,
+		ActionStateMutation, ActionRCEVerify, ActionSensitiveDataRead,
+		ActionInternalNetwork, ActionLateralMovement, ActionDoS,
+		ActionReportSubmit:
 		return true
 	default:
 		return false

@@ -42,11 +42,11 @@ func (GrowExtractor) Extract(ctx context.Context, in facts.Input) ([]domain.Obse
 		if m == nil {
 			return nil
 		}
-		start, err := parseDate(m[1])
+		start, err := parseDate(m[1], false)
 		if err != nil {
 			return fmt.Errorf("butian/grow: parse %s start: %w", startPred, err)
 		}
-		end, err := parseDate(m[2])
+		end, err := parseDate(m[2], true)
 		if err != nil {
 			return fmt.Errorf("butian/grow: parse %s end: %w", endPred, err)
 		}
@@ -61,11 +61,11 @@ func (GrowExtractor) Extract(ctx context.Context, in facts.Input) ([]domain.Obse
 		return nil, err
 	}
 	if m := growPhaseRE.FindStringSubmatch(in.Text); m != nil {
-		start, err := parseDate(m[1])
+		start, err := parseDate(m[1], false)
 		if err != nil {
 			return nil, fmt.Errorf("butian/grow: parse phase start: %w", err)
 		}
-		end, err := parseDate(m[2])
+		end, err := parseDate(m[2], true)
 		if err != nil {
 			return nil, fmt.Errorf("butian/grow: parse phase end: %w", err)
 		}
@@ -90,7 +90,7 @@ func makeFact(in facts.Input, pred string, v any) domain.ObservedFact {
 		ProgramID:        in.ProgramID,
 		Predicate:        pred,
 		Value:            v,
-		Unit:             "timestamp",
+		Unit:             facts.UnitDate,
 		ObservedAt:       in.CapturedAt,
 		EvidenceRefs:     []domain.EvidenceID{in.EvidenceID},
 		Confidence:       0.9,
@@ -98,11 +98,21 @@ func makeFact(in facts.Input, pred string, v any) domain.ObservedFact {
 	}
 }
 
-func parseDate(s string) (time.Time, error) {
+// parseDate parses a date-only value in the platform's business timezone.
+// endOfDay makes the end boundary inclusive (23:59:59.999999999 local), which
+// matches how Chinese platforms display "截止到 11 月 30 日".
+func parseDate(s string, endOfDay bool) (time.Time, error) {
 	s = strings.TrimSpace(s)
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		loc = time.FixedZone("CST", 8*60*60)
+	}
 	layouts := []string{"2006.1.2", "2006.01.02", "2006/1/2", "2006/01/02"}
 	for _, l := range layouts {
-		if t, err := time.ParseInLocation(l, s, time.UTC); err == nil {
+		if t, err := time.ParseInLocation(l, s, loc); err == nil {
+			if endOfDay {
+				t = t.Add(24*time.Hour - time.Nanosecond)
+			}
 			return t, nil
 		}
 	}

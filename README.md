@@ -5,10 +5,11 @@
 <p><strong>漏洞赏金统一控制层</strong> · <strong>Bug bounty control plane for Xianzhi, Vulbox and Butian</strong></p>
 
 <p>
+  <a href="https://github.com/Zn070515/BountyGrid/actions/workflows/ci.yml"><img src="https://github.com/Zn070515/BountyGrid/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <img src="https://img.shields.io/badge/Go-1.27.3-00ADD8?logo=go&logoColor=white" alt="Go 1.27.3">
   <img src="https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
   <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/Phase-1%20audit%20%2B%20facts%20%2B%20policy-blue" alt="Phase 1">
+  <img src="https://img.shields.io/badge/Phase-0%20%2B%20kernel%20hardening-blue" alt="Phase 0 + kernel hardening">
 </p>
 
 <p>
@@ -25,7 +26,7 @@
 
 BountyGrid 是面向国内漏洞赏金平台（阿里云先知 / ASRC、漏洞盒子、补天）的 **统一控制层**。它不代替人挖洞，也不做自动扫描器；它负责把平台事实、账号资格、项目 Scope、测试约束、竞争数据与收益账本收束成一套可审计、可调度、可回放的 Go 系统。
 
-当前阶段：**平台配置审计完成 + 完整架构定稿 + Phase 0/1 落地**。尚未对任何厂商资产发起真实测试，未报名、未签 NDA、未提交漏洞、未提现。
+当前阶段：**平台配置审计完成 + 完整架构定稿 + Phase 0 完成 + 核心内核（audit/facts/state/policy）硬化完成**。尚未对任何厂商资产发起真实测试，未报名、未签 NDA、未提交漏洞、未提现。
 
 > **项目状态：** `platform-audit/` 是三平台账号与规则的事实基线；`architecture/` 是完整 Go 设计；`internal/` 是实现。验证入口以 `architecture/implementation-order.md` 的退出条件为准；本文不复述测试数量、commit 或 CI 结果，避免与代码漂移。
 
@@ -35,7 +36,7 @@ BountyGrid 是面向国内漏洞赏金平台（阿里云先知 / ASRC、漏洞�
 |---|---|---|---|
 | [`platform-audit/`](platform-audit/) | 事实线 | 三平台账号状态、项目体系、Scope、规则、AI 政策、收款、自动化边界 | 审计完成；[`CORRECTIONS.md`](platform-audit/CORRECTIONS.md) 记录 GROW 日期等纠正 |
 | [`architecture/`](architecture/) | 设计线 | Domain Model、Evidence/Fact/State、Adapter、Policy Engine、Opportunity、Harness、Submission、Ledger | 完整定稿；按依赖实现 |
-| [`internal/`](internal/) | 实现线 | Go 类型/不变量、Evidence Store、PostgreSQL 迁移、Audit/Facts/State/Policy | Phase 0 + Phase 1 完成 |
+| [`internal/`](internal/) | 实现线 | Go 类型/不变量、Evidence Store、PostgreSQL 迁移/仓储、Audit/Facts/State/Policy | Phase 0 完成；核心内核硬化完成；Phase 1 Readers 未开始 |
 
 **不混用三条线。** 平台事实变化先改 `platform-audit/` 与 Evidence；领域语义变化先改 `architecture/` 与不变量；实现只消费前两者的结论，不把观察值直接写成业务规则。
 
@@ -112,10 +113,29 @@ bash probes/butian/grow-dates.sh
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`、`cmd/bountygrid`（migrate/ping） | 完成 |
-| Phase 1 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成 |
-| Phase 2 | 平台 Adapter（Vulbox 优先）、Opportunity/Scheduler | 下一步 |
-| Phase 3 | Harness / Model Router / Verification / Submission / Revenue Ledger | 规划中 |
+| Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
+| 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 未开始 |
+| Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
+| Phase 4 | Opportunity / Scheduler | 下一步 |
+| Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
+
+### Phase 0 + core kernel hardening
+
+本轮已修复的 P1/P2：
+
+- Policy 只在参与类动作评估 Eligibility；`VIEW_PROGRAM/VIEW_RULES` 不再被未报名/未达标拦截
+- `READ_SCOPE` 从执行类动作中拆出：GATED 时 `REQUIRE_HUMAN`，已解锁时 `ALLOW`
+- Scope 拆成 `Visibility`（披露）与 `Access`（当前账号访问）；报名后可为 `GATED_BY_SIGNUP + GRANTED`
+- Policy 增加 `Asset` 校验：缺失、跨 Program、Scope 外、Conditional 分别处理
+- Policy 消费 `AutomationPolicy`：`FORBIDDEN` 不可被人工审批覆盖；`ALLOW` 可覆盖默认条件矩阵
+- `HumanApproval` 绑定 `request_id/action/program/asset/resource/parameters_hash/expires/single_use`，并由 `ApprovalLedger` 一次性消费
+- `PRACTICAL_CERTIFICATION` 改为 Program-scoped，不再阻断普通/公益提交
+- State 保留输入 Fact/Evidence provenance，并提供 supersede invalidation tracker
+- GROW 日期按 `Asia/Shanghai`、date-only、inclusive end 处理
+- Evidence/Audit 深拷贝 + 脱敏/secret scan；Fact Store batch atomic + latest + supersede 校验
+- PostgreSQL 增加 repositories、`0002_constraints.sql` 与 down migration / `rollback` CLI
+- GitHub Actions CI：migrate + unit/integration test + vet + build
 
 ## 文档入口 · Docs
 
@@ -133,6 +153,7 @@ bash probes/butian/grow-dates.sh
 | [`architecture/harness-model-router.md`](architecture/harness-model-router.md) | 执行边界、工具注册、模型路由 |
 | [`architecture/research-lifecycle.md`](architecture/research-lifecycle.md) | Finding/Verification/Report/Submission/Ledger |
 | [`architecture/implementation-order.md`](architecture/implementation-order.md) | 依赖顺序实现计划（非 MVP 切分） |
+| [`docs/advices/2026-10-31-phase-0-1-hardening.md`](docs/advices/2026-10-31-phase-0-1-hardening.md) | 对复核意见的逐项修复记录 |
 | [`CLAUDE.md`](CLAUDE.md) | 编码代理的运行约定与仓库红线 |
 
 ## 工程原则 · Engineering rules

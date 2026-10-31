@@ -19,6 +19,21 @@ DerivedState:  grow.registration_open = true (at 2026-10-31)
 PolicyDecision: ALLOW_VIEW; REQUIRE_HUMAN_TO_REGISTER
 ```
 
+### 日期语义
+
+网页日期通常表示“截止到当天结束”，且国内平台应按 `Asia/Shanghai` 解释，而不是 UTC midnight：
+
+```text
+2026.11.30 报名截止
+  -> start: 2026-11-30 00:00:00 +08
+  -> end:   2026-11-30 23:59:59.999999999 +08
+  -> ObservedFact.Unit = "date"
+```
+
+- 日期精度存入 `Unit`（`date` / `datetime`），不把 date-only 硬转成 UTC midnight。
+- 结束边界按 `INCLUSIVE_END` 处理；`now.After(end)` 只在本地日期真正过去后才为 true。
+- 若未来出现明确时刻（如 `2026-11-30 18:00`），使用 `datetime` 并保留时区。
+
 ## 2. Evidence
 
 ### 2.1 类型

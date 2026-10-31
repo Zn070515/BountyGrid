@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -57,9 +58,10 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
-			names = append(names, e.Name())
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") || strings.HasSuffix(e.Name(), ".down.sql") {
+			continue
 		}
+		names = append(names, e.Name())
 	}
 	sort.Strings(names)
 
@@ -69,6 +71,61 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 	}
 	return nil
+}
+
+// RollbackLast applies the .down.sql for the newest applied migration and
+// removes its schema_migrations row. It is intentionally one-at-a-time.
+func RollbackLast(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("postgres: begin rollback: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(0x42474644)`); err != nil {
+		return "", fmt.Errorf("postgres: lock rollback: %w", err)
+	}
+
+	var version string
+	if err := tx.QueryRow(ctx,
+		`SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1`,
+	).Scan(&version); err != nil {
+		if err == pgx.ErrNoRows {
+			return "", fmt.Errorf("postgres: no migrations to roll back")
+		}
+		return "", fmt.Errorf("postgres: find latest migration: %w", err)
+	}
+
+	downName := strings.TrimSuffix(version, ".sql") + ".down.sql"
+	down, err := migrationFS.ReadFile("migrations/" + downName)
+	if err != nil {
+		return "", fmt.Errorf("postgres: missing down migration %s: %w", downName, err)
+	}
+	if _, err := tx.Exec(ctx, string(down)); err != nil {
+		return "", fmt.Errorf("postgres: apply %s: %w", downName, err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = $1`, version); err != nil {
+		return "", fmt.Errorf("postgres: remove %s: %w", version, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("postgres: commit rollback: %w", err)
+	}
+	return version, nil
+}
+
+// RollbackAll rolls back every applied migration, newest first.
+func RollbackAll(ctx context.Context, pool *pgxpool.Pool) error {
+	for {
+		version, err := RollbackLast(ctx, pool)
+		if err != nil {
+			if strings.Contains(err.Error(), "no migrations") {
+				return nil
+			}
+			return err
+		}
+		if version == "" {
+			return nil
+		}
+	}
 }
 
 func applyOne(ctx context.Context, pool *pgxpool.Pool, name string) error {

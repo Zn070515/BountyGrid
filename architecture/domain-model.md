@@ -164,6 +164,7 @@ const (
 
 type EligibilityGate struct {
     Kind      GateKind
+    ProgramID *ProgramID // nil = account-wide; non-nil = only that program
     Required  bool
     Satisfied GateSatisfaction
     Blocking  bool
@@ -272,6 +273,7 @@ type ProgramState struct {
     ObservedAt       time.Time
     ValidUntil       time.Time
     Confidence       Confidence
+    Inputs           []FactID
     Evidence         []EvidenceID
 }
 ```
@@ -285,6 +287,14 @@ const (
     ScopeGatedByNDA     ScopeVisibility = "GATED_BY_NDA"
     ScopeGatedByApproval ScopeVisibility = "GATED_BY_APPROVAL"
     ScopeUnknown        ScopeVisibility = "UNKNOWN"
+)
+
+type ScopeAccess string
+
+const (
+    ScopeAccessGranted    ScopeAccess = "GRANTED"
+    ScopeAccessNotGranted ScopeAccess = "NOT_GRANTED"
+    ScopeAccessUnknown    ScopeAccess = "UNKNOWN"
 )
 
 type EnvironmentType string
@@ -332,7 +342,10 @@ type Asset struct {
 }
 
 type Scope struct {
+    // Visibility is disclosure: who may see the scope.
     Visibility          ScopeVisibility
+    // Access is this account's access: GRANTED / NOT_GRANTED / UNKNOWN.
+    Access              ScopeAccess
     ContentsKnown       bool
     Include             []Asset
     Exclude             []Asset
@@ -347,8 +360,9 @@ type Scope struct {
 
 **不变量**
 
-- `Visibility != ScopePublic` 时 `ContentsKnown=false`，`Include/Exclude/Conditional` 必须为空；读取方必须显式处理 `GATED/UNKNOWN`。
-- `Asset.InScope` 只对 `PUBLIC` 或已解锁的 Scope 有意义；GATED 下的资产不能进入 Harness。
+- `Access != GRANTED` 时 `ContentsKnown=false`，`Include/Exclude/Conditional` 必须为空。
+- 报名后可以同时是 `Visibility=GATED_BY_SIGNUP`、`Access=GRANTED`、`ContentsKnown=true`；不能为了表达“已解锁”而把 Disclosure 改成 PUBLIC。
+- `Asset.InScope` 只在 `Access=GRANTED` 且 contents known 时参与判断；GATED 下的资产不能进入 Harness。
 - Scope 变更必须产生新 `ObservedFact` 与新的 `Scope` 快照，不能原地改。
 
 ```go
@@ -454,6 +468,7 @@ const (
 type AutomationPolicy struct {
     AIAnalysis               CapabilityStatus
     AutonomousAgent          CapabilityStatus
+    ActiveHTTP               CapabilityStatus
     BrowserAutomation        CapabilityStatus
     AutomatedScanning        CapabilityStatus
     DirectoryEnumeration     CapabilityStatus
@@ -516,7 +531,7 @@ type Program struct {
 
 - `Program.Gates` 只能包含项目级门槛；账号级门槛在 `Account.Gates/Capability`。
 - `Program.Status.Status != RUNNING` 时，任何执行类 Action 都 DENY；查看类可 ALLOW。
-- `Program.Scope.Visibility != PUBLIC` 时，不能把 Scope 传给 Harness。
+- `Program.Scope.Access != GRANTED` 或 `ContentsKnown=false` 时，不能把 Scope 传给 Harness；Disclosure 可以仍是 GATED。
 - `Program.Eligibility.Decision != ELIGIBLE` 时，不能创建 ResearchTask；但可查看规则/发起人工操作。
 
 ## 7. ActionRequest / ActionDecision
@@ -591,10 +606,19 @@ const (
 )
 
 type HumanApproval struct {
-    ApprovedBy string
-    ApprovedAt time.Time
-    Scope      string // 审批覆盖的动作/项目/时间窗
-    Comment    string
+    ID             string
+    ApprovedBy     string
+    ApprovedAt     time.Time
+    RequestID      string
+    Action         Action
+    ProgramID      ProgramID
+    AssetID        *AssetID
+    ResourceID     string // report/finding/task for resource-scoped actions
+    ParametersHash string
+    Scope          string
+    ExpiresAt      time.Time
+    SingleUse      bool
+    Comment        string
 }
 
 type ActionDecision struct {
@@ -774,11 +798,13 @@ LedgerEntry *─1 Submission
 ## 10. 不变量清单（用于测试）
 
 1. 没有 EvidenceRef 的 Fact 不能落库。
-2. `Scope.Visibility != PUBLIC` 时 `ContentsKnown == false` 且 Include/Exclude 为空。
-3. `Account.Capability.CanSubmit == false` 时 `REPORT_SUBMIT` 不得 ALLOW。
-4. `Program.Status != RUNNING` 时执行类 Action 不得 ALLOW。
-5. `Eligibility.Decision != ELIGIBLE` 时不能创建 ResearchTask。
+2. `Scope.Access != GRANTED` 时 `ContentsKnown == false` 且 Include/Exclude 为空；`Visibility=GATED_* + Access=GRANTED` 是合法状态。
+3. `Account.Capability.CanSubmit == false` 时 `REPORT_SUBMIT` 不得 ALLOW；`PRACTICAL_CERTIFICATION` 只按 Program 作用域生效。
+4. `Program.Status != RUNNING` 时执行类 Action 不得 ALLOW；查看类不要求。
+5. `Eligibility.Decision != ELIGIBLE` 时不能创建 ResearchTask；查看规则/项目不受 Eligibility 影响。
 6. 任何 `REPORT_SUBMIT/PAYOUT/PROGRAM_SIGNUP/NDA_ACCEPT` 没有 HumanApproval 时不得 ALLOW。
+7. `ACTIVE_HTTP` 必须有 Asset，且 `Scope.CheckAsset` 必须为 INCLUDED；CONDITIONAL 需人工，EXCLUDED/UNKNOWN 不得 ALLOW。
+8. `AutomationPolicy=FORBIDDEN` 时对应 Action 不得 ALLOW，人工审批也不能覆盖。
 7. `ActionDecision.ExpiresAt` 过期后，Harness 必须重新申请。
 8. `LedgerEntry` 金额不得为负（退款/费用单独 Kind）。
 9. `Evidence` 不得包含密码/Cookie/身份证/银行卡/手机号明文。

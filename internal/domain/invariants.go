@@ -3,6 +3,12 @@ package domain
 import "fmt"
 
 func (e Evidence) Validate() error {
+	if e.ID == "" {
+		return fmt.Errorf("evidence: id is empty")
+	}
+	if e.RawRef == "" {
+		return fmt.Errorf("evidence %s: raw_ref is empty", e.ID)
+	}
 	if !e.Platform.Valid() {
 		return fmt.Errorf("evidence %s: invalid platform %q", e.ID, e.Platform)
 	}
@@ -200,15 +206,24 @@ func (a Account) Validate() error {
 
 func (s Scope) Validate() error {
 	if !s.Visibility.Valid() {
-		return fmt.Errorf("scope: invalid visibility %q", s.Visibility)
+		return fmt.Errorf("scope: invalid disclosure %q", s.Visibility)
+	}
+	if !s.Access.Valid() {
+		return fmt.Errorf("scope: invalid access %q", s.Access)
+	}
+	if s.Visibility == ScopePublic && s.Access != ScopeAccessGranted {
+		return fmt.Errorf("scope: public disclosure requires GRANTED access")
 	}
 	if s.ObservedAt.IsZero() {
 		return fmt.Errorf("scope: observed_at is zero")
 	}
-	if s.Visibility != ScopePublic {
+	if s.Access != ScopeAccessGranted {
 		if s.ContentsKnown || len(s.Include) > 0 || len(s.Exclude) > 0 || len(s.Conditional) > 0 {
-			return fmt.Errorf("scope: non-public visibility must not contain contents")
+			return fmt.Errorf("scope: non-granted access must not contain contents")
 		}
+	}
+	if !s.ContentsKnown && (len(s.Include) > 0 || len(s.Exclude) > 0 || len(s.Conditional) > 0) {
+		return fmt.Errorf("scope: contents_known=false with non-empty asset lists")
 	}
 	for _, a := range append(append(append([]Asset{}, s.Include...), s.Exclude...), s.Conditional...) {
 		if a.ID == "" || a.Value == "" {
@@ -255,8 +270,8 @@ func (p Program) Validate() error {
 		return fmt.Errorf("program %s: invalid tax basis %q", p.ID, p.Reward.TaxBasis)
 	}
 	for _, c := range []CapabilityStatus{
-		p.Automation.AIAnalysis, p.Automation.AutonomousAgent, p.Automation.BrowserAutomation,
-		p.Automation.AutomatedScanning, p.Automation.DirectoryEnumeration,
+		p.Automation.AIAnalysis, p.Automation.AutonomousAgent, p.Automation.ActiveHTTP,
+		p.Automation.BrowserAutomation, p.Automation.AutomatedScanning, p.Automation.DirectoryEnumeration,
 		p.Automation.SubdomainDiscovery, p.Automation.HighConcurrency,
 		p.Automation.BruteForce, p.Automation.CredentialStuffing,
 		p.Automation.FileUpload, p.Automation.StateMutation, p.Automation.RCEVerification,
@@ -317,6 +332,9 @@ func (d ActionDecision) Validate() error {
 		}
 		if d.HumanApproval.ProgramID != "" && d.ProgramID != "" && d.HumanApproval.ProgramID != d.ProgramID {
 			return fmt.Errorf("decision %s: approval program mismatch", d.ID)
+		}
+		if d.HumanApproval.RequestID != "" && d.RequestID != "" && d.HumanApproval.RequestID != d.RequestID {
+			return fmt.Errorf("decision %s: approval request mismatch", d.ID)
 		}
 	}
 	return nil

@@ -3,7 +3,9 @@ package domain
 import "time"
 
 type EligibilityGate struct {
-	Kind      GateKind
+	Kind GateKind
+	// ProgramID nil means account-wide; non-nil means applies only to that program.
+	ProgramID *ProgramID
 	Required  bool
 	Satisfied GateSatisfaction
 	Blocking  bool

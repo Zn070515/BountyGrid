@@ -18,17 +18,21 @@ func EvaluateEligibility(account domain.Account, program domain.Program, now tim
 		policyVersion = DefaultPolicyVersion
 	}
 
-	byKind := make(map[domain.GateKind]domain.EligibilityGate)
+	byKey := make(map[string]domain.EligibilityGate)
 	add := func(g domain.EligibilityGate) error {
 		if err := g.Validate(); err != nil {
 			return err
 		}
-		if prev, ok := byKind[g.Kind]; ok {
-			byKind[g.Kind] = mergeGate(prev, g)
+		key := gateKey(g)
+		if prev, ok := byKey[key]; ok {
+			byKey[key] = mergeGate(prev, g)
 		} else {
-			byKind[g.Kind] = g
+			byKey[key] = g
 		}
 		return nil
+	}
+	applies := func(g domain.EligibilityGate) bool {
+		return g.ProgramID == nil || *g.ProgramID == program.ID
 	}
 
 	if account.IdentityVerified != nil && !*account.IdentityVerified {
@@ -48,11 +52,17 @@ func EvaluateEligibility(account domain.Account, program domain.Program, now tim
 		}
 	}
 	for _, g := range account.Gates {
+		if !applies(g) {
+			continue
+		}
 		if err := add(g); err != nil {
 			return domain.EligibilityState{}, err
 		}
 	}
 	for _, g := range account.Capability.BlockingReasons {
+		if !applies(g) {
+			continue
+		}
 		if err := add(g); err != nil {
 			return domain.EligibilityState{}, err
 		}
@@ -63,8 +73,8 @@ func EvaluateEligibility(account domain.Account, program domain.Program, now tim
 		}
 	}
 
-	gates := make([]domain.EligibilityGate, 0, len(byKind))
-	for _, g := range byKind {
+	gates := make([]domain.EligibilityGate, 0, len(byKey))
+	for _, g := range byKey {
 		gates = append(gates, g)
 	}
 
@@ -107,6 +117,14 @@ func EvaluateEligibility(account domain.Account, program domain.Program, now tim
 		return st, fmt.Errorf("policy: eligibility: %w", err)
 	}
 	return st, nil
+}
+
+func gateKey(g domain.EligibilityGate) string {
+	pid := ""
+	if g.ProgramID != nil {
+		pid = string(*g.ProgramID)
+	}
+	return string(g.Kind) + "|" + pid
 }
 
 func mergeGate(a, b domain.EligibilityGate) domain.EligibilityGate {

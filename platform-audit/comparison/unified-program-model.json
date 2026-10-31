@@ -14,12 +14,39 @@
   ],
   "pipeline": {
     "Evidence": {
-      "fields": ["evidence_id", "source_type", "transport_kind", "url", "page_title", "captured_at", "content_hash", "raw_ref", "notes"],
-      "source_type": ["ACCOUNT", "PROGRAM", "POLICY", "PAYOUT", "ANNOUNCEMENT", "SCREENSHOT"],
+      "fields": [
+        "evidence_id",
+        "source_type",
+        "transport_kind",
+        "url",
+        "page_title",
+        "captured_at",
+        "content_hash",
+        "raw_ref",
+        "notes"
+      ],
+      "source_type": [
+        "ACCOUNT",
+        "PROGRAM",
+        "POLICY",
+        "PAYOUT",
+        "ANNOUNCEMENT",
+        "SCREENSHOT"
+      ],
       "notes": "截图/HTML/公告原文/接口响应都算 Evidence；保留原始引用，便于回溯。"
     },
     "ObservedFact": {
-      "fields": ["fact_id", "subject", "predicate", "value", "unit", "observed_at", "evidence_refs", "confidence", "extractor_version"],
+      "fields": [
+        "fact_id",
+        "subject",
+        "predicate",
+        "value",
+        "unit",
+        "observed_at",
+        "evidence_refs",
+        "confidence",
+        "extractor_version"
+      ],
       "examples": [
         "program:butian:grow.registration_end = 2026-11-30",
         "program:xianzhi:152.scope_visibility = GATED_BY_SIGNUP",
@@ -28,7 +55,16 @@
       "notes": "Fact 只陈述观察到什么，不判断能不能做。"
     },
     "DerivedState": {
-      "fields": ["state_id", "subject", "state", "inputs", "observed_at", "derived_at", "confidence", "rule_version"],
+      "fields": [
+        "state_id",
+        "subject",
+        "state",
+        "inputs",
+        "observed_at",
+        "derived_at",
+        "confidence",
+        "rule_version"
+      ],
       "examples": [
         "program:butian:grow.registration_open = true",
         "program:vulbox:lenovo.status = RUNNING",
@@ -37,14 +73,37 @@
       "notes": "DerivedState 可重算；输入变化时旧状态必须失效。"
     },
     "PolicyDecision": {
-      "fields": ["decision_id", "request_id", "decision", "reasons", "gates_evaluated", "policy_version", "decided_at", "human_approval_ref"],
-      "decision_enum": ["ALLOW", "DENY", "REQUIRE_HUMAN", "REQUIRE_MORE_EVIDENCE"],
+      "fields": [
+        "decision_id",
+        "request_id",
+        "decision",
+        "reasons",
+        "gates_evaluated",
+        "policy_version",
+        "decided_at",
+        "human_approval_ref"
+      ],
+      "decision_enum": [
+        "ALLOW",
+        "DENY",
+        "REQUIRE_HUMAN",
+        "REQUIRE_MORE_EVIDENCE"
+      ],
       "notes": "Decision 不是事实；它依赖当时的账号、项目、资产、动作、时间与策略版本。"
     }
   },
   "enums": {
-    "platform": ["xianzhi", "vulbox", "butian"],
-    "transport_kind": ["OFFICIAL_API", "BROWSER_PAGE", "BROWSER_OBSERVED_API", "MANUAL_IMPORT"],
+    "platform": [
+      "xianzhi",
+      "vulbox",
+      "butian"
+    ],
+    "transport_kind": [
+      "OFFICIAL_API",
+      "BROWSER_PAGE",
+      "BROWSER_OBSERVED_API",
+      "MANUAL_IMPORT"
+    ],
     "program_type": [
       "BRAND_SRC",
       "ENTERPRISE_SRC",
@@ -61,8 +120,19 @@
       "NEWCOMER_TASK",
       "CAMPAIGN"
     ],
-    "derived_program_status": ["RUNNING", "PAUSED", "UPCOMING", "ENDED", "UNKNOWN"],
-    "eligibility_decision": ["ELIGIBLE", "INELIGIBLE", "HUMAN_ACTION_REQUIRED", "UNKNOWN"],
+    "derived_program_status": [
+      "RUNNING",
+      "PAUSED",
+      "UPCOMING",
+      "ENDED",
+      "UNKNOWN"
+    ],
+    "eligibility_decision": [
+      "ELIGIBLE",
+      "INELIGIBLE",
+      "HUMAN_ACTION_REQUIRED",
+      "UNKNOWN"
+    ],
     "gate_kind": [
       "IDENTITY_VERIFIED",
       "COMPLIANCE_EXAM",
@@ -83,9 +153,25 @@
       "TEST_ACCOUNT_REPORTING",
       "VPN_ACCESS"
     ],
-    "gate_satisfaction": ["SATISFIED", "UNSATISFIED", "UNKNOWN", "NOT_REQUIRED"],
-    "capability_status": ["allowed", "conditional", "forbidden", "unknown"],
-    "scope_visibility": ["PUBLIC", "GATED_BY_SIGNUP", "GATED_BY_NDA", "GATED_BY_APPROVAL", "UNKNOWN"],
+    "gate_satisfaction": [
+      "SATISFIED",
+      "UNSATISFIED",
+      "UNKNOWN",
+      "NOT_REQUIRED"
+    ],
+    "capability_status": [
+      "allowed",
+      "conditional",
+      "forbidden",
+      "unknown"
+    ],
+    "scope_visibility": [
+      "PUBLIC",
+      "GATED_BY_SIGNUP",
+      "GATED_BY_NDA",
+      "GATED_BY_APPROVAL",
+      "UNKNOWN"
+    ],
     "action": [
       "VIEW_PROGRAM",
       "VIEW_RULES",
@@ -113,6 +199,11 @@
       "PRACTICAL_CERTIFICATION",
       "PAYOUT",
       "BANK_BINDING"
+    ],
+    "scope_access": [
+      "GRANTED",
+      "NOT_GRANTED",
+      "UNKNOWN"
     ]
   },
   "core_types": {
@@ -128,12 +219,17 @@
       "required": "bool",
       "satisfied": "enum(gate_satisfaction)",
       "blocking": "bool",
-      "evidence": ["EvidenceRef"],
-      "notes": "string|null"
+      "evidence": [
+        "EvidenceRef"
+      ],
+      "notes": "string|null",
+      "program_id": "string|null; nil=account-wide, non-nil=only that program"
     },
     "EligibilityState": {
       "decision": "enum(eligibility_decision)",
-      "gates": ["EligibilityGate"],
+      "gates": [
+        "EligibilityGate"
+      ],
       "evaluated_at": "ISO8601",
       "policy_version": "string",
       "notes": "string|null"
@@ -144,7 +240,9 @@
       "can_join_programs": "bool",
       "can_submit": "bool",
       "can_payout": "bool",
-      "blocking_reasons": ["EligibilityGate"],
+      "blocking_reasons": [
+        "EligibilityGate"
+      ],
       "evaluated_at": "ISO8601",
       "notes": "账号级能力；补天合规考核失败会在这里表现为 can_submit=false，而不是某个 Program 的 eligibility 标签。"
     },
@@ -166,43 +264,81 @@
       "bank_bound": "bool|null",
       "wechat_bound": "bool|null",
       "pending_submission_limit": "int|null",
-      "joined_program_ids": ["string"],
+      "joined_program_ids": [
+        "string"
+      ],
       "capability": "AccountCapability",
-      "gates": ["EligibilityGate"],
-      "evidence": ["EvidenceRef"],
+      "gates": [
+        "EligibilityGate"
+      ],
+      "evidence": [
+        "EvidenceRef"
+      ],
       "observed_at": "ISO8601"
     },
     "Scope": {
-      "visibility": "enum(scope_visibility)",
+      "visibility": "enum(scope_visibility) — disclosure only",
       "include_assets": "bool",
       "exclude_assets": "bool",
       "asset_priority": "bool",
       "asset_specific_rules": "bool",
-      "environment_types": ["WEB", "APP", "PC", "H5", "API", "IOT", "CLOUD", "MINI_PROGRAM", "GENERAL_SOFTWARE", "INTEL"],
-      "asset_tiers": ["string（平台原生语义）"],
-      "include": ["string"],
-      "exclude": ["string"],
-      "conditional": ["string"],
+      "environment_types": [
+        "WEB",
+        "APP",
+        "PC",
+        "H5",
+        "API",
+        "IOT",
+        "CLOUD",
+        "MINI_PROGRAM",
+        "GENERAL_SOFTWARE",
+        "INTEL"
+      ],
+      "asset_tiers": [
+        "string（平台原生语义）"
+      ],
+      "include": [
+        "string"
+      ],
+      "exclude": [
+        "string"
+      ],
+      "conditional": [
+        "string"
+      ],
       "scope_change_history": "bool|partial|unknown",
-      "contents": "UNKNOWN when visibility != PUBLIC",
+      "contents": "UNKNOWN when access != GRANTED or contents_known=false",
       "observed_at": "ISO8601",
-      "evidence": ["EvidenceRef"]
+      "evidence": [
+        "EvidenceRef"
+      ],
+      "access": "enum(scope_access) — current account access",
+      "contents_known": "bool; false when access != GRANTED",
+      "check_asset": "INCLUDED|CONDITIONAL|EXCLUDED|UNKNOWN"
     },
     "ProgramConstraint": {
       "max_rps": "number|null",
       "max_concurrency": "number|null",
-      "allowed_time_windows": ["string"],
+      "allowed_time_windows": [
+        "string"
+      ],
       "vpn_required": "bool|PROGRAM_SPECIFIC|unknown",
       "dedicated_ip_required": "bool|PROGRAM_SPECIFIC|unknown",
       "researcher_header_required": "bool|unknown",
       "test_account_required": "bool|PROGRAM_SPECIFIC|unknown",
       "test_account_reporting_required": "bool|null",
-      "per_interface_daily_limits": ["string"],
+      "per_interface_daily_limits": [
+        "string"
+      ],
       "budget_cap": "number|null",
       "same_type_pause_threshold": "string|null",
       "impact_reporting_required": "bool|null",
-      "allowed_methods": ["string"],
-      "forbidden_methods": ["string"]
+      "allowed_methods": [
+        "string"
+      ],
+      "forbidden_methods": [
+        "string"
+      ]
     },
     "Program": {
       "platform": "enum(platform)",
@@ -213,13 +349,32 @@
       "status_reason": "string|null",
       "status_observed_at": "ISO8601",
       "eligibility": "EligibilityState",
-      "gates": ["EligibilityGate"],
+      "gates": [
+        "EligibilityGate"
+      ],
       "reward": "object",
       "scope": "Scope",
       "constraints": "ProgramConstraint",
-      "automation_policy": "object",
-      "submission": "object",
-      "evidence": ["EvidenceRef"]
+      "automation_policy": {
+        "active_http": "enum(capability_status)",
+        "forbidden_override": "FORBIDDEN cannot be overridden by human approval",
+        "other_capabilities": "AIAnalysis/AutonomousAgent/BrowserAutomation/AutomatedScanning/DirectoryEnumeration/SubdomainDiscovery/HighConcurrency/BruteForce/CredentialStuffing/FileUpload/StateMutation/RCEVerification/SensitiveDataRead/InternalNetwork/LateralMovement/DoS"
+      },
+      "submission": {
+        "approval_binding": [
+          "request_id",
+          "action",
+          "program_id",
+          "asset_id",
+          "resource_id",
+          "parameters_hash",
+          "single_use"
+        ],
+        "approval_single_use": "REPORT_SUBMIT must be one report / one approval / one consumption"
+      },
+      "evidence": [
+        "EvidenceRef"
+      ]
     },
     "ActionRequest": {
       "request_id": "string",
@@ -232,13 +387,19 @@
       "parameters": "object",
       "requested_at": "ISO8601",
       "purpose": "string",
-      "evidence": ["EvidenceRef"]
+      "evidence": [
+        "EvidenceRef"
+      ]
     },
     "ActionDecision": {
       "request_id": "string",
       "decision": "ALLOW|DENY|REQUIRE_HUMAN|REQUIRE_MORE_EVIDENCE",
-      "reasons": ["string"],
-      "evaluated_gates": ["EligibilityGate"],
+      "reasons": [
+        "string"
+      ],
+      "evaluated_gates": [
+        "EligibilityGate"
+      ],
       "policy_version": "string",
       "decided_at": "ISO8601",
       "human_approval_ref": "string|null",
@@ -259,7 +420,9 @@
       "saturation": "float|null（0-1，基于有效漏洞数/参与者/奖励池）",
       "reward_pool_cny": "number|null",
       "confidence": "float（0-1）",
-      "evidence": ["EvidenceRef"]
+      "evidence": [
+        "EvidenceRef"
+      ]
     },
     "Opportunity": {
       "opportunity_id": "string",
@@ -271,23 +434,40 @@
       "expected_return_per_cost": "float|null",
       "competition_penalty": "float",
       "confidence": "float",
-      "inputs": ["fact_id/state_id/competition_snapshot_id"],
+      "inputs": [
+        "fact_id/state_id/competition_snapshot_id"
+      ],
       "evaluated_at": "ISO8601"
+    },
+    "HumanApproval": {
+      "id": "string",
+      "approved_by": "string",
+      "approved_at": "ISO8601",
+      "request_id": "string",
+      "action": "enum(action)",
+      "program_id": "string",
+      "asset_id": "string|null",
+      "resource_id": "string（REPORT_SUBMIT 必填）",
+      "parameters_hash": "sha256(hex)",
+      "scope": "string",
+      "expires_at": "ISO8601",
+      "single_use": "bool（human-only 必须 true）",
+      "comment": "string|null"
     }
   },
   "action_policy_matrix": {
     "VIEW_PROGRAM": "ALLOW",
     "VIEW_RULES": "ALLOW",
-    "READ_SCOPE": "ALLOW if scope.visibility==PUBLIC; REQUIRE_HUMAN if GATED_BY_SIGNUP/NDA/APPROVAL; DENY if UNKNOWN+no path",
+    "READ_SCOPE": "ALLOW if scope.access==GRANTED and contents_known; REQUIRE_HUMAN if GATED; REQUIRE_MORE_EVIDENCE if UNKNOWN",
     "PASSIVE_ANALYSIS": "ALLOW if scope PUBLIC and capability allowed/conditional",
-    "ACTIVE_HTTP": "CONDITIONAL -> ALLOW only if program RUNNING, scope PUBLIC/authorized, capability allowed/conditional, constraints satisfied",
+    "ACTIVE_HTTP": "CONDITIONAL; requires AssetID in scope; CONDITIONAL asset => REQUIRE_HUMAN; EXCLUDED/UNKNOWN => DENY",
     "DIRECTORY_ENUMERATION": "DENY by default; only if program explicitly allows and constraints satisfied",
     "SUBDOMAIN_DISCOVERY": "CONDITIONAL; scope must be PUBLIC/authorized",
-    "AUTOMATED_SCAN": "DENY by default; only if program explicitly allows (e.g. Xianzhi 淘天反爬) and limits satisfied",
+    "AUTOMATED_SCAN": "DENY by default; project AutomationPolicy ALLOW may override; FORBIDDEN cannot be overridden; daily limits/budget enforced",
     "HIGH_CONCURRENCY": "DENY by default",
     "BRUTE_FORCE": "CONDITIONAL; program-specific limits",
     "CREDENTIAL_STUFFING": "DENY by default; program-specific proof-only exceptions",
-    "FILE_UPLOAD": "CONDITIONAL; program-specific webshell bans",
+    "FILE_UPLOAD": "CONDITIONAL; project AutomationPolicy FORBIDDEN => DENY even with approval",
     "STATE_MUTATION": "DENY by default; program-specific minimal-impact exceptions",
     "RCE_VERIFY": "CONDITIONAL; proof-only, stop after proof",
     "SENSITIVE_DATA_READ": "DENY by default; proof-only exceptions with hard limits",
@@ -305,43 +485,153 @@
   },
   "platform_mappings": {
     "xianzhi": {
-      "transport": ["BROWSER_PAGE", "BROWSER_OBSERVED_API"],
-      "account_gates": ["IDENTITY_VERIFIED"],
-      "program_gates": ["PROGRAM_SIGNUP"],
+      "transport": [
+        "BROWSER_PAGE",
+        "BROWSER_OBSERVED_API"
+      ],
+      "account_gates": [
+        "IDENTITY_VERIFIED"
+      ],
+      "program_gates": [
+        "PROGRAM_SIGNUP"
+      ],
       "scope_visibility": "GATED_BY_SIGNUP",
-      "native_fields": ["task_state(进行中/任务结束/任务暂停)", "asset_tiers(超级/关键/核心/一般/边缘)", "安全币"],
+      "native_fields": [
+        "task_state(进行中/任务结束/任务暂停)",
+        "asset_tiers(超级/关键/核心/一般/边缘)",
+        "安全币"
+      ],
       "notes": "未报名时提交按钮 disabled、资产范围 NotSignUp；已结束任务仍显示报名按钮。"
     },
     "vulbox": {
-      "transport": ["BROWSER_PAGE", "BROWSER_OBSERVED_API"],
-      "account_gates": ["IDENTITY_VERIFIED", "BANK_BINDING (payout)"],
-      "program_gates": ["PROGRAM_SIGNUP", "APPLICATION_REVIEW", "NDA", "PROFILE_COMPLETION", "REPUTATION"],
+      "transport": [
+        "BROWSER_PAGE",
+        "BROWSER_OBSERVED_API"
+      ],
+      "account_gates": [
+        "IDENTITY_VERIFIED",
+        "BANK_BINDING (payout)"
+      ],
+      "program_gates": [
+        "PROGRAM_SIGNUP",
+        "APPLICATION_REVIEW",
+        "NDA",
+        "PROFILE_COMPLETION",
+        "REPUTATION"
+      ],
       "scope_visibility": "PUBLIC for enterprise SRC; GATED_BY_SIGNUP/NDA for advanced/private",
-      "native_fields": ["season/段位", "碎银(闪测)", "提成金(众测)", "免手续费额度", "项目暂停中状态"],
+      "native_fields": [
+        "season/段位",
+        "碎银(闪测)",
+        "提成金(众测)",
+        "免手续费额度",
+        "项目暂停中状态"
+      ],
       "notes": "企业SRC已加入可直接提交；高级项目申请+审核+NDA；专属/私密先签《保密承诺书》。"
     },
     "butian": {
-      "transport": ["BROWSER_PAGE", "BROWSER_OBSERVED_API"],
-      "account_gates": ["IDENTITY_VERIFIED", "COMPLIANCE_EXAM", "BANK_BINDING (payout)"],
-      "program_gates": ["PRACTICAL_CERTIFICATION", "PROGRAM_SIGNUP", "STUDENT_VERIFICATION", "TEAM_MEMBERSHIP", "NDA (众测)"],
+      "transport": [
+        "BROWSER_PAGE",
+        "BROWSER_OBSERVED_API"
+      ],
+      "account_gates": [
+        "IDENTITY_VERIFIED",
+        "COMPLIANCE_EXAM",
+        "BANK_BINDING (payout)"
+      ],
+      "program_gates": [
+        "PRACTICAL_CERTIFICATION",
+        "PROGRAM_SIGNUP",
+        "STUDENT_VERIFICATION",
+        "TEAM_MEMBERSHIP",
+        "NDA (众测)"
+      ],
       "scope_visibility": "GATED_BY_SIGNUP for 专属SRC; PUBLIC-ish for 公益/通用",
-      "native_fields": ["KB/RYB", "积分(1KB/5RMB=1)", "厂商权重(≥1/=0)", "通用2.0产品等级A-E", "实战认证", "合规考核", "接收类别暂停", "月度荣誉/跃秀新星"],
+      "native_fields": [
+        "KB/RYB",
+        "积分(1KB/5RMB=1)",
+        "厂商权重(≥1/=0)",
+        "通用2.0产品等级A-E",
+        "实战认证",
+        "合规考核",
+        "接收类别暂停",
+        "月度荣誉/跃秀新星"
+      ],
       "notes": "合规考核是账号级 can_submit 阻塞；实战认证是专属SRC的 program gate；新用户待审核限5个。"
     }
   },
   "cross_platform_gaps": [
-    {"field": "EligibilityState.decision + gates[]", "why": "原模型把 eligibility 做成单枚举，无法表达“同时需要报名+审核+NDA+银行卡+历史信誉+学生认证”。"},
-    {"field": "AccountCapability.can_submit + blocking_reasons", "why": "补天合规考核是账号级硬阻断，不是某个 Program 的属性；不能挂在 program.gates 上。"},
-    {"field": "Evidence/ObservedFact/DerivedState 分层", "why": "GROW 日期错误证明：直接存 status/end_date 会把抽取错误固化成事实；必须可回溯原始证据重算。"},
-    {"field": "DerivedState.observed_at/confidence/rule_version", "why": "RUNNING/PAUSED/ENDED 不能脱离观察时间与置信度存在。"},
-    {"field": "Scope.visibility + contents=UNKNOWN", "why": "NotSignUp 不能被解析成空 scope；否则会静默判定“无资产可测”。"},
-    {"field": "TransportKind.BROWSER_OBSERVED_API", "why": "三平台内部接口不是官方API；不能直接实现成 REST Adapter。"},
-    {"field": "CompetitionSnapshot（Top1/3/10 share, duplicate_pressure, saturation）", "why": "竞争数据要参与 Scheduler/Opportunity，而不是展示项。"},
-    {"field": "Opportunity.expected_return / expected_research_cost", "why": "避免被“最高赏金 88888”宣传数字诱导，按期望收益/成本排序。"},
-    {"field": "ProgramConstraint.per_interface_daily_limits/budget_cap/same_type_pause_threshold", "why": "先知淘天反爬、补天通用2.0等项目级约束无法用 max_rps 表达。"},
-    {"field": "Reward.tax_basis/staged_payment/commission", "why": "补天存在税前/税后两种表述与分期付款；漏洞盒子有提成金。"},
-    {"field": "Submission.accepted_categories/paused_categories/status_values", "why": "补天 Web/IoT vs 工控/OS/通用软件暂停；三平台状态机不同。"},
-    {"field": "AI disclosure fields", "why": "补天GROW AI赛道要求填写大模型名称+版本、AI工具名称。"},
-    {"field": "estimated_count + count_confidence", "why": "漏洞盒子1513 vs 1511证明分页推算不能当强约束；所有计数需标注估计/置信度。"}
+    {
+      "field": "EligibilityState.decision + gates[]",
+      "why": "原模型把 eligibility 做成单枚举，无法表达“同时需要报名+审核+NDA+银行卡+历史信誉+学生认证”。"
+    },
+    {
+      "field": "AccountCapability.can_submit + blocking_reasons",
+      "why": "补天合规考核是账号级硬阻断，不是某个 Program 的属性；不能挂在 program.gates 上。"
+    },
+    {
+      "field": "Evidence/ObservedFact/DerivedState 分层",
+      "why": "GROW 日期错误证明：直接存 status/end_date 会把抽取错误固化成事实；必须可回溯原始证据重算。"
+    },
+    {
+      "field": "DerivedState.observed_at/confidence/rule_version",
+      "why": "RUNNING/PAUSED/ENDED 不能脱离观察时间与置信度存在。"
+    },
+    {
+      "field": "Scope.visibility + contents=UNKNOWN",
+      "why": "NotSignUp 不能被解析成空 scope；否则会静默判定“无资产可测”。"
+    },
+    {
+      "field": "TransportKind.BROWSER_OBSERVED_API",
+      "why": "三平台内部接口不是官方API；不能直接实现成 REST Adapter。"
+    },
+    {
+      "field": "CompetitionSnapshot（Top1/3/10 share, duplicate_pressure, saturation）",
+      "why": "竞争数据要参与 Scheduler/Opportunity，而不是展示项。"
+    },
+    {
+      "field": "Opportunity.expected_return / expected_research_cost",
+      "why": "避免被“最高赏金 88888”宣传数字诱导，按期望收益/成本排序。"
+    },
+    {
+      "field": "ProgramConstraint.per_interface_daily_limits/budget_cap/same_type_pause_threshold",
+      "why": "先知淘天反爬、补天通用2.0等项目级约束无法用 max_rps 表达。"
+    },
+    {
+      "field": "Reward.tax_basis/staged_payment/commission",
+      "why": "补天存在税前/税后两种表述与分期付款；漏洞盒子有提成金。"
+    },
+    {
+      "field": "Submission.accepted_categories/paused_categories/status_values",
+      "why": "补天 Web/IoT vs 工控/OS/通用软件暂停；三平台状态机不同。"
+    },
+    {
+      "field": "AI disclosure fields",
+      "why": "补天GROW AI赛道要求填写大模型名称+版本、AI工具名称。"
+    },
+    {
+      "field": "estimated_count + count_confidence",
+      "why": "漏洞盒子1513 vs 1511证明分页推算不能当强约束；所有计数需标注估计/置信度。"
+    },
+    {
+      "field": "Scope.disclosure + Scope.access",
+      "why": "报名后 Scope 仍可为 GATED_BY_SIGNUP，但当前账号 Access=GRANTED 且 contents known；单 Visibility 无法表达。"
+    },
+    {
+      "field": "EligibilityGate.ProgramID",
+      "why": "账号上存储的 PRACTICAL_CERTIFICATION 只能作用于专属SRC，不能全局阻断公益/普通提交。"
+    },
+    {
+      "field": "ActionPolicy Asset check",
+      "why": "ACTIVE_HTTP 必须绑定 AssetID，并检查 Program/Scope Include/Exclude/Conditional；否则执行层可越界。"
+    },
+    {
+      "field": "AutomationPolicy forbidden override",
+      "why": "项目明确 FORBIDDEN 的 Action 不能被人工审批覆盖。"
+    },
+    {
+      "field": "HumanApproval single-use binding",
+      "why": "REPORT_SUBMIT 必须绑定 request/asset/resource/parameters_hash 并一次性消费，避免一张审批复用多份报告。"
+    }
   ]
 }

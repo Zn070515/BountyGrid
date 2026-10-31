@@ -50,6 +50,46 @@ func TestMemoryStoreNotFound(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreClonesMutableFields(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	e := sampleEvidence("e1")
+	e.Redactions = []string{"phone"}
+	if err := s.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, "e1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.Redactions[0] = "changed"
+	again, err := s.Get(ctx, "e1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Redactions[0] != "phone" {
+		t.Fatalf("store was mutated through Get: %v", again.Redactions)
+	}
+}
+
+func TestPrepareRedactsAndHashes(t *testing.T) {
+	e := sampleEvidence("e1")
+	e.ContentHash = ""
+	got, redacted, findings, err := Prepare(e, "phone 13800138000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected findings")
+	}
+	if redacted == "phone 13800138000" || got.ContentHash == "" {
+		t.Fatalf("not redacted/hashed: %q %q", redacted, got.ContentHash)
+	}
+	if len(got.Redactions) == 0 || got.Redactions[0] != "phone" {
+		t.Fatalf("redactions = %v", got.Redactions)
+	}
+}
+
 func TestMemoryStoreListByPlatform(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()

@@ -1,11 +1,14 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/Zn070515/BountyGrid/internal/redact"
 )
 
 // Event is an immutable audit record. Payload must not contain secrets.
@@ -27,8 +30,13 @@ func (e Event) Validate() error {
 	if e.RecordedAt.IsZero() {
 		return fmt.Errorf("audit: recorded_at is zero")
 	}
-	if len(e.Payload) > 0 && !json.Valid(e.Payload) {
-		return fmt.Errorf("audit: payload is not valid json")
+	if len(e.Payload) > 0 {
+		if !json.Valid(e.Payload) {
+			return fmt.Errorf("audit: payload is not valid json")
+		}
+		if findings := redact.Scan(string(e.Payload)); len(findings) > 0 {
+			return fmt.Errorf("audit: payload contains sensitive value (%s)", findings[0].Kind)
+		}
 	}
 	return nil
 }
@@ -65,6 +73,7 @@ func (s *MemoryStore) Append(ctx context.Context, e Event) (int64, error) {
 	defer s.mu.Unlock()
 	s.nextID++
 	e.ID = s.nextID
+	e.Payload = bytes.Clone(e.Payload)
 	s.events = append(s.events, e)
 	return e.ID, nil
 }
@@ -83,6 +92,7 @@ func (s *MemoryStore) List(ctx context.Context, f Filter) ([]Event, error) {
 		if f.EntityID != "" && e.EntityID != f.EntityID {
 			continue
 		}
+		e.Payload = bytes.Clone(e.Payload)
 		out = append(out, e)
 		if f.Limit > 0 && len(out) >= f.Limit {
 			break
