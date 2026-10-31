@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/adapter"
+	"github.com/Zn070515/BountyGrid/internal/adapter/butian"
 	"github.com/Zn070515/BountyGrid/internal/adapter/vulbox"
 	"github.com/Zn070515/BountyGrid/internal/adapter/xianzhi"
 	"github.com/Zn070515/BountyGrid/internal/domain"
@@ -94,7 +95,7 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 	var o syncOptions
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&o.Platform, "platform", "vulbox", "platform: vulbox or xianzhi")
+	fs.StringVar(&o.Platform, "platform", "vulbox", "platform: vulbox, xianzhi or butian")
 	fs.BoolVar(&o.Programs, "programs", true, "read the project/task list")
 	fs.BoolVar(&o.Account, "account", false, "read the account (requires a logged-in session)")
 	fs.StringVar(&o.ProgramID, "program", "", "read one program/task by native id (e.g. vulbox 444); implies scope+policy")
@@ -118,8 +119,12 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 		if o.Session == "" {
 			o.Session = "xzprobe"
 		}
+	case "butian":
+		if o.Session == "" {
+			o.Session = "btprobe"
+		}
 	default:
-		return o, errors.New("sync: -platform must be vulbox or xianzhi")
+		return o, errors.New("sync: -platform must be vulbox, xianzhi or butian")
 	}
 	if o.RawDir == "" {
 		o.RawDir = ".evidence/" + o.Platform
@@ -170,6 +175,8 @@ func newReader(opts syncOptions) (adapter.Reader, *sidecar.Client, error) {
 		reader, err = vulbox.NewReader(client, vulbox.ReaderOptions{RawDir: opts.RawDir})
 	case "xianzhi":
 		reader, err = xianzhi.NewReader(client, xianzhi.ReaderOptions{RawDir: opts.RawDir})
+	case "butian":
+		reader, err = butian.NewReader(client, butian.ReaderOptions{RawDir: opts.RawDir})
 	default:
 		err = fmt.Errorf("sync: unsupported platform %q", opts.Platform)
 	}
