@@ -80,7 +80,7 @@
 **当前实现（2026-10-31）**：
 
 - `internal/adapter/xianzhi` 已实现 `AuthStatus/SyncAccount/SyncPrograms/SyncProgram/SyncScope/SyncPolicy`，任务数据从 `.card-item` 的 React fiber `task` 对象读取。
-- 状态/类型映射已实测：`status 4/5/6 = RUNNING/ENDED/PAUSED`，`type 1/2 = SRC/企业众测`；全量 5 页实测 **91 条 = 34 RUNNING / 54 ENDED / 3 PAUSED，61 SRC / 30 企业众测**，1058 Fact、5 Evidence，与审计一致。
+- 状态/类型映射已实测：`status 4/5/6 = RUNNING/ENDED/PAUSED`，`type 1/2 = SRC/企业众测`；全量 5 页实测 **91 条 = 34 RUNNING / 54 ENDED / 3 PAUSED，61 SRC / 30 企业众测**，1058 Fact、5 Evidence，与审计一致；已通过 `-persist` 落库。
 - `SyncScope` 对未报名任务返回 `GATED_BY_SIGNUP + NOT_GRANTED + ContentsKnown=false`；已报名任务的资产解析未验证。
 - 账号同步 `auth=OK`，但个人资料页只有“实名认证”标签、无文本状态；`identity_verified` 保持 nil（`CanSubmit=false`，fail-closed），待补账号状态提取器。
 - 翻页/同 hash 重开需 `reload`；曾遇控制台数据接口 `os error 10060` 导致 SPA 0 卡片，reload 后恢复。退出条件中的“落库”仍需 Phase 2 用例层持久化。
@@ -94,7 +94,7 @@
 
 - `internal/adapter/butian` 已实现 `AuthStatus/SyncAccount/SyncPrograms/SyncProgram/SyncScope/SyncPolicy`。
 - 37 专属SRC 已实测：从项目大厅已渲染 DOM 的 `.plan-exclusive-src .company-card` 读取，**37/37，259 Fact，1 Evidence**，全部 `RUNNING/PRIVATE_EXCLUSIVE/HUMAN_ACTION_REQUIRED`（报名 + 实战认证）。
-- 快照持久化已接入 `sync -persist`：Evidence → Facts → Program/Account；实测 Vulbox 50 项目/750 Fact/1 Evidence 落库。
+- 快照持久化已接入 `sync -persist`：Evidence → Facts → Program/Account；实测 Vulbox 50 项目/750 Fact/1 Evidence、Xianzhi 91 项目/1058 Fact/5 Evidence、Vulbox 444 详情（PUBLIC/GRANTED，FileUpload=FORBIDDEN）落库；累计 141/1830/8，0 条 Fact 缺 EvidenceRef。
 - 卡片无原生 company ID，ProgramID = 公司名 SHA-1 前缀；后续有原生 ID 时迁移。
 - 账号中心/提交页的浏览器导航报 `os error 10060`（curl 302 可达），反爬/验证码会话阻止新导航；账号 Gate 代码已实现但未实测，`ComplianceExam` 未知时强制 `CanSubmit=false`。
 - 公益SRC `/Reward/pub` 可用（200 页/30 条）但未接入；GROW 页面未联调（`GrowExtractor` 已有单测）。
