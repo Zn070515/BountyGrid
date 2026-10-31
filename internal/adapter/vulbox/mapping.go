@@ -77,14 +77,25 @@ func programFromProject(p apiProject, evID domain.EvidenceID, at time.Time) (dom
 		return domain.Program{}, nil, fmt.Errorf("vulbox: project has no id: %w", adapter.ErrUnsupported)
 	}
 	status := mapProgramStatus(string(p.Status))
-	start := time.Unix(int64(p.TaskStime), 0).UTC()
-	end := time.Unix(int64(p.TaskEtime), 0).UTC()
 
-	fs := []domain.ObservedFact{
-		projectFact(evID, pid, facts.PredProgramStatus, string(status), "", at),
-		projectFact(evID, pid, facts.PredProgramPaused, status == domain.StatusPaused, "", at),
-		projectFact(evID, pid, facts.PredProgramStart, start, facts.UnitDateTime, at),
-		projectFact(evID, pid, facts.PredProgramEnd, end, facts.UnitDateTime, at),
+	statusFact := projectFact(evID, pid, facts.PredProgramStatus, string(status), "", at)
+	pausedFact := projectFact(evID, pid, facts.PredProgramPaused, status == domain.StatusPaused, "", at)
+	fs := []domain.ObservedFact{statusFact, pausedFact}
+	statusInputs := []domain.FactID{statusFact.ID, pausedFact.ID}
+	// A missing timestamp is not 1970. Emit start/end only when the platform
+	// supplied one; time.Unix(0,0) would otherwise be a passed end date and the
+	// deriver would mark a RUNNING program ENDED.
+	if p.TaskStime > 0 {
+		f := projectFact(evID, pid, facts.PredProgramStart, time.Unix(int64(p.TaskStime), 0).UTC(), facts.UnitDateTime, at)
+		fs = append(fs, f)
+		statusInputs = append(statusInputs, f.ID)
+	}
+	if p.TaskEtime > 0 {
+		f := projectFact(evID, pid, facts.PredProgramEnd, time.Unix(int64(p.TaskEtime), 0).UTC(), facts.UnitDateTime, at)
+		fs = append(fs, f)
+		statusInputs = append(statusInputs, f.ID)
+	}
+	fs = append(fs,
 		projectFact(evID, pid, facts.PredScopeVisibility, string(domain.ScopeUnknown), "", at),
 		projectFact(evID, pid, predProjectType, string(p.Type), "", at),
 		projectFact(evID, pid, predProjectStatus, string(p.Status), "", at),
@@ -96,8 +107,7 @@ func programFromProject(p apiProject, evID domain.EvidenceID, at time.Time) (dom
 		projectFact(evID, pid, predProjectRewardMin, p.BonusRange.LowMin, "", at),
 		projectFact(evID, pid, predProjectRewardMax, p.BonusRange.SeriousMax, "", at),
 		projectFact(evID, pid, predProjectDifficult, p.DifficultName, "", at),
-	}
-	statusInputs := []domain.FactID{fs[0].ID, fs[1].ID, fs[2].ID, fs[3].ID}
+	)
 
 	prog := domain.Program{
 		ID:       pid,

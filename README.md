@@ -318,6 +318,7 @@ go run ./cmd/bountygrid sync -platform butian -programs
 | [`architecture/implementation-order.md`](architecture/implementation-order.md) | 依赖顺序实现计划（非 MVP 切分） |
 | [`docs/advices/2026-10-31-phase-0-1-hardening.md`](docs/advices/2026-10-31-phase-0-1-hardening.md) | 对复核意见的逐项修复记录 |
 | [`docs/advices/2026-10-31-phase-0-1-second-review.md`](docs/advices/2026-10-31-phase-0-1-second-review.md) | 第二次复核结论、已修问题与遗留项 |
+| [`docs/advices/2026-11-01-phase-1-5-high-review.md`](docs/advices/2026-11-01-phase-1-5-high-review.md) | Phase 1–5 high review 的 11 项修复与验证 |
 | [`CLAUDE.md`](CLAUDE.md) | 编码代理的运行约定与仓库红线 |
 
 ## 工程原则 · Engineering rules

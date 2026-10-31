@@ -343,10 +343,19 @@ func (r *Reader) pageText(ctx context.Context) (string, error) {
 	return s, nil
 }
 
-func (r *Reader) closeOverlays(ctx context.Context) {
-	// Promotional drawers may open after navigation. Wait for them, close them,
-	// then wait until the profile identity text is visible (best-effort).
-	script := `(async()=>{
+func (r *Reader) closeOverlays(ctx context.Context, waitIdentity bool) {
+	// Promotional drawers may open after navigation. Wait for them and close
+	// them (best-effort). The identity wait is needed only on the profile page:
+	// waiting for it elsewhere burns ~5s per page and never succeeds.
+	wait := ""
+	if waitIdentity {
+		wait = `for(let i=0;i<50;i++){
+			const t=(document.body&&document.body.innerText)||'';
+			if(t.includes('已实名')||t.includes('未实名')) break;
+			await new Promise(r=>setTimeout(r,100));
+		}`
+	}
+	script := fmt.Sprintf(`(async()=>{
 		let clicked=0;
 		for(let i=0;i<60;i++){
 			const closers=[...document.querySelectorAll('.anticon-close, .mask.close, .drawer .close, .ant-modal-close')];
@@ -356,12 +365,9 @@ func (r *Reader) closeOverlays(ctx context.Context) {
 			}
 			await new Promise(r=>setTimeout(r,100));
 		}
-		for(let i=0;i<50;i++){
-			if((document.body.innerText||'').includes('已实名')) break;
-			await new Promise(r=>setTimeout(r,100));
-		}
+		%s
 		return JSON.stringify({clicked});
-	})()`
+	})()`, wait)
 	_, _ = r.browser.Eval(ctx, script)
 }
 
@@ -374,7 +380,7 @@ func (r *Reader) readPage(ctx context.Context, url, source string, sourceType do
 	}
 	// User-center pages open promotional drawers over the profile. Dismiss
 	// them read-only so identity/joined data is not hidden behind the overlay.
-	r.closeOverlays(ctx)
+	r.closeOverlays(ctx, source == "account-profile")
 	finalURL, err := r.browser.GetURL(ctx)
 	if err != nil {
 		return "", domain.Evidence{}, fmt.Errorf("vulbox: url %s: %w", url, err)

@@ -317,9 +317,13 @@ func (r *Reader) SyncProgram(ctx context.Context, id domain.ProgramID) (adapter.
 	if err != nil {
 		return adapter.ProgramSnapshot{}, err
 	}
+	// The SRC card has no native company ID, so `sync -program <name>` builds
+	// "butian/<name>" while the stored ProgramID is "butian/src/<sha1>". Accept
+	// the native name as well as the full program id.
+	native := strings.TrimPrefix(string(id), "butian/")
 	var prog *domain.Program
 	for i := range batch.Programs {
-		if batch.Programs[i].ID == id {
+		if batch.Programs[i].ID == id || batch.Programs[i].NativeID == native {
 			prog = &batch.Programs[i]
 			break
 		}
@@ -327,17 +331,21 @@ func (r *Reader) SyncProgram(ctx context.Context, id domain.ProgramID) (adapter.
 	if prog == nil {
 		return adapter.ProgramSnapshot{}, fmt.Errorf("butian: exclusive SRC %s not found: %w", id, adapter.ErrUnsupported)
 	}
-	scope, err := r.SyncScope(ctx, id)
+	// Normalize a native-name lookup to the stored program ID before reading
+	// scope facts; otherwise facts would be written under butian/<name> while
+	// the program row uses butian/src/<hash>.
+	storedID := prog.ID
+	scope, err := r.SyncScope(ctx, storedID)
 	if err != nil {
 		return adapter.ProgramSnapshot{}, err
 	}
 	prog.Scope = scope.Scope
 	if err := prog.Validate(); err != nil {
-		return adapter.ProgramSnapshot{}, fmt.Errorf("butian: invalid program %s after scope merge: %w", id, err)
+		return adapter.ProgramSnapshot{}, fmt.Errorf("butian: invalid program %s after scope merge: %w", storedID, err)
 	}
 	var fs []domain.ObservedFact
 	for _, f := range batch.Facts {
-		if f.ProgramID != nil && *f.ProgramID == id {
+		if f.ProgramID != nil && *f.ProgramID == storedID {
 			fs = append(fs, f)
 		}
 	}

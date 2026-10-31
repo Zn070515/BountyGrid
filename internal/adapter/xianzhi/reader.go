@@ -41,7 +41,6 @@ type Reader struct {
 	rawDir      string
 	now         func() time.Time
 	taskListURL string
-	openedList  bool
 }
 
 func NewReader(b Browser, opts ReaderOptions) (*Reader, error) {
@@ -77,9 +76,9 @@ func (r *Reader) AuthStatus(ctx context.Context) (adapter.AuthState, error) {
 }
 
 func (r *Reader) openList(ctx context.Context) error {
-	if r.openedList {
-		return nil
-	}
+	// Always (re)open the list. Earlier calls may have navigated to an account
+	// page (SyncAccount) or left the SPA on a later pagination page; reading the
+	// current DOM as the task list would then extract the wrong page or nothing.
 	if err := r.browser.Open(ctx, r.taskListURL); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
 		return fmt.Errorf("xianzhi: open task list: %w", err)
 	}
@@ -93,7 +92,6 @@ func (r *Reader) openList(ctx context.Context) error {
 	// The SPA renders cards after the console API responds; wait for at least
 	// one card before extracting (best-effort timeout).
 	_ = r.browser.WaitFn(ctx, "document.querySelectorAll('.card-item').length > 0")
-	r.openedList = true
 	return nil
 }
 

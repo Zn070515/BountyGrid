@@ -168,6 +168,20 @@ func TestProgramFromProjectRejectsUnknownType(t *testing.T) {
 	}
 }
 
+func TestProgramFromProjectMissingEndDateIsNot1970(t *testing.T) {
+	p := sampleProject()
+	p.TaskStime, p.TaskEtime = 0, 0
+	_, fs, err := programFromProject(p, "ev1", testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fs {
+		if f.Predicate == facts.PredProgramStart || f.Predicate == facts.PredProgramEnd {
+			t.Fatalf("missing platform date became a fact: %s=%v", f.Predicate, f.Value)
+		}
+	}
+}
+
 func TestProgramFromProjectPausedIsNotRunning(t *testing.T) {
 	p := sampleProject()
 	p.Status = "1"

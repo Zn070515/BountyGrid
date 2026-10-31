@@ -146,6 +146,32 @@ func TestSyncAccountButianUnknownComplianceFailClosed(t *testing.T) {
 	}
 }
 
+func TestSyncProgramNativeNameUsesStoredID(t *testing.T) {
+	f := &fakeBrowser{
+		url: projectHallURL,
+		responses: map[string]string{
+			"slice(0,8)":    evalJSON(t, srcChunk{Cards: []srcCard{sampleCard()}, Total: 1}),
+			"document.body": evalJSON(t, "报名后可见"),
+		},
+	}
+	r := newTestReader(t, f)
+	snap, err := r.SyncProgram(context.Background(), "butian/理想汽车")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(snap.Program.ID), "butian/src/") {
+		t.Fatalf("program id = %s", snap.Program.ID)
+	}
+	if snap.Program.NativeID != "理想汽车" {
+		t.Fatalf("native id = %s", snap.Program.NativeID)
+	}
+	for _, fact := range snap.Facts {
+		if fact.ProgramID == nil || *fact.ProgramID != snap.Program.ID {
+			t.Fatalf("fact stored under wrong program: %+v (want %s)", fact.ProgramID, snap.Program.ID)
+		}
+	}
+}
+
 func TestAuthStatusButian(t *testing.T) {
 	f := &fakeBrowser{url: centerURL}
 	r := newTestReader(t, f)
