@@ -98,6 +98,19 @@ func (c *Client) WaitLoad(ctx context.Context) error {
 	return err
 }
 
+// WaitFn waits until a JavaScript predicate is true. Timeouts are best-effort;
+// the caller's extraction decides whether the page is usable.
+func (c *Client) WaitFn(ctx context.Context, expr string) error {
+	if strings.TrimSpace(expr) == "" {
+		return fmt.Errorf("sidecar: wait expression is empty")
+	}
+	_, err := c.run(ctx, "", false, "wait", "--fn", expr)
+	if err != nil && isTimeout(err) {
+		return nil
+	}
+	return err
+}
+
 func isTimeout(err error) bool {
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "timed out") || strings.Contains(s, "timeout")

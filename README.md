@@ -115,7 +115,7 @@ bash probes/butian/grow-dates.sh
 |---|---|---|
 | Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
 | 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
-| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：Vulbox 公开列表、账号、企业SRC Scope/Policy 已实测；Xianzhi/Butian 未开始 |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：Vulbox 已实测；Xianzhi Reader 已实现并验证状态/类型映射，全量 91 任务因控制台数据接口连接超时待重试；Butian 未开始 |
 | Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
 | Phase 4 | Opportunity / Scheduler | Phase 1 Reader 接入之后 |
 | Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
@@ -136,6 +136,16 @@ bash probes/butian/grow-dates.sh
 账号    ：见习白帽 / exp 10 / 信誉 100 / 排名 9999+ / 实名 / CanSubmit / 已加入 2
 联想 444：RUNNING / ELIGIBLE；Scope PUBLIC+GRANTED+known；include 9 条、exclude *.sunits.com；
           FileUpload=FORBIDDEN，AIAnalysis=CONDITIONAL，HumanVerificationRequired=true
+```
+
+### Xianzhi Reader（实现完成，全量实测待重试）
+
+- `internal/adapter/xianzhi`：`AuthStatus`、`SyncAccount`、`SyncPrograms`（5 页/91 任务）、`SyncProgram`、`SyncScope`（未报名 → `GATED_BY_SIGNUP + NOT_GRANTED`）、`SyncPolicy`（保守 `UNKNOWN`）。
+- 任务数据来自页面 React fiber 的 `task` 对象，避免解析易变的卡片文本；状态映射实测：`4=RUNNING`、`5=ENDED`、`6=PAUSED`；类型 `1=SRC`、`2=企业众测`；页面 1–5 合计 91（34 运行/54 结束/3 暂停），与审计一致。
+- 实测阻塞：点击第 2 页后，阿里云控制台数据接口出现 `os error 10060` 连接超时，SPA 只剩壳、卡片数为 0；重开仍如此。这不是登录或选择器问题，需要网络/VPN 恢复后重跑：
+
+```bash
+go run ./cmd/bountygrid sync -platform xianzhi -programs -pages=5
 ```
 
 账号与单项目同步需先人工登录：

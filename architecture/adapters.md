@@ -183,6 +183,21 @@ GET https://vapi.vulbox.com/web/project/projects
 
 本机会话：`probes/session/relogin.sh vulbox` 使用 `vbprobe` 并保存 state；产品 `sync` 默认复用同一个已登录会话（`-session vbprobe`），不加载旧 state 文件（损坏的 state 会让导航挂起）。其他机器用 `-session` 指定独立会话。
 
+#### Phase 1 Xianzhi 实现记录（2026-10-31）
+
+```text
+Task list: https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/all
+Cards:     .card-item ; pagination .cs-pagination-item ; 20 cards/page, 5 pages, 91 tasks
+Data:      React fiber memoizedProps.task (id/status/type/registration*/task*/registrationLimit)
+Status:    4=RUNNING, 5=ENDED, 6=PAUSED ; Type: 1=SRC, 2=企业众测
+Scope:     unsigned task detail returns NotSignUp/报名后可见 -> GATED_BY_SIGNUP + NOT_GRANTED
+```
+
+- 页面文本只用于 bounty/buttons 等辅助字段；任务 ID/时间/状态以 React `task` 对象为准，避免文本改版误判。
+- `SyncPrograms` 每页分两次 eval（0–10、10–20 张卡）避免 CLI 输出截断；翻页用 `eval` 点击 `.cs-pagination-item`，属于只读分页，不点击报名/提交。
+- 2026-10-31 实测：页面 1–5 的 91 条计数与审计一致；点击第 2 页后控制台数据接口出现 `os error 10060`，SPA 卡片变为 0，全量落库待网络恢复重跑。
+- 已报名任务的资产范围解析尚未验证；当前对未报名任务 fail-closed 返回 GATED，不猜 Scope。
+
 ### 4.3 补天
 
 ```text
