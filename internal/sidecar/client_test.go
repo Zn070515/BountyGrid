@@ -152,6 +152,20 @@ func TestRateLimitSleepsBetweenCommands(t *testing.T) {
 	}
 }
 
+func TestReloadUsesFixedCommand(t *testing.T) {
+	f := &fakeRunner{}
+	c := newTestClient(t, f, Config{Session: "s1", MinInterval: 0})
+	if err := c.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.last().args, " "); got != "--session s1 reload" {
+		t.Fatalf("args = %q", got)
+	}
+	if f.last().capture {
+		t.Fatal("reload must not capture stdout")
+	}
+}
+
 func TestWaitFnUsesFixedCommand(t *testing.T) {
 	f := &fakeRunner{}
 	c := newTestClient(t, f, Config{Session: "s1", MinInterval: 0})

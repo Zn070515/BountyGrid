@@ -22,6 +22,7 @@ import (
 
 type Browser interface {
 	Open(ctx context.Context, url string) error
+	Reload(ctx context.Context) error
 	WaitLoad(ctx context.Context) error
 	WaitFn(ctx context.Context, expr string) error
 	Eval(ctx context.Context, script string) ([]byte, error)
@@ -81,6 +82,10 @@ func (r *Reader) openList(ctx context.Context) error {
 	}
 	if err := r.browser.Open(ctx, r.taskListURL); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
 		return fmt.Errorf("xianzhi: open task list: %w", err)
+	}
+	// Same-URL hash navigation may be a no-op; force a fresh data fetch.
+	if err := r.browser.Reload(ctx); err != nil {
+		return fmt.Errorf("xianzhi: reload task list: %w", err)
 	}
 	if err := r.browser.WaitLoad(ctx); err != nil {
 		return fmt.Errorf("xianzhi: wait task list: %w", err)
@@ -232,7 +237,7 @@ func (r *Reader) SyncAccount(ctx context.Context) (adapter.AccountSnapshot, erro
 
 	identity := parseIdentity(profileText)
 	points := parseNumber(financeText, `积分[^\d]{0,20}(\d+)`)
-	bounty := parseFloat(financeText, `(?:赏金累计|累计赏金)[^\d]{0,20}([\d.]+)`)
+	bounty := parseFloat(financeText, `(?:赏金累计|累计赏金|赏金总额)[^\d]{0,20}([\d.]+)`)
 	submitted := parseNumber(vulnText, `提交漏洞[^\d]{0,20}(\d+)`)
 	approved := parseNumber(vulnText, `审核通过[^\d]{0,20}(\d+)`)
 	intel := parseNumber(vulnText, `提交情报[^\d]{0,20}(\d+)`)

@@ -34,6 +34,7 @@ func (f *fakeBrowser) Open(ctx context.Context, url string) error {
 	return f.openErr
 }
 
+func (f *fakeBrowser) Reload(ctx context.Context) error              { return nil }
 func (f *fakeBrowser) WaitLoad(ctx context.Context) error            { return nil }
 func (f *fakeBrowser) WaitFn(ctx context.Context, expr string) error { return nil }
 

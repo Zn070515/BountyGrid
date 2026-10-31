@@ -194,8 +194,10 @@ Scope:     unsigned task detail returns NotSignUp/报名后可见 -> GATED_BY_SI
 ```
 
 - 页面文本只用于 bounty/buttons 等辅助字段；任务 ID/时间/状态以 React `task` 对象为准，避免文本改版误判。
-- `SyncPrograms` 每页分两次 eval（0–10、10–20 张卡）避免 CLI 输出截断；翻页用 `eval` 点击 `.cs-pagination-item`，属于只读分页，不点击报名/提交。
-- 2026-10-31 实测：页面 1–5 的 91 条计数与审计一致；点击第 2 页后控制台数据接口出现 `os error 10060`，SPA 卡片变为 0，全量落库待网络恢复重跑。
+- `SyncPrograms` 每页分两次 eval（0–10、10–20 张卡）避免 CLI 输出截断；翻页用 `eval` 点击 `.cs-pagination-item`，属于只读分页，不点击报名/提交。同一 hash URL 的 `open` 可能不重新取数，`openList` 会 `reload`。
+- 2026-10-31 实测：全量 5 页 **91 条 = 34 RUNNING / 54 ENDED / 3 PAUSED，61 SRC / 30 企业众测**，1058 Fact、5 Evidence，与审计一致。
+- 曾遇控制台数据接口 `os error 10060`：SPA 壳存在但 `.card-item`=0；reload 后恢复。0 卡片必须视为可重试失败，不能写成空任务列表。
+- 账号同步可跑通；个人资料页只有“实名认证”标签、无文本状态，`identity_verified` 暂为 nil（fail-closed）。
 - 已报名任务的资产范围解析尚未验证；当前对未报名任务 fail-closed 返回 GATED，不猜 Scope。
 
 ### 4.3 补天
