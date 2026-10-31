@@ -1,0 +1,300 @@
+{
+  "platform": "butian",
+  "display_name": "补天漏洞响应平台（Butian）",
+  "observed_at": "2026-10-31",
+  "urls": {
+    "portal": "https://www.butian.net/",
+    "login_sso": "https://user.skyeye.qianxin.com/user/sign-in",
+    "project_hall": "https://www.butian.net/Reward/plan/2",
+    "whitehat_services": "https://www.butian.net/Reward/plan/1",
+    "public_welfare_src": "https://www.butian.net/Service/pub",
+    "exclusive_src": "https://www.butian.net/Service/pri",
+    "crowd_testing": "https://www.butian.net/Service/ce",
+    "security_intelligence": "https://www.butian.net/Service/secureInfo",
+    "activity_center": "https://www.butian.net/Active/center",
+    "grow_program": "https://www.butian.net/Grow",
+    "help_faq": "https://www.butian.net/Help/faq",
+    "newcomer_guide": "https://www.butian.net/newneed",
+    "announcements": "https://www.butian.net/Article/index",
+    "ranking": "https://www.butian.net/Rank/whitehat",
+    "team_ranking": "https://www.butian.net/Rank/team",
+    "user_center": "https://www.butian.net/WhiteHat/Center",
+    "submit_vulnerability": "https://www.butian.net/Loo/submit",
+    "shop": "https://www.butian.net/Shop"
+  },
+  "authentication": {
+    "login_provider": "奇安信统一账号（user.skyeye.qianxin.com）",
+    "login_methods_observed": ["账号密码登录（手机号+密码）", "验证码登录（手机短信）"],
+    "legal_gate": "登录页必须勾选《用户服务协议》《隐私政策》；本次由账号持有人本人在浏览器完成",
+    "session_type": "浏览器 Cookie",
+    "sso_scope": "补天账号与奇安信天眼/鹰图/网站监测/攻防社区共用账号体系",
+    "api_token_observed": false
+  },
+  "platform_stats_public": {
+    "registered_enterprises": 6655,
+    "registered_white_hats": 313879,
+    "vulnerabilities_found": 3376010,
+    "total_bounty_paid_cny": 65361789,
+    "observed_at": "2026-10-31"
+  },
+  "project_system": {
+    "counts": {
+      "exclusive_src": 37,
+      "public_welfare_src_vendors": "约6,600+（项目大厅公益SRC分页200页，约35家/页；平台注册企业6,655家）",
+      "enterprise_src": 1,
+      "unregistered_vendors": "不限（按厂商名称提交）",
+      "crowd_testing": "UNKNOWN（邀请制，无公开数量）",
+      "general_2_0": "按产品清单（A-E类），无项目数量概念",
+      "security_intelligence": "服务型，非漏洞赏金项目",
+      "grow_campus": "4条赛道，报名至2026-11-30、活动至2026-11-30；漏洞挖掘实战第二期为月度阶段10-01~10-31",
+      "activities": "活动中心多条，当前GROW进行中（报名至2026-11-30、活动至2026-11-30）"
+    },
+    "program_types": [
+      {
+        "program_type": "专属SRC",
+        "count_observed": 37,
+        "discoverable": true,
+        "open_to_new_user": false,
+        "requires_application": true,
+        "requires_invitation": false,
+        "requires_reputation": true,
+        "requires_contract": null,
+        "requires_nda": true,
+        "reward_type": ["cash"],
+        "notes": "厂商自定义奖励计划/资产范围/评级；需报名才能看资产范围（可测/非可测）；提交需实战认证（至少1个有效漏洞）+ 合规考核；全部现金奖励。"
+      },
+      {
+        "program_type": "公益SRC",
+        "count_observed": "约6,600+厂商",
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": false,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "KB", "RYB", "honor"],
+        "notes": "厂商免费注册，白帽子随机发现漏洞；补天审核后通知厂商认领；奖励由平台承担；事件漏洞按厂商大/中/小给KB或现金，通用漏洞按等级给现金；无需项目报名，但需完成合规考核。"
+      },
+      {
+        "program_type": "企业SRC",
+        "count_observed": 1,
+        "discoverable": true,
+        "open_to_new_user": null,
+        "requires_application": null,
+        "requires_invitation": null,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "KB", "honor"],
+        "notes": "独立域名/独立Portal（当前展示奇安信集团）；参与方式未验证。"
+      },
+      {
+        "program_type": "未注册厂商",
+        "count_observed": "不限",
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": false,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "KB", "RYB", "honor"],
+        "notes": "厂商未注册补天；白帽子仍可提交，平台联系厂商；奖励规则同公益SRC。"
+      },
+      {
+        "program_type": "补天众测",
+        "count_observed": null,
+        "discoverable": false,
+        "open_to_new_user": false,
+        "requires_application": true,
+        "requires_invitation": true,
+        "requires_reputation": true,
+        "requires_contract": true,
+        "requires_nda": true,
+        "reward_type": ["cash"],
+        "notes": "参与要求（满足两条+）：补天排名前300；近一年专属SRC有效高危5+；其他SRC年度前3；精英白帽内推。需签保密协议、获取唯一邀请码。"
+      },
+      {
+        "program_type": "通用2.0漏洞奖励计划",
+        "count_observed": "A-E类产品清单",
+        "discoverable": true,
+        "open_to_new_user": null,
+        "requires_application": false,
+        "requires_invitation": false,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash"],
+        "notes": "仅收未授权可直接/组合RCE（含VPN二次认证绕过、账号枚举；虚拟化逃逸）；需询价表+本地复现环境+EXP；A类最高100万、B类50万、C类40万、D类25万、E类30万。"
+      },
+      {
+        "program_type": "校园GROW计划（学生）",
+        "count_observed": "4条赛道",
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": true,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "荣誉证书", "电子产品", "周边", "AI token"],
+        "notes": "2026年度活动；校园战队；漏洞挖掘实战/AI辅助漏洞挖掘/公益贡献/高校活动组织；最高2万元现金；需学生认证/组队。"
+      },
+      {
+        "program_type": "安全情报",
+        "count_observed": null,
+        "discoverable": true,
+        "open_to_new_user": null,
+        "requires_application": null,
+        "requires_invitation": null,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["UNKNOWN"],
+        "notes": "面向企业的漏洞情报/源码泄露/敏感文件监测服务；未发现面向白帽的公开情报赏金入口。"
+      },
+      {
+        "program_type": "招聘专场/线下活动",
+        "count_observed": "1个招聘专场入口",
+        "discoverable": true,
+        "open_to_new_user": null,
+        "requires_application": true,
+        "requires_invitation": null,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["岗位/线下"],
+        "notes": "非漏洞赏金；与自动化执行无关。"
+      }
+    ],
+    "state_semantics": {
+      "进行中": "活动中心活动进行中（如GROW整体报名2026-08-25~11-30、活动2026-09-01~11-30；漏洞挖掘实战第二期为月度阶段10-01~10-31）",
+      "已结束": "活动结束",
+      "报名": "专属SRC页面显示“参与该计划需要完成报名才能参与”",
+      "暂停接收": "提交页提示工控/操作系统/通用软件近期暂停接收；通用2.0同类型>3个可能暂停收取/下调",
+      "合规考核": "未完成本季度合规考核则不能提交任何漏洞"
+    }
+  },
+  "scope_model": {
+    "include_assets": true,
+    "exclude_assets": true,
+    "asset_priority": true,
+    "asset_reward_multiplier": true,
+    "asset_specific_rules": true,
+    "environment_type": ["Web", "IoT", "APP", "API", "工控（暂停接收）", "操作系统（暂停接收）", "通用软件（口径冲突）"],
+    "scope_change_history": "partial（公告/活动页/项目页说明；无独立Scope变更历史页签）",
+    "scope_visibility": {
+      "exclusive_src_before_signup": "资产范围页签显示“参与该计划需要完成报名才能参与”，可测/非可测均不可见",
+      "exclusive_src_after_signup": "可测资产范围 / 非可测资产范围",
+      "public_welfare_src": "厂商资产由白帽子按厂商名称判断；无项目级可测清单",
+      "general_2_0": "按公告产品清单A-E类"
+    },
+    "asset_tiers": {
+      "exclusive_src": ["按厂商自定义奖励计划/漏洞等级"],
+      "public_welfare_src": ["厂商规模：小型/中型/大型", "厂商权重：权重≥1 / 权重=0"],
+      "general_2_0": ["A类", "B类", "C类", "D类", "E类"]
+    },
+    "asset_tier_effect": "专属SRC按厂商计划与漏洞等级；公益SRC按厂商规模/权重给KB或现金；通用2.0按产品等级A-E给最高奖金范围。",
+    "normalized_go_model": {
+      "AssetScope": ["INCLUDE", "EXCLUDE", "CONDITIONAL", "UNKNOWN"],
+      "notes": "专属SRC报名前整体 UNKNOWN；公益SRC无显式Scope；通用2.0为产品白名单。"
+    }
+  },
+  "kill_switch": {
+    "supported_states": ["RUNNING", "PAUSED", "STOP_TESTING", "ENDED", "RULE_CHANGED"],
+    "observed_state_fields": ["活动状态（进行中/已结束）", "活动报名时间", "专属SRC报名状态", "提交页接收类别提示", "通用2.0同类型>3暂停收取", "公告"],
+    "evidence": [
+      "活动中心：2026GROW计划漏洞挖掘实战-第二期 进行中（2026/10/01-2026/10/31，仅月度阶段）；GROW整体报名至2026-11-30、活动至2026-11-30；其余多为已结束",
+      "提交页：工控、操作系统及通用软件漏洞“因近期暂无审核人员，暂时停止接收”",
+      "通用2.0：若短期内同类型漏洞>3个，将暂停收取或下调奖励",
+      "专属SRC：参与需报名；未报名资产范围不可见",
+      "合规考核：未完成本季度合规考核不能提交"
+    ],
+    "platform_wide_stop_announcement_observed": false,
+    "notes": "补天没有统一的“全平台停测”开关，但存在类别级暂停接收、项目级报名/资产范围、活动时间窗与合规考核。Go 必须同时建模这些状态。"
+  },
+  "competition": {
+    "active_researchers_visible": 30,
+    "rewarded_researchers_visible": 10,
+    "top10_share_estimate": null,
+    "newcomer_ranking_exists": true,
+    "newcomer_reward_exists": true,
+    "reputation_gate_strength": "high",
+    "observed_month": "2026-10",
+    "leaderboard_notes": "赏金猎人TOP10：26600/20660/19160/15850/15500/13746/13300/13270/13126/12800元，合计164,012元；战神榜TOP1 5980+有效漏洞；火眼金睛TOP1 100%准确率。平台注册白帽313,879，注册企业6,655，累计奖金65,361,789元。",
+    "newcomer_notes": "跃秀新星：上月排名201-1000、当月名次上升最快的前3名（要求上月提交过有效漏洞），奖励书籍/周边；新账号首月不满足“上月有效漏洞”条件。新人成长计划历史活动均已结束。",
+    "reputation_gate_notes": "信誉值默认100，违规扣10/20，≤60封号；月度荣耀个人要求信誉值100；专属SRC需实战认证（1个有效漏洞）。"
+  },
+  "programmatic_interface": {
+    "official_public_api": false,
+    "documented_api": false,
+    "internal_authenticated_api_observed": true,
+    "internal_endpoints_observed": [
+      "GET /WhiteHat/Center/baseData",
+      "GET /WhiteHat/Center/sourceStatus",
+      "GET /Company/Info/statistics?ajax=1&company_id={id}",
+      "GET /Company/Info/base?ajax=1&company_id={id}",
+      "GET /Company/Info/assetRange?ajax=1&company_id={id}",
+      "GET /Service/runenv",
+      "GET /Service/envUrl"
+    ],
+    "internal_api_notes": "由页面正常加载触发；仅记录结构，未绕过认证、未修改请求、未调用后台管理接口。",
+    "rss": false,
+    "webhook": null,
+    "project_subscription": "关注项目；微信服务号绑定后可收漏洞进度通知；未见RSS/Webhook",
+    "notification_channels_observed": ["站内信", "微信服务号", "短信/邮件（绑定后）"],
+    "data_export_observed": false,
+    "preferred_data_sources_ranked": [
+      "AUTHENTICATED_WEB（会话内读取个人空间/项目页）",
+      "BROWSER_AUTOMATION（登录、状态轮询、合规考核前停止）",
+      "MANUAL_IMPORT（报名、实战认证、合规考核、提交）",
+      "PUBLIC_WEB（项目大厅/公告/帮助中心/GROW/排行榜）"
+    ],
+    "risk_notes": "补天接口无公开文档；合规考核/实战认证是硬门槛，不能自动化绕过。"
+  },
+  "evidence": [
+    {
+      "type": "ACCOUNT",
+      "title": "极客空间",
+      "url": "https://www.butian.net/WhiteHat/Center",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "项目大厅（专属/公益/企业SRC）",
+      "url": "https://www.butian.net/Reward/plan/2",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "理想汽车专属SRC（报名门槛/测试规则）",
+      "url": "https://www.butian.net/Company/64883",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "ANNOUNCEMENT",
+      "title": "2026补天通用2.0漏洞奖励计划",
+      "url": "https://www.butian.net/Article/content/id/667",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "ANNOUNCEMENT",
+      "title": "关于专属SRC接入实战认证机制的公告",
+      "url": "https://www.butian.net/Article/index",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "ANNOUNCEMENT",
+      "title": "校园GROW计划",
+      "url": "https://www.butian.net/Grow",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "POLICY",
+      "title": "帮助中心/新人须知",
+      "url": "https://www.butian.net/Help/faq",
+      "observed_at": "2026-10-31"
+    }
+  ]
+}

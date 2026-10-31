@@ -1,0 +1,140 @@
+{
+  "platform": "xianzhi",
+  "observed_at": "2026-10-31",
+  "capabilities": {
+    "ai_analysis": {"status": "allowed", "rule_summary": "平台明确“鼓励白帽子利用AI工具辅助或自动化挖掘漏洞”。", "source_location": "公告《先知平台关于AI生成漏洞报告的处置公告》(#/bulletin-detail/28)"},
+    "code_audit": {"status": "conditional", "rule_summary": "未禁止对授权范围内代码做审计；但禁止保存/传播业务源代码（含GitHub等泄露源代码），不知情下载须说明并删除。", "source_location": "《SRC行业安全测试规范》第13条；《众测项目测试规范和红线》第16条"},
+    "passive_recon": {"status": "conditional", "rule_summary": "仅限已授权项目与资产范围；不得对未授权厂商/未分配项目/范围外资产挖掘。", "source_location": "《SRC行业安全测试规范》第11条；《众测项目测试规范和红线》第14条"},
+    "active_http_requests": {"status": "conditional", "rule_summary": "允许在授权范围内发起HTTP请求；禁止影响业务稳定性、禁止内网渗透与DoS。", "source_location": "《先知漏洞测试红线1.0》；《SRC行业安全测试规范》"},
+    "browser_automation": {"status": "conditional", "rule_summary": "平台级未单独禁止；淘天电商反爬专项明确允许“浏览器自动化/纯脚本”作为爬虫手法（项目级）。其他项目仍需遵守扫描器与稳定性限制。", "source_location": "任务311《淘天电商反爬专项-2026》；《先知漏洞测试红线1.0》"},
+    "directory_enumeration": {"status": "conditional", "rule_summary": "禁止对网站后台和部分私密项目使用扫描器；目录枚举若属扫描且影响稳定性即违规。", "source_location": "《SRC行业安全测试规范》第8条；《众测项目测试规范和红线》第11条"},
+    "subdomain_discovery": {"status": "conditional", "rule_summary": "未单独禁止；但只能测试已授权范围，范围外资产一律不得测试。", "source_location": "《SRC行业安全测试规范》第11条"},
+    "automated_scanning": {"status": "conditional", "rule_summary": "禁止对网站后台和部分私密项目使用扫描器；禁止可影响服务稳定性的扫描；注入类UPDATE/DELETE/INSERT不允许自动化工具测试。", "source_location": "《SRC行业安全测试规范》第1、8、12条"},
+    "high_concurrency": {"status": "conditional", "rule_summary": "无平台级QPS数值；任何可能造成业务异常/稳定性影响的并发测试均禁止。", "source_location": "《SRC行业安全测试规范》第10、12条；《先知漏洞测试红线1.0》第二类事件"},
+    "brute_force": {"status": "conditional", "rule_summary": "扫号类漏洞测试成功数量不超过50个；用户可感知（如登录提醒短信）时不得对真实手机号测试；非核心账号体系/管理后台的账号密码爆破不在关注范围。", "source_location": "《SRC行业安全测试规范》第6条；通义实验室项目“不关注的漏洞”"},
+    "credential_stuffing": {"status": "forbidden", "rule_summary": "只允许用自己的2个账号验证；不得涉及线上正常用户账号；普通撞库不在收集范围。", "source_location": "《SRC行业安全测试规范》第3条；《众测项目测试规范和红线》第5条"},
+    "file_upload": {"status": "conditional", "rule_summary": "可用上传文本/webshell证明RCE；禁止下载/读取服务器源码和敏感文件，禁止删除/写入命令；需写明shell地址与连接口令。", "source_location": "《SRC行业安全测试规范》第5条；《众测项目测试规范和红线》第8条"},
+    "state_mutation": {"status": "conditional", "rule_summary": "线上环境禁止修改、删除；新增数据需报备后操作；越权增删改须用自己测试账号；禁止大量增删改他人信息。", "source_location": "《众测项目测试规范和红线》第3、5、6、15条；《先知漏洞测试红线1.0》第二类事件"},
+    "rce_verification": {"status": "conditional", "rule_summary": "执行whoami/ifconfig等证明即可；禁止读取服务器源码/敏感文件，禁止删除/写入；可上传纯文本webshell并报告地址口令。", "source_location": "《SRC行业安全测试规范》第5条；《众测项目测试规范和红线》第8条"},
+    "sensitive_data_read": {"status": "conditional", "rule_summary": "越权读取真实数据不超过5组（建议），法律硬上限50条；严禁批量读取、拖库；测试后删除并不得留存。", "source_location": "《先知漏洞测试红线1.0》第二类事件第3条；《SRC行业安全测试规范》第2条"},
+    "internal_network": {"status": "forbidden", "rule_summary": "严禁内网渗透；禁止获取内网权限后扫描或横向接触非靶机目标。", "source_location": "《先知漏洞测试红线1.0》第二类事件第4条；《SRC行业安全测试规范》第9条"},
+    "lateral_movement": {"status": "forbidden", "rule_summary": "禁止横向移动、内网扫描、获取内网应用/主机权限。", "source_location": "《先知漏洞测试红线1.0》第二类事件第4条"},
+    "dos": {"status": "forbidden", "rule_summary": "禁止DoS/DDoS及可能引起业务异常运行的测试（如IIS拒绝服务）。", "source_location": "《SRC行业安全测试规范》第10条；《众测项目测试规范和红线》第13条"},
+    "automated_report_generation": {"status": "conditional", "rule_summary": "允许AI辅助生成，但必须人工验证并在报告中提供危害说明、复现步骤、完整PoC（避免All-in-One）、关键截图；否则直接驳回。", "source_location": "公告《先知平台关于AI生成漏洞报告的处置公告》"},
+    "automated_report_submission": {"status": "unknown", "rule_summary": "未发现公开API或自动化提交政策；当前账号未报名任务时提交按钮disabled；本系统策略要求提交前人工确认。", "source_location": "工作台任务详情页；平台未见公开API文档"}
+  },
+  "ai_policy": {
+    "ai_assisted_research": "allowed（明确鼓励）",
+    "autonomous_agent": "conditional（允许自动化挖掘，但产出必须人工复现验证；无人监督的批量提交不被接受）",
+    "human_verification_required": "required",
+    "ai_generated_reports": "conditional：需提供漏洞危害说明、详细复现步骤、完整PoC（避免All-in-One）、关键步骤与结果截图；直接由AI生成且未人工复现/无有效验证截图的报告直接驳回且不解释",
+    "misreport_penalty": "累计>3个未经人工验证的AI报告→提醒；累计>5个→平台有权拉黑先知账号",
+    "ai_specific_programs": [
+      {"name": "通用漏洞收集计划AI应用专项", "status": "已结束（2026-03）"},
+      {"name": "双11-大模型专项-2025", "status": "已结束"},
+      {"name": "AI安全赛道二-模型应用线上环境漏洞赏金赛", "status": "已结束（2025-08）"},
+      {"name": "AI安全赛道三-AI安全产品挑战赛", "status": "已结束（2025-08）"},
+      {"name": "通义实验室", "status": "进行中（AI/LLM资产，但非独立AI项目）"},
+      {"name": "千问C端", "status": "进行中（AI C端资产）"}
+    ],
+    "notes": "该AI公告由阿里云先知、蚂蚁、腾讯、百度、字节、京东、美团、快手、补天等30余家SRC共同签署，跨平台一致性较高。",
+    "source_location": "https://xianzhi.aliyun.com/#/bulletin-detail/28"
+  },
+  "execution_constraints": {
+    "platform_default": {
+      "max_rps": null,
+      "max_concurrency": null,
+      "allowed_time_windows": ["长期SRC：未限定具体时段", "活动/众测：以报名时间与任务时间为准", "双11/618等大促：独立活动窗口"],
+      "vpn_required": "PROGRAM_SPECIFIC",
+      "dedicated_ip_required": null,
+      "researcher_header_required": null,
+      "test_account_required": "PROGRAM_SPECIFIC（账号可注册时仅用本人2个账号）",
+      "rate_limit_notes": "未发现平台级QPS/并发数值；禁止任何影响稳定性的扫描或DoS；越权读取真实数据建议≤5条，法律硬上限50条。",
+      "source_location": "《SRC行业安全测试规范》《先知漏洞测试红线1.0》《众测项目测试规范和红线》"
+    },
+    "program_specific_examples": [
+      {
+        "program": "众测项目（通用）",
+        "constraints": {"vpn_required": true, "out_of_scope_testing": "forbidden", "query_limit_real_user_data": "≤5条", "online_modify_delete": "forbidden", "new_data_insert": "requires_report", "test_accounts": "本人2个账号；不可注册时需先报备"},
+        "source_location": "《众测项目测试规范和红线》"
+      },
+      {
+        "program": "淘天电商反爬专项-2026",
+        "constraints": {"browser_automation": "allowed", "crawler_methods_allowed": ["hook真机", "模拟器", "浏览器自动化", "纯脚本"], "per_interface_daily_limits": ["未登录单接口1万/天", "单账号单接口1万/天", "多账号(≤20)单接口7万/天", "7天周期10万等"], "budget_cap_cny": 500000, "first_come_first_served": true, "test_account_report_required": true, "multi_account_same_method_required": true, "crowdsourcing_forbidden": true},
+        "source_location": "任务311《淘天电商反爬专项-2026》任务说明"
+      },
+      {
+        "program": "通义实验室",
+        "constraints": {"llm_jailbreak": "out_of_scope", "clickjacking": "out_of_scope", "pdf_xss": "out_of_scope", "non_core_account_bruteforce": "out_of_scope", "admin_bruteforce": "out_of_scope", "concurrent_sms_bombing": "out_of_scope", "test_env_rce": "out_of_scope"},
+        "source_location": "任务151《通义实验室》不关注的漏洞/降级规则"
+      }
+    ],
+    "generalization_rule": "以上 program_specific 约束不得推广为平台级规则；Go必须以任务为单位存储约束。"
+  },
+  "reward_policy": {
+    "reward_type": ["cash", "points/贡献值", "安全币", "实物/活动奖励"],
+    "cash_direct": true,
+    "points_conversion": "贡献值/安全币与现金按项目、资产等级、漏洞等级分别列表；无统一全平台兑换比例",
+    "severity_levels": ["严重", "高危", "中危", "低危", "无"],
+    "asset_multiplier": true,
+    "asset_tiers": ["超级资产", "关键资产", "核心资产", "一般应用", "边缘应用"],
+    "duplicate_reward": "PROGRAM_SPECIFIC：同一应用同类型漏洞确认前3个；同一问题点仅第1个；同功能越权仅1个；同库SQL注入前3个（第1个正常，后2个降级）；内部已知按重复驳回（通义实验室规则）",
+    "first_report_rule": "PROGRAM_SPECIFIC：淘天反爬同一接口/同一方法先到先得；其余项目未在平台页明确",
+    "quality_bonus": "有：王牌A月度TOP（500-5000元）、月度TOP50实物礼、团队奖励；需满足积分/高危数量条件",
+    "newcomer_bonus": "当前未发现；2024-11曾设新人专享活动（已结束）",
+    "campaign_bonus": "有：双11/618/情报双倍/高德双倍/菜鸟双倍等活动系数",
+    "minimum_payout": null,
+    "settlement_cycle": "UNKNOWN",
+    "tax_note": "通义实验室奖励表明确标注“现金对应表（税后）”，提示按税后金额发放；平台级代扣规则未见",
+    "examples": [
+      {"program": "阿里云产品", "super_asset_severe_cny": 100000, "key_asset_severe_cny": 30000, "core_asset_severe_cny": 10000},
+      {"program": "通义实验室", "key_app_severe_cny": "13500-15000", "edge_app_low_cny": "10-20"},
+      {"program": "淘天反爬", "severe_cny": 20000, "low_cny": 500, "budget_cap_cny": 500000}
+    ],
+    "source_location": "各项目任务详情奖励表；《先知王牌A计划1.0》"
+  },
+  "submission_workflow": {
+    "precondition": "必须先报名任务；未报名时“提交漏洞/情报”按钮 disabled",
+    "draft_supported": null,
+    "required_fields": [
+      "漏洞名称（明确业务+类型，避免泛指）",
+      "所属任务",
+      "漏洞类型",
+      "漏洞等级",
+      "漏洞URL（完整链接，指向关键点）",
+      "漏洞详情（位置、步骤、PoC/EXP、影响）",
+      "复现步骤与PoC（完整，不接受仅理论可行）",
+      "关键步骤/利用成功截图",
+      "视频（可选补充，不能只给视频）",
+      "HTTP POST完整包（POST型漏洞；Cookie值可置空但保留字段名）",
+      "账号名（有认证的应用）",
+      "修复建议/原理（非常见漏洞类型）",
+      "AI使用与人工验证结果（AI辅助报告）",
+      "联系方式（按账号资料）"
+    ],
+    "attachments_supported": ["截图", "视频", "文件（PoC/安装包等）", "POST包文本/Markdown代码块"],
+    "conversation_supported": null,
+    "status_tracking": true,
+    "status_fields_observed": ["审核状态", "修复状态", "提交时间", "漏洞积分", "赏金"],
+    "withdraw_supported": null,
+    "edit_supported": null,
+    "api_submission_available": false,
+    "api_submission_note": "未发现公开API；内部页面使用 openapi/cst/2023-12-08/* 读取列表，但无提交API证据",
+    "human_confirmation_required": true,
+    "source_location": "《先知漏洞提交规范》(#/bulletin-detail/25)；工作台漏洞管理页"
+  },
+  "penalties": [
+    {"violation": "漏洞泄密/数据留存超1个月/使用非阿里存储/瞒报/影响客户", "penalty": "警告+扣除漏洞奖励；王牌A取消资格；多次升级为第二类", "source": "《先知漏洞测试红线1.0》第一类事件"},
+    {"violation": "生产事故/大规模用户影响/读取敏感数据超50条/内网渗透/完整性或可用性破坏/社工/DoS", "penalty": "不认定为白帽行为，转交团队依法处理", "source": "《先知漏洞测试红线1.0》第二类事件"},
+    {"violation": "AI生成报告未经人工验证（累计>3/>5）", "penalty": "提醒/拉黑账号", "source": "AI公告"},
+    {"violation": "众测未接VPN测试/测项目外站点", "penalty": "无奖金/永久拉黑", "source": "《众测项目测试规范和红线》"}
+  ],
+  "evidence": [
+    {"type": "POLICY", "title": "先知平台关于AI生成漏洞报告的处置公告", "url": "https://xianzhi.aliyun.com/#/bulletin-detail/28"},
+    {"type": "POLICY", "title": "先知漏洞测试红线1.0", "url": "https://xianzhi.aliyun.com/#/bulletin-detail/22"},
+    {"type": "POLICY", "title": "SRC行业安全测试规范", "url": "https://xianzhi.aliyun.com/#/bulletin-detail/24"},
+    {"type": "POLICY", "title": "众测项目测试规范和红线", "url": "https://xianzhi.aliyun.com/#/bulletin-detail/27"},
+    {"type": "POLICY", "title": "先知漏洞提交规范", "url": "https://xianzhi.aliyun.com/#/bulletin-detail/25"},
+    {"type": "POLICY", "title": "先知王牌A计划1.0", "url": "https://xianzhi.aliyun.com/#/bulletin-detail/29"}
+  ]
+}

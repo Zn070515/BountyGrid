@@ -1,0 +1,80 @@
+{
+  "platform": "butian",
+  "observed_at": "2026-10-31",
+  "payout": {
+    "methods": ["银行卡"],
+    "methods_supported": "银行卡（银行汇款；需本人银行卡，开户姓名与实名认证一致）",
+    "minimum": null,
+    "minimum_notes": "未发现最低提现额；现金奖励按漏洞/活动规则直接打款",
+    "cycle": "现金奖励通常在每周三银行汇款，支付后48小时内到账（法定节假日顺延）；KB在审核通过后7个工作日内发放",
+    "tax_withholding": true,
+    "tax_notes": "帮助中心FAQ：平台依法依规代扣代缴个人所得税，官网展示奖金为税后金额；通用2.0公告：目标奖金为税前RMB，平台按法规代缴税费。两处口径存在差异，实际以结算为准。",
+    "contract_required": null,
+    "contract_notes": "普通漏洞奖励未提及劳务协议；补天众测需签保密协议；是否另有结算协议未展示。",
+    "invoice_required": null,
+    "current_account_ready": false,
+    "current_account_note": "收款信息页银行卡号/银行名称/开户省市/开户支行/银行预留手机号均为空；未绑定银行卡。实名认证已完成。",
+    "additional_verification": "已实名；手机已绑定；微信未绑定"
+  },
+  "account_payout_state": {
+    "bounty_total_cny": 0,
+    "kb_balance": 0,
+    "ryb_balance": 500,
+    "points": 0,
+    "bank_card_bound": false,
+    "payment_method_visible": false,
+    "last_payout": null
+  },
+  "payment_schedule": {
+    "normal_cash": "每周三打款，48小时内到账",
+    "kb": "审核通过后7个工作日",
+    "general_2_0_installments": [
+      {"prize_cny": "<10000", "schedule": "漏洞确认后30个自然日内一次性付清"},
+      {"prize_cny": "10000-20000", "schedule": "先付50%，余款60个自然日内付清"},
+      {"prize_cny": "20000-50000", "schedule": "先付30%，余款60个自然日内付清"},
+      {"prize_cny": "50000-100000", "schedule": "先付30%，余款60个自然日内付清"},
+      {"prize_cny": "100000-500000", "schedule": "先付30%，余款120个自然日内付清"},
+      {"prize_cny": ">500000", "schedule": "先付30%，余款180个自然日内付清"}
+    ]
+  },
+  "open_questions": [
+    "最低打款/提现门槛：UNKNOWN（未见说明）",
+    "是否需要劳务协议/发票：UNKNOWN",
+    "个税实际税率与展示口径：存在税后/税前两种表述，UNKNOWN",
+    "KB/RYB兑换现金比例：KB可兑礼品；RYB可兑KB；未发现直接现金兑换"
+  ],
+  "safe_handling": {
+    "do_not_record": ["银行卡号", "身份证号", "手机号", "姓名", "邮箱"],
+    "observed_sensitive_values_written": false
+  },
+  "evidence": [
+    {
+      "type": "ACCOUNT",
+      "title": "个人中心 / 收款信息",
+      "url": "https://www.butian.net/WhiteHat/Center",
+      "observed_at": "2026-10-31",
+      "supports": ["银行卡信息为空"]
+    },
+    {
+      "type": "POLICY",
+      "title": "帮助中心 / 如何支付漏洞奖励",
+      "url": "https://www.butian.net/Help/faq",
+      "observed_at": "2026-10-31",
+      "supports": ["每周三打款", "48小时到账", "KB 7个工作日", "平台代扣代缴个税，展示税后金额"]
+    },
+    {
+      "type": "POLICY",
+      "title": "2026补天通用2.0漏洞奖励计划 / 付款注意事项",
+      "url": "https://www.butian.net/Article/content/id/667",
+      "observed_at": "2026-10-31",
+      "supports": ["税前RMB+平台代缴", "分期付款档位"]
+    },
+    {
+      "type": "POLICY",
+      "title": "新人须知 / 关于漏洞的报酬",
+      "url": "https://www.butian.net/newneed",
+      "observed_at": "2026-10-31",
+      "supports": ["现金/库币奖励", "每周三打款"]
+    }
+  ]
+}

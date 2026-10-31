@@ -1,0 +1,229 @@
+{
+  "platform": "vulbox",
+  "observed_at": "2026-10-31",
+  "capabilities": {
+    "ai_analysis": {
+      "status": "allowed",
+      "rule_summary": "平台明确欢迎合理使用AI（含蛙池AI）辅助漏洞挖掘、PoC编写、报告整理；但必须人工验证。",
+      "source_location": "FAQ《关于规范 AI 辅助漏洞报告提交标准》(2026-06-23)"
+    },
+    "code_audit": {
+      "status": "conditional",
+      "rule_summary": "获取系统权限（如webshell）后禁止下载源代码审计；必须先联系审核员，厂商同意后才可审计。",
+      "source_location": "FAQ《漏洞盒子平台通用评定原则》第7条"
+    },
+    "passive_recon": {
+      "status": "conditional",
+      "rule_summary": "仅限已加入/已授权项目范围；未授权资产不得测试。",
+      "source_location": "FAQ测试相关；平台通用评定原则"
+    },
+    "active_http_requests": {
+      "status": "conditional",
+      "rule_summary": "允许在授权范围内测试；禁止大规模/大流量/大线程扫描及影响业务稳定性的行为。",
+      "source_location": "FAQ《测试时是否可以使用扫描器或其他大线程工具》"
+    },
+    "browser_automation": {
+      "status": "conditional",
+      "rule_summary": "平台未单独禁止浏览器自动化；AI自动化被鼓励但产出必须人工验证；不得演变为大规模扫描。项目规则可能额外限制。",
+      "source_location": "FAQ AI标准；FAQ扫描器/大线程问答"
+    },
+    "directory_enumeration": {
+      "status": "conditional",
+      "rule_summary": "未单独禁止；但大规模目录扫描属于“大规模扫描”，默认禁止；不得影响稳定性。",
+      "source_location": "FAQ《测试时是否可以使用扫描器或其他大线程工具》"
+    },
+    "subdomain_discovery": {
+      "status": "conditional",
+      "rule_summary": "未单独禁止；只能测试项目授权范围，范围外资产不得测试。",
+      "source_location": "平台通用评定原则；项目资产范围"
+    },
+    "automated_scanning": {
+      "status": "conditional",
+      "rule_summary": "所有项目默认禁止可能导致目标网络/主机/设备瘫痪的大流量、大线程、大规模扫描；否则可能被视为攻击并承担法律责任。",
+      "source_location": "FAQ《测试时是否可以使用扫描器或其他大线程工具》"
+    },
+    "high_concurrency": {
+      "status": "forbidden",
+      "rule_summary": "大线程/大流量默认禁止；不得造成拒绝服务或业务影响。",
+      "source_location": "FAQ扫描器/大线程问答"
+    },
+    "brute_force": {
+      "status": "conditional",
+      "rule_summary": "前台撞库/爆破需成功案例证明；后台爆破仅收成功登录案例；仅爆破未进入后台忽略；不得大规模。",
+      "source_location": "FAQ《漏洞盒子平台通用评定原则》第8条"
+    },
+    "credential_stuffing": {
+      "status": "conditional",
+      "rule_summary": "撞库类需有成功案例；禁止大规模撞库；仅收可证明成功登录的案例。",
+      "source_location": "FAQ《漏洞盒子平台通用评定原则》第8条"
+    },
+    "file_upload": {
+      "status": "conditional",
+      "rule_summary": "平台默认未单独禁止；但联想SRC明确禁止上传webshell（冻结未提奖金+拉黑）。其他项目需看项目规则。",
+      "source_location": "联想SRC《【必看】禁止上传WebShell公告》；LSRC主页"
+    },
+    "state_mutation": {
+      "status": "conditional",
+      "rule_summary": "测试不得影响正常业务；敏感操作（可能导致拒绝服务/财产损失）前必须联系项目管理员。",
+      "source_location": "FAQ《当漏洞可能影响正常业务风险时可以进行试验吗》"
+    },
+    "rce_verification": {
+      "status": "conditional",
+      "rule_summary": "可验证命令执行，但禁止下载源代码审计（除非厂商同意）；不要破坏业务。",
+      "source_location": "FAQ《漏洞盒子平台通用评定原则》第7条"
+    },
+    "sensitive_data_read": {
+      "status": "conditional",
+      "rule_summary": "SQL注入须注出一条数据证明危害，严禁拖库；严重敏感身份信息需至少3个敏感字段（姓名/身份证、银行卡、手机/邮箱、密码、地址）。",
+      "source_location": "FAQ《漏洞盒子平台通用评定原则》第2、6条"
+    },
+    "internal_network": {
+      "status": "forbidden",
+      "rule_summary": "默认禁止内网挖掘探测；仅攻防类项目在明确授权时可进一步内网渗透。",
+      "source_location": "FAQ《获取shell或其他方式连通内网后是否可以对内网进行挖掘》"
+    },
+    "lateral_movement": {
+      "status": "forbidden",
+      "rule_summary": "默认禁止；仅攻防类项目明确授权时例外。",
+      "source_location": "同上"
+    },
+    "dos": {
+      "status": "forbidden",
+      "rule_summary": "避免任何可能导致本地/远程拒绝服务或用户/企业财产损失的验证；敏感操作须先联系管理员。",
+      "source_location": "FAQ《当漏洞可能造成服务器拒绝服务时可以进行试验吗》"
+    },
+    "automated_report_generation": {
+      "status": "conditional",
+      "rule_summary": "允许AI辅助生成，但必须人工复现并提交影响说明、复现步骤、可验证PoC/请求包、关键截图、触发条件与影响范围；否则按无效报告驳回。",
+      "source_location": "FAQ《关于规范 AI 辅助漏洞报告提交标准》"
+    },
+    "automated_report_submission": {
+      "status": "unknown",
+      "rule_summary": "未发现公开提交API；网页表单提交，本系统要求人工确认。",
+      "source_location": "提交表单 /management/submit/{projectId}"
+    }
+  },
+  "ai_policy": {
+    "ai_assisted_research": "allowed（平台鼓励，含蛙池AI）",
+    "autonomous_agent": "conditional（允许自动化辅助，但必须人工验证；大规模/批量未验证报告会被处罚）",
+    "human_verification_required": "required",
+    "ai_generated_reports": "conditional：需漏洞影响说明、详细复现步骤、可验证POC或关键请求包、关键步骤与结果截图、触发条件/影响范围；仅有AI推测/模板化描述/虚构接口视为无效",
+    "misreport_penalty": "累计>3个未人工验证的AI无效报告→提醒/警告；>5个→限制报告提交权限；情节严重或恶意批量→进一步限制/封禁账号",
+    "ai_specific_programs": [
+      {"name": "蛙池AI", "status": "平台自有AI工具，FAQ明确可使用"},
+      {"name": "AI安全专项项目", "status": "未在项目大厅发现当前活跃的独立AI安全项目"}
+    ],
+    "notes": "平台级AI标准发布于2026-06-23；联想SRC另有2026-05-26同主题公告，处罚阈值一致（3/5）。",
+    "source_location": "https://www.vulbox.com/faq?id=5（平台相关→关于规范 AI 辅助漏洞报告提交标准）；https://lsrc.vulbox.com/news/detail-3579"
+  },
+  "execution_constraints": {
+    "platform_default": {
+      "max_rps": null,
+      "max_concurrency": null,
+      "allowed_time_windows": ["未限定；高级项目通常20:00发布", "项目测试窗口以项目详情/公告为准"],
+      "vpn_required": "PROGRAM_SPECIFIC",
+      "dedicated_ip_required": "PROGRAM_SPECIFIC（VPN项目通常有IP白名单）",
+      "researcher_header_required": null,
+      "test_account_required": "PROGRAM_SPECIFIC",
+      "rate_limit_notes": "未发现平台级QPS数值；默认禁止大流量/大线程/大规模扫描；敏感操作前联系管理员；SQL注入仅取一条数据证明。",
+      "source_location": "FAQ测试相关/G通用评定原则"
+    },
+    "program_specific_examples": [
+      {
+        "program": "联想SRC",
+        "constraints": {
+          "webshell_upload": "forbidden（冻结未提奖金+拉黑）",
+          "scoring": "《联想漏洞评分和奖励标准 V6.0》",
+          "asset_tiers": "已声明域名P0，未声明域名P1",
+          "scope_domains": ["*.lenovo.com", "*.lenovo.com.cn", "*.lenovomm.com", "*.lenovo.cn", "*.lenovo.net", "*.motorola.com", "*.motorola.com.cn", "*.baiying.cn", "*.baiying.com.cn"],
+          "excluded": ["*.sunits.com", "安想/智慧医疗资产", "域名接管问题"]
+        },
+        "source_location": "https://lsrc.vulbox.com/home"
+      },
+      {
+        "program": "高级项目（通用）",
+        "constraints": {
+          "nda_required": true,
+          "approval_required": true,
+          "profile_requirements": ["手机绑定", "微信绑定", "银行卡绑定", "资料完善"],
+          "selection": ["赛季排名", "历史漏洞平均有效值/级别/报告质量", "技能匹配", "报名顺序"]
+        },
+        "source_location": "FAQ《入选高级项目的依据是什么》《入选高级项目后我应该注意些什么》"
+      },
+      {
+        "program": "闪测项目",
+        "constraints": {
+          "barrier": "low",
+          "reward_unit": "碎银",
+          "special": "碎银可兑换专属项目接单权益/现金红包；集齐9个勋章兑500元京东卡"
+        },
+        "source_location": "https://www.vulbox.com/flashFesting/hall"
+      }
+    ],
+    "generalization_rule": "平台级默认规则与项目级规则必须分开存储；NDA/项目规则不得外推到其他项目。"
+  },
+  "reward_policy": {
+    "reward_type": ["cash", "金币", "荣誉（Rank+积分）", "碎银/入场券/京东卡（闪测）"],
+    "cash_direct": true,
+    "points_conversion": "金币可在盒子商城兑换货品；赛季积分用于段位/排名；碎银可兑换专属项目接单权益/现金红包；无统一现金兑换比例",
+    "severity_levels": ["严重", "高危", "中危", "低危"],
+    "asset_multiplier": true,
+    "asset_tiers": ["核心资产", "普通资产", "边缘资产"],
+    "duplicate_reward": "同一漏洞源产生的多个漏洞按1个计；重复漏洞无积分；重复漏洞赏金计算规则页面未展示（UNKNOWN）",
+    "first_report_rule": "奖励重要依据是提交先后次序；先到先得（高级项目FAQ明确）",
+    "quality_bonus": "报告质量评定标准；S级白帽（单洞>1万元或特别卓越）享所有项目免审核+免税券；精英白帽（单洞积分≥42）优先通过/私密邀请",
+    "newcomer_bonus": "新秀榜：赛季前无有效漏洞或赛季期间注册；赛季积分≥500才有奖励",
+    "campaign_bonus": "赛季TOP1/2/3现金+奖金池；每日/挑战任务积分；众测提成金",
+    "minimum_payout": 300,
+    "settlement_cycle": "提现申请后次月10-15日银行转账；金币/荣誉在漏洞关闭时发放；提成金次月1日或漏洞关闭后发放",
+    "commission": "提成金仅众测项目：提成金=实际支付赏金×(上月提成比+本月提成比)；企业SRC/小包/活动/重复/白帽保护不发放",
+    "source_location": "FAQ奖励/提现/赛季规则"
+  },
+  "submission_workflow": {
+    "precondition": "先加入项目；高级/私密项目需申请审核并签署保密协议",
+    "draft_supported": true,
+    "draft_evidence": "提交页有“预存”按钮；草稿箱 /management/draftBox",
+    "required_fields": [
+      "漏洞标题",
+      "漏洞域名",
+      "漏洞类型",
+      "漏洞等级（严重/高危/中危/低危）",
+      "漏洞简述",
+      "复现步骤（富文本，建议图文/请求包/功能导航）",
+      "修复建议（富文本）",
+      "附件（可选）",
+      "同意《漏洞盒子平台用户协议》"
+    ],
+    "attachments_supported": [".rar", ".zip", ".doc", ".docx", ".pdf", ".xls", ".xlsx"],
+    "attachment_size_limit": "200MB",
+    "conversation_supported": true,
+    "conversation_note": "提交后不能自行修改；可在漏洞详情评论区告知管理员修改/补充内容，或与管理员沟通",
+    "status_tracking": true,
+    "status_fields_observed": ["待审阅", "待补充", "待确认", "待关闭", "已关闭", "已忽略"],
+    "withdraw_supported": null,
+    "edit_supported": false,
+    "edit_note": "提交后不可自行编辑；通过评论由管理员处理",
+    "api_submission_available": false,
+    "ai_usage_field": false,
+    "ai_usage_note": "表单未见独立“AI使用情况”字段；AI报告需在复现步骤/证据中体现人工验证",
+    "human_confirmation_required": true,
+    "source_location": "https://user.vulbox.com/management/submit/444；FAQ漏洞提交后"
+  },
+  "penalties": [
+    {"violation": "无法复现的无效漏洞", "penalty": "扣除积分（具体表未展示）", "source": "FAQ《什么情况会扣除积分》"},
+    {"violation": "获取权限后擅自下载源码审计", "penalty": "视为违规，冻结账户；厂商保留法律责任", "source": "FAQ通用评定原则第7条"},
+    {"violation": "联想SRC上传webshell", "penalty": "冻结已发放未提奖金+黑名单", "source": "LSRC公告"},
+    {"violation": "AI报告未人工验证（>3/>5）", "penalty": "警告/限制提交权限/封禁", "source": "平台AI标准"},
+    {"violation": "泄露NDA项目信息", "penalty": "法律责任/赔偿", "source": "《保密承诺书》"},
+    {"violation": "大规模扫描/DoS/内网渗透（未授权）", "penalty": "视为攻击，承担法律责任", "source": "FAQ测试相关"}
+  ],
+  "evidence": [
+    {"type": "POLICY", "title": "关于规范 AI 辅助漏洞报告提交标准", "url": "https://www.vulbox.com/faq?id=5"},
+    {"type": "POLICY", "title": "测试时是否可以使用扫描器或其他大线程工具", "url": "https://www.vulbox.com/faq?id=5"},
+    {"type": "POLICY", "title": "内网挖掘/VPN/DoS FAQ", "url": "https://www.vulbox.com/faq?id=5"},
+    {"type": "POLICY", "title": "漏洞盒子平台通用评定原则", "url": "https://www.vulbox.com/faq?id=5"},
+    {"type": "POLICY", "title": "高级项目入选依据/优先级", "url": "https://www.vulbox.com/faq?id=5"},
+    {"type": "POLICY", "title": "奖励/提现/提成金 FAQ", "url": "https://www.vulbox.com/faq?id=5"},
+    {"type": "ANNOUNCEMENT", "title": "联想SRC AI报告规范", "url": "https://lsrc.vulbox.com/news/detail-3579"}
+  ]
+}

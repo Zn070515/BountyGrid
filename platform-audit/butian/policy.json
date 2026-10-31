@@ -1,0 +1,246 @@
+{
+  "platform": "butian",
+  "observed_at": "2026-10-31",
+  "capabilities": {
+    "ai_analysis": {
+      "status": "allowed",
+      "rule_summary": "平台鼓励AI辅助信息收集、初步分析、漏洞挖掘；最终报告须人工验证。",
+      "source_location": "《补天漏洞响应平台关于AI生成漏洞报告提交规范》(2026-07-13)；《关于提交AI生成漏洞报告的行为规范及违规处置通告》(2026-07-14)"
+    },
+    "code_audit": {
+      "status": "conditional",
+      "rule_summary": "获取权限后禁止下载源代码审计；需先联系审核员/厂商同意后才可审计。",
+      "source_location": "《补天平台白帽子行为规范与漏洞提交须知》四(二)文件读取/权限获取；《重申专属SRC测试行为规范》"
+    },
+    "passive_recon": {
+      "status": "conditional",
+      "rule_summary": "仅限厂商明确授权的域名/IP/时间窗口；严禁未授权探测。",
+      "source_location": "行为规范四(一)授权与范围"
+    },
+    "active_http_requests": {
+      "status": "conditional",
+      "rule_summary": "授权范围内允许；禁止大流量/高并发扫描、DoS、业务干扰。",
+      "source_location": "行为规范四(三)；《重申专属SRC测试行为规范》"
+    },
+    "browser_automation": {
+      "status": "conditional",
+      "rule_summary": "平台未单独禁止浏览器自动化；但禁止自动化扫描、高频请求、大规模探测；AI自动化产出必须人工验证。",
+      "source_location": "理想汽车项目规则第3条；平台AI规范"
+    },
+    "directory_enumeration": {
+      "status": "conditional",
+      "rule_summary": "禁止大流量/高并发扫描；不得影响目标承载能力。",
+      "source_location": "行为规范四(三)大规模扫描"
+    },
+    "subdomain_discovery": {
+      "status": "conditional",
+      "rule_summary": "仅限授权范围；范围外域名属非授权测试。",
+      "source_location": "理想汽车项目规则第7条；行为规范四(一)"
+    },
+    "automated_scanning": {
+      "status": "conditional",
+      "rule_summary": "理想汽车等专属SRC明确禁止“测试自动化扫描、高频请求”；平台禁止大流量/高并发扫描。",
+      "source_location": "理想汽车项目规则；行为规范四(三)"
+    },
+    "high_concurrency": {
+      "status": "forbidden",
+      "rule_summary": "禁止高频请求、大流量/高并发扫描、可能导致服务不可用的测试。",
+      "source_location": "理想汽车项目规则第3条；行为规范四(三)"
+    },
+    "brute_force": {
+      "status": "conditional",
+      "rule_summary": "弱口令是收录类型；但不得大规模爆破、不得获取/留存用户数据。",
+      "source_location": "提交表单漏洞类型；行为规范四(二)"
+    },
+    "credential_stuffing": {
+      "status": "conditional",
+      "rule_summary": "未单独禁止；撞库/弱口令需成功证明，且不得批量获取用户数据。",
+      "source_location": "行为规范四(二)；通用评定原则"
+    },
+    "file_upload": {
+      "status": "conditional",
+      "rule_summary": "允许证明可上传/可解析执行，但严禁驻留Webshell/后门，测试文件必须立即删除。",
+      "source_location": "行为规范四(二)后门驻留"
+    },
+    "state_mutation": {
+      "status": "forbidden",
+      "rule_summary": "禁止对核心业务增删改接口自动化遍历/并发/空参数模糊测试；禁止脏数据、批量发送消息、篡改他人数据。",
+      "source_location": "《重申专属SRC测试行为规范》拒绝破坏性行为；行为规范四(三)"
+    },
+    "rce_verification": {
+      "status": "conditional",
+      "rule_summary": "证明命令执行/权限即可立即停止；禁止读取源码/配置/敏感数据，禁止提权/横向/后门。",
+      "source_location": "行为规范四(二)权限获取；《重申专属SRC测试行为规范》"
+    },
+    "sensitive_data_read": {
+      "status": "forbidden",
+      "rule_summary": "越权/未授权访问仅证明存在，不得获取/留存用户个人信息或业务数据；SQL注入仅可获取库表名等必要信息，严禁查询个人信息/业务明细。",
+      "source_location": "行为规范四(二)；《重申专属SRC测试行为规范》"
+    },
+    "internal_network": {
+      "status": "forbidden",
+      "rule_summary": "严禁跳板渗透/内网扫描/横向移动；SSRF仅证明可访问内网/端口，不得大范围扫描。",
+      "source_location": "行为规范四(三)跳板渗透；《重申专属SRC测试行为规范》SSRF"
+    },
+    "lateral_movement": {
+      "status": "forbidden",
+      "rule_summary": "严禁横向移动、提权、植入后门。",
+      "source_location": "行为规范四(三)；《重申专属SRC测试行为规范》"
+    },
+    "dos": {
+      "status": "forbidden",
+      "rule_summary": "严禁DoS/DDoS、慢速连接耗尽、逻辑炸弹、资源耗尽。",
+      "source_location": "行为规范四(三)拒绝服务"
+    },
+    "automated_report_generation": {
+      "status": "conditional",
+      "rule_summary": "允许AI辅助，但必须人工逐条验证；报告需URL、功能点、验证过程、完整数据包/POC、危害证明、截图；禁止批量未验证AI报告。",
+      "source_location": "AI规范/行为规范"
+    },
+    "automated_report_submission": {
+      "status": "unknown",
+      "rule_summary": "未发现公开提交API；网页表单提交；本系统要求人工确认。",
+      "source_location": "https://www.butian.net/Loo/submit"
+    }
+  },
+  "ai_policy": {
+    "ai_assisted_research": "allowed（鼓励AI辅助信息收集、初步分析、漏洞挖掘）",
+    "autonomous_agent": "conditional（允许自动化辅助；禁止AI自动扫描+自动生成描述+直接批量上报）",
+    "human_verification_required": "required",
+    "ai_generated_reports": "conditional：需人工逐条验证；报告包含漏洞URL、功能点、验证过程、完整数据包及POC、验证证明、危害证明、细节截图/文字；禁止模板化/虚构接口",
+    "misreport_penalty": "累计>3个未人工验证AI报告→提醒；>5个→视情况扣信誉值，情节严重封号；平台会公开封号/警告名单（脱敏）",
+    "ai_specific_programs": [
+      {"name": "2026 GROW计划-AI辅助漏洞挖掘赛道", "status": "进行中（2026-09-01~11-30；报名2026-08-25~11-30）", "notes": "提交时勾选“AI辅助漏洞挖掘”，填写大模型名称+版本、AI工具名称；自研/未收录工具需先投稿至奇安信攻防社区；有效漏洞≥10才可评奖"},
+      {"name": "通用2.0", "status": "进行中", "notes": "非AI专项，但可用AI辅助；需EXP/环境"}
+    ],
+    "notes": "平台级AI规范由补天联合30+SRC发布；另有更严格的违规处置通告与公开名单。",
+    "source_location": "https://www.butian.net/Article/content/id/689；https://www.butian.net/Article/content/id/690；https://www.butian.net/Grow"
+  },
+  "execution_constraints": {
+    "platform_default": {
+      "max_rps": null,
+      "max_concurrency": null,
+      "allowed_time_windows": ["按厂商授权时间窗口", "活动按活动时间（如GROW整体报名2026-08-25~11-30、活动2026-09-01~11-30；漏洞挖掘实战第二期为月度阶段10-01~10-31）"],
+      "vpn_required": "PROGRAM_SPECIFIC/UNKNOWN",
+      "dedicated_ip_required": null,
+      "researcher_header_required": null,
+      "test_account_required": "PROGRAM_SPECIFIC（越权须用本人两个可控账号）",
+      "rate_limit_notes": "无平台级QPS数值；禁止高频请求/自动化扫描/大流量；敏感操作前向平台报备；新用户待审核限5个。",
+      "source_location": "行为规范/重申专属SRC规范/FAQ"
+    },
+    "program_specific_examples": [
+      {
+        "program": "理想汽车专属SRC",
+        "constraints": {
+          "automated_scanning": "forbidden",
+          "high_frequency": "forbidden",
+          "dos": "forbidden",
+          "malware_backdoor": "forbidden",
+          "mass_data_tamper": "forbidden",
+          "internal_network": "proof_only",
+          "scope": "only in-scope domains; out-of-scope = unauthorized"
+        },
+        "source_location": "https://www.butian.net/Company/64883"
+      },
+      {
+        "program": "通用2.0",
+        "constraints": {
+          "pre_inquiry_required": true,
+          "local_repro_env_required": true,
+          "exp_required": true,
+          "same_type_pause_threshold": 3,
+          "accepted": "未授权可直接/组合RCE；VPN二次认证绕过/账号枚举；虚拟化逃逸"
+        },
+        "source_location": "https://www.butian.net/Article/content/id/667"
+      },
+      {
+        "program": "专属SRC（通用）",
+        "constraints": {
+          "practical_certification_required": true,
+          "project_signup_required": true,
+          "compliance_exam_required": true
+        },
+        "source_location": "实战认证公告；项目页"
+      }
+    ],
+    "generalization_rule": "平台级默认规则与项目级规则分开存储；项目规则不得外推。"
+  },
+  "reward_policy": {
+    "reward_type": ["cash", "KB（库币）", "RYB（荣誉币）", "荣誉/Rank", "实物/书籍/周边"],
+    "cash_direct": true,
+    "points_conversion": "1KB/5RMB=1积分；RYB可在个人空间兑换KB；KB可在补天商城/京东兑换等值礼品",
+    "severity_levels": ["高危", "中危", "低危"],
+    "asset_multiplier": true,
+    "asset_tiers": ["专属SRC厂商自定义等级", "公益SRC厂商规模（小/中/大）与权重（≥1/=0）", "通用2.0产品等级A-E"],
+    "duplicate_reward": "重复漏洞按提交时间排序，先到先得；重复无奖励/无积分",
+    "first_report_rule": "同一漏洞多白帽提交以时间排序为准；先发现者获得奖励",
+    "quality_bonus": "月度荣誉5.0：荣耀个人TOP10（200-3000元）、荣耀战队TOP3（4000-10000元）、跃秀新星TOP3（书籍/周边）；云榜：赏金猎人/战神榜/火眼金睛",
+    "newcomer_bonus": "人生第一洞任务（萌新白帽+荣誉币3000）；新人成长计划历史活动；校园GROW计划（最高2万元）",
+    "campaign_bonus": "活动中心专项活动（专属/公益/通用/校园）；活动需报名",
+    "minimum_payout": null,
+    "settlement_cycle": "现金每周三银行汇款，48小时内到账；KB审核通过后7个工作日；通用2.0按奖金档位分期（<1万30天；1-2万先50%余60天；2-5万先30%余60天；5-10万先30%余60天；10-50万先30%余120天；>50万先30%余180天）",
+    "tax_note": "FAQ明确平台依法代扣代缴个税，官网展示金额为税后；通用2.0公告称“目标奖金为税前RMB，平台代缴税费” — 两处口径存在差异，需以实际结算为准",
+    "source_location": "新人须知；帮助中心；通用2.0公告；月度荣誉5.0"
+  },
+  "submission_workflow": {
+    "precondition": "完成本季度合规考核；专属SRC还需实战认证（至少1个有效漏洞）+ 项目报名",
+    "draft_supported": false,
+    "draft_evidence": "提交页仅有“清空/提交”，未见保存草稿按钮",
+    "required_fields": [
+      "厂商名称",
+      "厂商资产范围（无限制/域名或IP；主域名）",
+      "漏洞类别（Web/IoT；工控、操作系统、通用软件暂不接收）",
+      "漏洞标题",
+      "漏洞URL（+添加URL）",
+      "漏洞类型（事件型/通用型；XSS/配置错误/弱口令/入侵事件/疑似被黑/文件上传/信息泄露/存在后门/逻辑漏洞/代码执行/命令执行/SQL注入/解析漏洞）",
+      "漏洞权重（≥1 / =0；按爱站权重/高校政府域名规则）",
+      "漏洞等级（高危/中危/低危）",
+      "选择参与的活动",
+      "选择参与的任务",
+      "简要描述（不含具体URL等细节）",
+      "详细细节（富文本，含完整URL/截图/代码/POC/复现）",
+      "附件（zip/rar，≤50M，仅组件/固件/视频）",
+      "修复方案",
+      "所属行业/行业分类/所属地区",
+      "厂商联系方式",
+      "匿名提交选项",
+      "同意《用户服务协议》《用户隐私政策》"
+    ],
+    "attachments_supported": [".zip", ".rar"],
+    "attachment_size_limit": "50MB",
+    "conversation_supported": true,
+    "conversation_note": "个人中心漏洞列表查看审核意见/驳回原因；可补充；官方QQ群联系审核；微信服务号通知",
+    "status_tracking": true,
+    "status_fields_observed": ["待审核", "待补充", "审核不通过", "审核通过", "奖金确认中", "奖金已确认", "待打款", "打款完成"],
+    "withdraw_supported": null,
+    "edit_supported": false,
+    "edit_note": "提交后不能自行修改；可在个人中心按审核意见补充/修改后重新提交",
+    "api_submission_available": false,
+    "ai_usage_field": false,
+    "ai_usage_note": "普通提交表单无AI使用字段；GROW AI赛道提交时需勾选并填写大模型/工具信息",
+    "human_confirmation_required": true,
+    "compliance_exam_gate": true,
+    "practical_certification_gate": "专属SRC only",
+    "new_user_pending_limit": 5,
+    "source_location": "https://www.butian.net/Loo/submit；新人须知；帮助中心"
+  },
+  "penalties": [
+    {"violation": "初次违规/情节较轻", "penalty": "口头/书面警告；限制提交权限3-6个月", "source": "行为规范六"},
+    {"violation": "二次违规/造成影响", "penalty": "全平台通报；扣除漏洞及关联项目全部奖励；扣信誉分；扣分期间无法参与专属SRC提交", "source": "行为规范六"},
+    {"violation": "三次违规/情节恶劣/重大损失", "penalty": "永久封号；追回全部奖励；行业黑名单；依法追责", "source": "行为规范六"},
+    {"violation": "AI报告未人工验证（>3/>5）", "penalty": "提醒/扣信誉值/封号；公开脱敏名单", "source": "AI公告"},
+    {"violation": "一洞多投/抄袭/转载/刷洞", "penalty": "扣10信誉值（专属SRC扣20）；≤60封号", "source": "月度荣誉5.0"},
+    {"violation": "获取权限后下载源码/植入后门/内网横向", "penalty": "违规/封号/法律责任", "source": "行为规范/重申专属SRC规范"},
+    {"violation": "泄露漏洞/NDA信息", "penalty": "法律责任/赔偿", "source": "行为规范五"}
+  ],
+  "evidence": [
+    {"type": "POLICY", "title": "补天平台白帽子行为规范与漏洞提交须知", "url": "https://www.butian.net/Article/content/id/5"},
+    {"type": "POLICY", "title": "重申补天平台漏洞专属SRC测试行为规范及违规处理标准", "url": "https://www.butian.net/Article/content/id/683"},
+    {"type": "POLICY", "title": "补天漏洞响应平台关于AI生成漏洞报告提交规范", "url": "https://www.butian.net/Article/content/id/689"},
+    {"type": "POLICY", "title": "关于提交AI生成漏洞报告的行为规范及违规处置通告", "url": "https://www.butian.net/Article/content/id/690"},
+    {"type": "POLICY", "title": "补天专属SRC漏洞报告提交规范公告", "url": "https://www.butian.net/Article/content/id/691"},
+    {"type": "POLICY", "title": "企业SRC漏洞奖励计划公告", "url": "https://www.butian.net/Article/content/id/687"},
+    {"type": "POLICY", "title": "2026补天通用2.0漏洞奖励计划", "url": "https://www.butian.net/Article/content/id/667"},
+    {"type": "POLICY", "title": "帮助中心/新人须知", "url": "https://www.butian.net/Help/faq"}
+  ]
+}

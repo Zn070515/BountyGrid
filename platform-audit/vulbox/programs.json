@@ -1,0 +1,404 @@
+{
+  "platform": "vulbox",
+  "observed_at": "2026-10-31",
+  "summary": {
+    "by_type": {
+      "普通项目": 67,
+      "高级项目": 1386,
+      "企业SRC": 51,
+      "攻防渗透": 5,
+      "线下兼职": 2
+    },
+    "joined": 2,
+    "joined_projects": [
+      "联想集团安全应急响应中心",
+      "嘉立创安全应急响应中心"
+    ],
+    "eligibility_note": "企业SRC可直接提交（需先加入）；高级项目需申请+运营审核+NDA；专属/私密项目需先签《保密承诺书》；闪测当前无活跃期次；攻防/线下兼职当前均结束。",
+    "representative_sample_size": 17,
+    "estimated_project_count": 1513,
+    "count_confidence": "estimated",
+    "observed_category_counts_sum": 1511,
+    "counts_note": "分页推算约1513；分类合计1511；仅作量级参考。",
+    "eligibility_field_note": "本文件的 eligibility 是审计摘要标签，不是 BountyGrid 领域模型；权威模型是 architecture/domain-model.md 的 EligibilityState{Decision,Gates[]}。"
+  },
+  "programs": [
+    {
+      "program_id": "444",
+      "program_name": "联想集团安全应急响应中心",
+      "program_type": "企业SRC",
+      "status": "进行中",
+      "eligibility": "AVAILABLE_NOW",
+      "reward_min": 25,
+      "reward_max": 1250,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "PC"
+      ],
+      "requires_application": false,
+      "joined": true,
+      "scope_summary": "*.lenovo.com、*.lenovo.com.cn、*.lenovomm.com、*.lenovo.cn、*.lenovo.net、*.motorola.com、*.motorola.com.cn、*.baiying.cn、*.baiying.com.cn；排除 *.sunits.com、安想/智慧医疗、域名接管问题",
+      "automation_policy_summary": "平台默认禁止大流量/大线程/大规模扫描；禁止上传webshell（冻结奖金+拉黑）；AI辅助需人工验证；不得下载源码审计。",
+      "interesting_for_agent_system": true,
+      "reason": "已加入、可直接提交，资产范围与奖励公开，且提交表单可只读审计；适合作为 Vulbox 的首个接入样本。"
+    },
+    {
+      "program_id": null,
+      "program_name": "嘉立创安全应急响应中心",
+      "program_type": "企业SRC",
+      "status": "进行中",
+      "eligibility": "AVAILABLE_NOW",
+      "reward_min": 50,
+      "reward_max": 2500,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "PC"
+      ],
+      "requires_application": false,
+      "joined": true,
+      "scope_summary": "UNKNOWN（未打开详情；需在项目中查看资产范围）",
+      "automation_policy_summary": "平台默认规则；具体项目规则未读取。",
+      "interesting_for_agent_system": true,
+      "reason": "已加入的第二个企业SRC，可用于验证 Go 同时管理多个已加入项目的状态与提交入口。"
+    },
+    {
+      "program_id": null,
+      "program_name": "萤石安全应急响应中心",
+      "program_type": "企业SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 10,
+      "reward_max": 3000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "智能硬件"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "需加入后查看",
+      "automation_policy_summary": "平台默认规则；智能硬件项目可能有单独测试要求。",
+      "interesting_for_agent_system": false,
+      "reason": "未加入；智能硬件资产对 Agent 执行层要求更高，暂不作为首批。"
+    },
+    {
+      "program_id": null,
+      "program_name": "PayPal中国安全应急响应中心",
+      "program_type": "企业SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 100,
+      "reward_max": 10000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "UNKNOWN"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "需加入后查看",
+      "automation_policy_summary": "平台默认规则。",
+      "interesting_for_agent_system": false,
+      "reason": "赏金较高，但未加入且涉及跨境支付合规，暂不优先。"
+    },
+    {
+      "program_id": null,
+      "program_name": "Airbnb爱彼迎安全应急响应中心",
+      "program_type": "企业SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 100,
+      "reward_max": 45000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "需加入后查看",
+      "automation_policy_summary": "平台默认规则；跨境业务可能有额外法律与数据限制。",
+      "interesting_for_agent_system": false,
+      "reason": "赏金上限最高（4.5万元），但未加入、跨境合规复杂。"
+    },
+    {
+      "program_id": null,
+      "program_name": "OPPO安全应急响应中心",
+      "program_type": "企业SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 0,
+      "reward_max": 30000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "智能硬件"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "需加入后查看",
+      "automation_policy_summary": "平台默认规则。",
+      "interesting_for_agent_system": false,
+      "reason": "高赏金、终端厂商；未加入。"
+    },
+    {
+      "program_id": null,
+      "program_name": "度小满安全应急响应中心",
+      "program_type": "企业SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 5,
+      "reward_max": 10000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "需加入后查看",
+      "automation_policy_summary": "平台默认规则；金融数据敏感度高。",
+      "interesting_for_agent_system": false,
+      "reason": "金融行业，数据合规要求高；未加入。"
+    },
+    {
+      "program_id": null,
+      "program_name": "九号安全应急响应中心（NSRC）",
+      "program_type": "企业SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 20,
+      "reward_max": 3000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "智能硬件"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "需加入后查看",
+      "automation_policy_summary": "平台默认规则。",
+      "interesting_for_agent_system": false,
+      "reason": "智能短途交通/IoT，资产类型有代表性；未加入。"
+    },
+    {
+      "program_id": null,
+      "program_name": "乐橙安全应急响应中心（ISRC）",
+      "program_type": "企业SRC",
+      "status": "暂停中",
+      "eligibility": "PAUSED",
+      "reward_min": 30,
+      "reward_max": 4000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "智能硬件"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "暂停中",
+      "automation_policy_summary": "暂停期间不得测试。",
+      "interesting_for_agent_system": false,
+      "reason": "Kill Switch 样本；状态为暂停中。"
+    },
+    {
+      "program_id": null,
+      "program_name": "理想安全应急响应中心",
+      "program_type": "企业SRC",
+      "status": "暂停中",
+      "eligibility": "PAUSED",
+      "reward_min": 0,
+      "reward_max": 20000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "智能硬件"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "暂停中",
+      "automation_policy_summary": "暂停期间不得测试。",
+      "interesting_for_agent_system": false,
+      "reason": "汽车/IoT 高价值资产，但当前暂停；Go 必须在调度前读取状态。"
+    },
+    {
+      "program_id": null,
+      "program_name": "丁香园安全应急响应中心（DXYSRC）",
+      "program_type": "企业SRC",
+      "status": "暂停中",
+      "eligibility": "PAUSED",
+      "reward_min": 0,
+      "reward_max": 1500,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "暂停中",
+      "automation_policy_summary": "暂停期间不得测试。",
+      "interesting_for_agent_system": false,
+      "reason": "Kill Switch 样本；医疗行业。"
+    },
+    {
+      "program_id": null,
+      "program_name": "第38期 斗象产品漏洞收集",
+      "program_type": "普通项目",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 0,
+      "reward_max": 0,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "PC",
+        "智能硬件"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "需加入后查看",
+      "automation_policy_summary": "平台默认规则。",
+      "interesting_for_agent_system": true,
+      "reason": "当前少见的活跃“普通项目”，一键“立即加入”，奖励为入场券（非现金）；适合测试低门槛加入流程。"
+    },
+    {
+      "program_id": null,
+      "program_name": "第4017期 业务安全测试",
+      "program_type": "高级项目",
+      "status": "暂停中",
+      "eligibility": "PAUSED",
+      "reward_min": null,
+      "reward_max": null,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_summary": "暂停中；需申请+审核+NDA",
+      "automation_policy_summary": "高级项目通用：申请审核、NDA、禁止大规模扫描。",
+      "interesting_for_agent_system": false,
+      "reason": "高级项目暂停样本；说明高级项目也存在 kill switch。"
+    },
+    {
+      "program_id": null,
+      "program_name": "第2424期 IT/互联网厂商渗透测试",
+      "program_type": "攻防渗透",
+      "status": "已结束",
+      "eligibility": "ENDED",
+      "reward_min": null,
+      "reward_max": null,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_summary": "已结束",
+      "automation_policy_summary": "攻防类项目在明确授权时可能允许内网渗透；其他默认禁止。",
+      "interesting_for_agent_system": false,
+      "reason": "代表攻防渗透类型；当前无活跃项目。"
+    },
+    {
+      "program_id": null,
+      "program_name": "第1480期 全国安全测试报名",
+      "program_type": "线下兼职",
+      "status": "已结束",
+      "eligibility": "ENDED",
+      "reward_min": 1500,
+      "reward_max": 20000,
+      "reward_currency": "CNY/day",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "IoT"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_summary": "已结束；地点全国",
+      "automation_policy_summary": "需线下到场，不能远程自动化。",
+      "interesting_for_agent_system": false,
+      "reason": "线下兼职与 Agent 远程执行不兼容。"
+    },
+    {
+      "program_id": null,
+      "program_name": "第3679期 闪测",
+      "program_type": "闪测项目",
+      "status": "已结束",
+      "eligibility": "ENDED",
+      "reward_min": 0,
+      "reward_max": 0,
+      "reward_currency": "碎银",
+      "asset_types": [
+        "WEB"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_summary": "已结束",
+      "automation_policy_summary": "闪测低门槛；奖励碎银/红包/勋章。",
+      "interesting_for_agent_system": true,
+      "reason": "闪测是新人上升通道；当前无活跃期次，但应纳入 Go 的期次订阅与开期提醒。"
+    },
+    {
+      "program_id": null,
+      "program_name": "专属/私密项目（小包）",
+      "program_type": "专属项目",
+      "status": "UNKNOWN",
+      "eligibility": "INVITE_ONLY",
+      "reward_min": null,
+      "reward_max": null,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "UNKNOWN"
+      ],
+      "requires_application": null,
+      "joined": false,
+      "scope_summary": "入口先展示《保密承诺书》，未签署不可见",
+      "automation_policy_summary": "需签署NDA；项目内容严格保密。",
+      "interesting_for_agent_system": false,
+      "reason": "NDA 是不可自动化的硬门槛；Go 只能记录“存在且需人工签署”。"
+    }
+  ],
+  "evidence": [
+    {
+      "type": "ACCOUNT",
+      "title": "我的项目",
+      "url": "https://user.vulbox.com/projectHall/myProject",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "联想SRC",
+      "url": "https://lsrc.vulbox.com/home",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "企业SRC列表",
+      "url": "https://src.vulbox.com/",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "项目大厅（普通/高级/攻防/线下）",
+      "url": "https://www.vulbox.com/projects/list",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "闪测大厅",
+      "url": "https://www.vulbox.com/flashFesting/hall",
+      "observed_at": "2026-10-31"
+    }
+  ]
+}

@@ -1,0 +1,393 @@
+{
+  "platform": "vulbox",
+  "display_name": "漏洞盒子（VulBox）",
+  "observed_at": "2026-10-31",
+  "urls": {
+    "portal": "https://www.vulbox.com/",
+    "project_hall": "https://www.vulbox.com/projects/list",
+    "flash_hall": "https://www.vulbox.com/flashFesting/hall",
+    "enterprise_src": "https://src.vulbox.com/",
+    "leaderboard": "https://www.vulbox.com/top/season",
+    "faq": "https://www.vulbox.com/faq?id=5",
+    "user_center": "https://user.vulbox.com/home",
+    "profile": "https://user.vulbox.com/personCenter",
+    "finance": "https://user.vulbox.com/finance",
+    "my_projects": "https://user.vulbox.com/projectHall/myProject",
+    "exclusive_projects": "https://user.vulbox.com/projectHall/myPacket",
+    "my_vulns": "https://user.vulbox.com/management/myBugs",
+    "draft_box": "https://user.vulbox.com/management/draftBox",
+    "vpn": "https://user.vulbox.com/vpn",
+    "mission_hall": "https://mission.vulbox.com",
+    "example_src_subdomain": "https://lsrc.vulbox.com/"
+  },
+  "authentication": {
+    "login_provider": "漏洞盒子账号（微信扫码 / 手机验证码 / 账号密码）",
+    "login_methods_observed": [
+      "微信扫码关注登录",
+      "手机验证码登录",
+      "账号密码登录（用户名/手机号/邮箱）"
+    ],
+    "session_type": "浏览器 Cookie",
+    "sso_scope": "www.vulbox.com / user.vulbox.com / mission.vulbox.com / src.vulbox.com / 各企业SRC子域（如 lsrc.vulbox.com）共享登录态",
+    "api_token_observed": false,
+    "notes": "登录页有《平台用户协议》《隐私政策》勾选项；本次使用微信扫码，未代替用户勾选协议。"
+  },
+  "project_system": {
+    "count_method": "项目大厅分页152页，最后1页3条 → 151×10+3=1513",
+    "counts_by_type": {
+      "普通项目": 67,
+      "高级项目": 1386,
+      "企业SRC": 51,
+      "攻防渗透": 5,
+      "线下兼职": 2
+    },
+    "counts_note": "项目大厅分页152页、最后1页3条，推算约1513；分类筛选计数合计1511。两者相差2，属于分页/筛选边界/推荐位差异，只能作为 estimated_count，不能作为数据库强约束。",
+    "ui_filters": {
+      "项目类型": [
+        "全部",
+        "普通项目",
+        "高级项目",
+        "企业SRC",
+        "攻防渗透",
+        "线下兼职"
+      ],
+      "行业类型": [
+        "金融",
+        "电商",
+        "娱乐",
+        "运输",
+        "出游",
+        "房产",
+        "制造业",
+        "政企"
+      ],
+      "技能要求": [
+        "Web漏洞",
+        "App客户端漏洞",
+        "逻辑漏洞",
+        "情报/信息收集",
+        "内网渗透"
+      ],
+      "业务类型": [
+        "Web端",
+        "移动客户端",
+        "PC端",
+        "智能硬件"
+      ],
+      "其他奖励": [
+        "活动",
+        "赏金",
+        "项目券",
+        "积分"
+      ]
+    },
+    "program_types": [
+      {
+        "program_type": "企业SRC",
+        "count_observed": 51,
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": false,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": [
+          "cash",
+          "points",
+          "coins",
+          "honor"
+        ],
+        "notes": "src.vulbox.com 列表；卡片直接“提交漏洞”；本账号已加入联想、嘉立创。部分项目暂停中（丁香园、理想等）。"
+      },
+      {
+        "program_type": "高级项目（厂商有偿众测）",
+        "count_observed": 1386,
+        "discoverable": true,
+        "open_to_new_user": false,
+        "requires_application": true,
+        "requires_invitation": false,
+        "requires_reputation": true,
+        "requires_contract": null,
+        "requires_nda": true,
+        "reward_type": [
+          "cash",
+          "coins",
+          "honor"
+        ],
+        "notes": "项目大厅申请，运营审核；选择依据：资料完整性（含银行卡/微信/手机）、赛季排名、历史漏洞平均有效值/级别/报告质量、技能匹配、报名顺序；S级免审核、精英优先；入选后需签署保密协议。"
+      },
+      {
+        "program_type": "普通项目",
+        "count_observed": 67,
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": null,
+        "requires_invitation": false,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": [
+          "入场券",
+          "积分",
+          "荣誉",
+          "少量现金"
+        ],
+        "notes": "含斗象产品漏洞收集、业务安全测试期次等；活动按钮可能为“立即加入”或“已结束”；奖励可能不是现金（如入场券）。"
+      },
+      {
+        "program_type": "闪测项目",
+        "count_observed": "多期（第3679期等；当前可见期次全部已结束）",
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": false,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": [
+          "碎银",
+          "现金红包",
+          "京东卡",
+          "专属项目接单权益"
+        ],
+        "notes": "低门槛；按年度碎银排名；碎银可兑换专属项目接单权益/现金红包；集齐9个挖蛙勋章兑500元京东卡。入口“立即接单”，未操作。"
+      },
+      {
+        "program_type": "专属/私密项目（小包）",
+        "count_observed": null,
+        "discoverable": false,
+        "open_to_new_user": false,
+        "requires_application": null,
+        "requires_invitation": true,
+        "requires_reputation": true,
+        "requires_contract": null,
+        "requires_nda": true,
+        "reward_type": [
+          "cash"
+        ],
+        "notes": "入口 /projectHall/myPacket 先展示《保密承诺书》，必须本人阅读并同意后才能进入；未签署，数量与内容不可见。"
+      },
+      {
+        "program_type": "攻防渗透",
+        "count_observed": 5,
+        "discoverable": true,
+        "open_to_new_user": null,
+        "requires_application": true,
+        "requires_invitation": null,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": true,
+        "reward_type": [
+          "cash"
+        ],
+        "notes": "当前5个项目全部已结束；此类项目可能允许内网渗透（需项目明确授权）。"
+      },
+      {
+        "program_type": "线下兼职",
+        "count_observed": 2,
+        "discoverable": true,
+        "open_to_new_user": null,
+        "requires_application": true,
+        "requires_invitation": null,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": true,
+        "reward_type": [
+          "cash"
+        ],
+        "notes": "全国安全测试/IoT安全测试；薪资1500-20000元/天；当前均结束；需线下到场，不可远程自动化。"
+      },
+      {
+        "program_type": "公益SRC（FAQ提及）",
+        "count_observed": null,
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": false,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": [
+          "cash",
+          "points",
+          "honor"
+        ],
+        "notes": "FAQ明确“公益SRC漏洞由漏洞盒子官方平台直接给予奖金”；与项目大厅分类的对应关系未在页面直接标注，需人工确认。"
+      }
+    ],
+    "state_semantics": {
+      "进行中": "可提交/可参与（卡片可能显示“提交漏洞”或“立即加入”）",
+      "暂停中": "项目暂停接收；卡片显示“暂停中”（如第4017期、第3743期、丁香园、理想）",
+      "已结束": "项目结束；卡片显示“已结束”",
+      "注意": "卡片按钮存在不代表已加入或可提交；企业SRC卡片即使未加入也显示“提交漏洞”"
+    },
+    "estimated_project_count": 1513,
+    "count_confidence": "estimated",
+    "observed_category_counts": {
+      "普通项目": 67,
+      "高级项目": 1386,
+      "企业SRC": 51,
+      "攻防渗透": 5,
+      "线下兼职": 2
+    },
+    "observed_category_counts_sum": 1511
+  },
+  "scope_model": {
+    "include_assets": true,
+    "exclude_assets": true,
+    "asset_priority": true,
+    "asset_reward_multiplier": true,
+    "asset_specific_rules": true,
+    "environment_type": [
+      "Web端",
+      "移动客户端",
+      "PC端",
+      "智能硬件（IoT）"
+    ],
+    "scope_change_history": "partial（项目公告/项目动态会通知变更；无独立Scope变更历史页签）",
+    "asset_tiers": [
+      "核心资产",
+      "普通资产",
+      "边缘资产"
+    ],
+    "asset_tier_effect": "资产范围与漏洞等级共同决定最终判定与奖励；边缘/废弃业务酌情降级",
+    "include_asset_kinds_observed": [
+      "域名",
+      "子域名/泛域名",
+      "APP",
+      "Web/H5",
+      "PC端",
+      "智能硬件/IoT",
+      "API（项目技能标签中出现）"
+    ],
+    "exclude_assets_observed": [
+      "联想SRC：阳光雨露 *.sunits.com、安想/智慧医疗、域名接管问题；非联想全资/投资/控股及无关资产",
+      "各项目在详情页/公告中单独声明排除项"
+    ],
+    "conditional_scope_examples": [
+      "联想SRC：*.lenovo.com、*.lenovo.com.cn、*.lenovomm.com、*.lenovo.cn、*.lenovo.net、*.motorola.com、*.motorola.com.cn、*.baiying.cn、*.baiying.com.cn",
+      "高级项目：测试前必须签署项目保密协议，范围以项目文档为准",
+      "攻防类项目：明确授权时才允许内网渗透"
+    ],
+    "normalized_go_model": {
+      "AssetScope": [
+        "INCLUDE",
+        "EXCLUDE",
+        "CONDITIONAL",
+        "UNKNOWN"
+      ],
+      "notes": "平台原生有核心/普通/边缘资产分层与项目级排除项；高级/私密项目在签署NDA前整体为 UNKNOWN。"
+    }
+  },
+  "kill_switch": {
+    "supported_states": [
+      "RUNNING",
+      "PAUSED",
+      "STOP_TESTING",
+      "ENDED",
+      "RULE_CHANGED"
+    ],
+    "observed_state_fields": [
+      "项目状态（进行中/暂停中/已结束）",
+      "公告",
+      "项目公告变更",
+      "项目动态",
+      "报名/项目时间"
+    ],
+    "evidence": [
+      "企业SRC列表：丁香园、理想显示“暂停中”",
+      "高级项目列表：第4017期、第3743期显示“暂停中”",
+      "联想SRC消息：同一项目在数小时内多次“暂停/重新开启”（10-30~10-31），说明状态会频繁变更",
+      "联想SRC：2026-10-23 公告已变更",
+      "项目详情/公告可更新规则（如LSRC V6.0）"
+    ],
+    "platform_wide_stop_announcement_observed": false,
+    "notes": "未发现全平台统一停测开关；以项目状态+公告+消息为准。Go 必须高频同步项目状态，不能缓存过久。"
+  },
+  "competition": {
+    "active_researchers_visible": 50,
+    "rewarded_researchers_visible": 30,
+    "top10_share_estimate": null,
+    "newcomer_ranking_exists": true,
+    "newcomer_reward_exists": true,
+    "reputation_gate_strength": "high",
+    "observed_season": "S3（2026-08-25 ~ 2026-11-24）",
+    "leaderboard_notes": "排行榜可见5页（约50人）；TOP10全部为传说段位，积分9276/7504/5328/4548/3386/2773/2739/2599/2509/2500；奖金池30000元，30位传说白帽参与瓜分；TOP1额外6000元、TOP2 3000元、TOP3 2000元。",
+    "newcomer_notes": "新秀榜存在：参与条件为赛季开始前无有效漏洞（不含公益）或赛季期间注册；赛季积分≥500才有新秀榜奖励。本账号0有效漏洞，满足参与条件但未达500分。",
+    "reputation_gate_notes": "信誉值是加入项目的门槛；高级项目还看排名、历史漏洞质量、技能、资料完整性（银行卡/微信/手机）和报名顺序。"
+  },
+  "programmatic_interface": {
+    "official_public_api": false,
+    "documented_api": false,
+    "internal_authenticated_api_observed": true,
+    "internal_api_host": "https://vapi.vulbox.com",
+    "internal_endpoints_observed": [
+      "GET /web/account/basic-info",
+      "GET /web/project/application/info",
+      "GET /web/project/projects/filter",
+      "GET /web/project/projects?type=-1&status=0&flag=0&search=&page=1&page_size=10&direction=desc&order_by=normal&limit=",
+      "GET /web/project/index/recommend",
+      "GET /web/ranking/missions",
+      "GET /web/ranking/search/season/up",
+      "GET /web/ranking/season/up?page=1&season_id=47&per_page=10",
+      "GET /web/ranking/score/log",
+      "GET https://vbapi.vulbox.com/v1/user/identity_info"
+    ],
+    "internal_api_notes": "由前端页面正常加载触发；仅记录结构，未绕过认证、未修改请求、未调用后台管理接口。",
+    "rss": false,
+    "webhook": null,
+    "project_subscription": "微信绑定后可接收项目动态/站内信；未见RSS/Webhook",
+    "notification_channels_observed": [
+      "站内信",
+      "微信消息",
+      "短信/邮件（绑定后）"
+    ],
+    "data_export_observed": false,
+    "preferred_data_sources_ranked": [
+      "AUTHENTICATED_WEB（会话内读取 vapi/页面数据）",
+      "BROWSER_AUTOMATION（登录、项目状态轮询、NDA前停止）",
+      "MANUAL_IMPORT（高级项目申请、签署NDA、提交报告）",
+      "PUBLIC_WEB（项目大厅、企业SRC列表、排行榜、FAQ）"
+    ],
+    "risk_notes": "vapi 无公开文档/稳定性承诺；NDA 项目数据属于保密信息，不应写入可共享日志。"
+  },
+  "evidence": [
+    {
+      "type": "ACCOUNT",
+      "title": "项目大厅筛选与分页",
+      "url": "https://www.vulbox.com/projects/list",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "企业SRC列表（含暂停中状态）",
+      "url": "https://src.vulbox.com/",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "联想SRC主页（资产范围/奖励/规则）",
+      "url": "https://lsrc.vulbox.com/home",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "ANNOUNCEMENT",
+      "title": "联想SRC《关于AI生成漏洞报告提交规范说明》",
+      "url": "https://lsrc.vulbox.com/news/detail-3579",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "赛季排行榜",
+      "url": "https://www.vulbox.com/top/season",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "POLICY",
+      "title": "FAQ（测试/高级项目/奖励/提现/新秀榜）",
+      "url": "https://www.vulbox.com/faq?id=5",
+      "observed_at": "2026-10-31"
+    }
+  ]
+}

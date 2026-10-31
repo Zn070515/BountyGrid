@@ -1,0 +1,99 @@
+{
+  "platform": "butian",
+  "platform_name": "补天漏洞响应平台（Butian）",
+  "observed_at": "2026-10-31",
+  "account": {
+    "registered": true,
+    "registration_time": "2026-10-31 18:55:04",
+    "identity_verified": true,
+    "identity_status_text": "账号安全页显示“实名认证 已认证”；手机号已绑定（不记录具体值）；微信未绑定",
+    "researcher_level": "实习白帽 LV1（新人等级；补天排名未上榜）",
+    "reputation_score": 100,
+    "reputation_metric": "信誉值（平台规则默认100；违规扣10/20，≤60封号；个人空间未直接展示数值）",
+    "rank": "-（补天排名未上榜）",
+    "newcomer_status": "实习白帽 LV1；注册当天；0有效漏洞；新人成长计划历史活动均已结束；当前可参与校园GROW计划（学生）",
+    "account_restrictions": [
+      "未完成本季度合规考核 → 提交漏洞页硬阻断，完成考核后方可提交",
+      "未完成实战认证（需至少1个有效漏洞）→ 无专属SRC提交权限",
+      "新用户未产出有效漏洞前，最多可待审核5个漏洞",
+      "未绑定银行卡 → 无法接收现金奖励",
+      "微信未绑定 → 收不到漏洞进度服务通知（可改用站内/个人中心）",
+      "未加入任何项目/活动；团队为空（创建团队需5级）"
+    ],
+    "submission_quota": 5,
+    "pending_submission_limit": 5,
+    "submission_quota_notes": "新用户未产出有效漏洞前最多待审核5个；产出1个及以上有效漏洞后自动解除，之后提交数量无限制",
+    "payout_configured": false,
+    "payout_method_types": ["银行卡（未绑定）"],
+    "profile_completion_status": "部分完成：实名认证已完成、手机绑定、邮箱绑定、头像已设置、性别已填；QQ/生日/地区/个性签名/团队为空；微信未绑定；银行卡信息为空；个人经历/技能未确认"
+  },
+  "account_stats": {
+    "honor_coins_ryb": 500,
+    "kb_balance": 0,
+    "points": 0,
+    "bounty_total_cny": 0,
+    "rank": "-",
+    "achievements": 0,
+    "joined_days": 0,
+    "submitted_vulnerabilities": 0,
+    "pending_review": 0,
+    "pending_supplement": 0,
+    "activities_joined": 0,
+    "projects_joined": 0,
+    "practical_certification": false,
+    "compliance_exam_completed": false
+  },
+  "eligibility_summary": {
+    "public_welfare_src": "AVAILABLE_NOW after compliance exam（公益SRC无项目报名门槛；但当前合规考核未完成）",
+    "exclusive_src": "LOCKED_BY_REPUTATION（需实战认证=至少1个有效漏洞；另有合规考核门槛）",
+    "general_2_0": "AVAILABLE_NOW after compliance exam（需按通用2.0询价流程，且提交页提示通用软件暂停接收，存在口径冲突）",
+    "crowd_testing": "INVITE_ONLY（排名前300/近一年专属SRC高危5+/其他SRC年度前3/精英内推，满足两条+签NDA+邀请码）",
+    "grow_campus": "APPLY_AVAILABLE（学生校园团队；需学生认证/组队；GROW报名至2026-11-30、活动至2026-11-30；漏洞挖掘实战第二期为月度阶段10-01~10-31）",
+    "enterprise_src": "UNKNOWN（当前仅奇安信1个展示；参与方式未验证）",
+    "activities": "APPLY_AVAILABLE（活动中心报名；当前GROW进行中，报名至2026-11-30、活动至2026-11-30）"
+  },
+  "evidence": [
+    {
+      "type": "ACCOUNT",
+      "title": "极客空间 / 个人主页",
+      "url": "https://www.butian.net/WhiteHat/Center",
+      "observed_at": "2026-10-31",
+      "supports": ["实习白帽LV1", "已加入补天0天", "未完成实战认证", "0奖金/0库币/0积分/500荣誉币", "0提交"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "个人中心 / 基本资料",
+      "url": "https://www.butian.net/WhiteHat/Center",
+      "observed_at": "2026-10-31",
+      "supports": ["注册时间2026-10-31 18:55:04", "昵称/性别/邮箱已填", "团队/生日/地区/签名空"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "个人中心 / 账号安全",
+      "url": "https://www.butian.net/WhiteHat/Center",
+      "observed_at": "2026-10-31",
+      "supports": ["实名认证已认证", "手机已绑定", "微信未绑定"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "个人中心 / 收款信息",
+      "url": "https://www.butian.net/WhiteHat/Center",
+      "observed_at": "2026-10-31",
+      "supports": ["银行卡信息为空"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "提交漏洞页 / 合规考核阻断",
+      "url": "https://www.butian.net/Loo/submit",
+      "observed_at": "2026-10-31",
+      "supports": ["未完成本季度合规考核，完成考核后方可提交漏洞"]
+    },
+    {
+      "type": "POLICY",
+      "title": "关于专属SRC接入实战认证机制的公告",
+      "url": "https://www.butian.net/Article/index（公告标题可检索）",
+      "observed_at": "2026-10-31",
+      "supports": ["专属SRC提交需实战认证", "实战认证=至少1个有效漏洞"]
+    }
+  ]
+}

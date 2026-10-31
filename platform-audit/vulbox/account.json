@@ -1,0 +1,101 @@
+{
+  "platform": "vulbox",
+  "platform_name": "漏洞盒子（VulBox）",
+  "observed_at": "2026-10-31",
+  "account": {
+    "registered": true,
+    "identity_verified": true,
+    "identity_status_text": "个人中心显示“已实名”；手机、邮箱、微信已绑定（不记录具体值）",
+    "researcher_level": "见习白帽（经验值9；下一等级：初级白帽，需经验值81；截图未显示总上限）",
+    "reputation_score": 100,
+    "reputation_metric": "信誉值（优秀100 / 良好60-99 / 较差<59）",
+    "rank": "9999+（S3赛季暂未上榜）",
+    "newcomer_status": "见习白帽（新人段位）；符合新秀榜参与条件（赛季开始前无有效漏洞），但新秀榜奖励要求赛季积分≥500",
+    "account_restrictions": [
+      "未绑定银行卡，无法提现",
+      "高级项目需申请+运营审核；个人资料/排名/历史漏洞质量/技能/报名顺序共同决定，当前0历史、银行未绑定，通过概率低",
+      "专属/私密项目需先签署《保密承诺书》",
+      "未发现账号封禁或提交配额限制"
+    ],
+    "submission_quota": null,
+    "pending_submission_limit": null,
+    "payout_configured": false,
+    "payout_method_types": ["银行卡（未绑定）"],
+    "profile_completion_status": "部分完成：实名、手机、邮箱、微信已绑定；银行卡未绑定；擅长业务/技能/行业偏好/简历/教育/职业信息为空；头像未确认"
+  },
+  "account_stats": {
+    "joined_projects": 2,
+    "joined_projects_detail": [
+      "联想集团安全应急响应中心（企业SRC，进行中）",
+      "嘉立创安全应急响应中心（企业SRC，进行中）"
+    ],
+    "season": "S3（2026-08-25 ~ 2026-11-24）",
+    "season_points": 0,
+    "season_rank": "9999+",
+    "total_points": 0,
+    "balance_cny": 0,
+    "commission_cny": 0,
+    "coupons": 0,
+    "submitted_vulnerabilities": 0,
+    "drafts": 0,
+    "pending_review": 0,
+    "processing": 0,
+    "paid": 0,
+    "validity_rate": null,
+    "experience": 9,
+    "experience_next_level": 81
+  },
+  "project_eligibility": {
+    "enterprise_src": "AVAILABLE_NOW（已加入2个；企业SRC项目开放提交）",
+    "advanced_projects": "REQUIRES_REVIEW（项目大厅申请，运营审核；软门槛：信誉/排名/历史质量/技能/资料完整性/报名顺序）",
+    "ordinary_projects": "APPLY_AVAILABLE（部分项目“立即加入”，如第38期斗象产品漏洞收集）",
+    "flash_testing": "UNKNOWN（当前可见期次均已结束；活跃期次需“立即接单”，未操作）",
+    "offensive_pentest": "ENDED（当前5个项目均结束；活跃时应为申请+审核制）",
+    "offline_parttime": "ENDED（当前2个项目均结束；活跃时需报名+线下）",
+    "private_exclusive": "INVITE_ONLY/REQUIRES_NDA（专属项目入口先弹《保密承诺书》）"
+  },
+  "evidence": [
+    {
+      "type": "ACCOUNT",
+      "title": "控制台 / 个人状态",
+      "url": "https://user.vulbox.com/home",
+      "observed_at": "2026-10-31",
+      "supports": ["已实名", "信誉优秀100分", "见习白帽9/81", "赛季积分0/排名9999+", "余额0", "待审阅/处理中/已打款0"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "个人中心",
+      "url": "https://user.vulbox.com/personCenter",
+      "observed_at": "2026-10-31",
+      "supports": ["已实名", "手机/邮箱/微信绑定", "银行卡未绑定"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "我的项目",
+      "url": "https://user.vulbox.com/projectHall/myProject",
+      "observed_at": "2026-10-31",
+      "supports": ["已加入联想、嘉立创两个企业SRC"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "财务中心",
+      "url": "https://user.vulbox.com/finance",
+      "observed_at": "2026-10-31",
+      "supports": ["普通账户0", "专属账户0", "累计赏金0", "提现需绑定银行卡"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "任务大厅",
+      "url": "https://mission.vulbox.com",
+      "observed_at": "2026-10-31",
+      "supports": ["见习白帽", "经验值9", "新手任务/白帽认证"]
+    },
+    {
+      "type": "POLICY",
+      "title": "FAQ：信誉值等级是如何划分的",
+      "url": "https://www.vulbox.com/faq?id=5",
+      "observed_at": "2026-10-31",
+      "supports": ["优秀100/良好60-99/较差<59"]
+    }
+  ]
+}

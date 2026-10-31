@@ -1,0 +1,31 @@
+# Local evidence screenshots may contain account/page data; keep them out of git.
+*.png
+*.jpg
+*.jpeg
+tmp-img/
+
+# Probe outputs (may contain live page text)
+probes/out/
+*.log
+
+# Secrets / browser sessions / state
+.env
+.env.*
+auth/
+state/
+.agent-browser/
+*.state.json
+
+# Go build artifacts
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

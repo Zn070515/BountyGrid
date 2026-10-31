@@ -1,0 +1,408 @@
+{
+  "platform": "butian",
+  "observed_at": "2026-10-31",
+  "summary": {
+    "exclusive_src_count": 37,
+    "public_welfare_src_vendors": "约6,600+（200页，约35家/页；平台注册企业6,655）",
+    "enterprise_src_count": 1,
+    "crowd_testing": "邀请制，数量未公开",
+    "general_2_0": "A-E类产品清单",
+    "grow_campus": "4条赛道，报名至2026-11-30、活动至2026-11-30；漏洞挖掘实战第二期为月度阶段10-01~10-31",
+    "joined": 0,
+    "eligibility_note": "当前账号被“本季度合规考核未完成”硬阻断，任何漏洞都不能提交；专属SRC还需“实战认证”（至少1个有效漏洞）。公益SRC/未注册厂商无需报名，但同样受合规考核阻断。",
+    "representative_sample_size": 17,
+    "eligibility_field_note": "本文件的 eligibility 是审计摘要标签，不是 BountyGrid 领域模型；权威模型是 architecture/domain-model.md 的 EligibilityState{Decision,Gates[]}。"
+  },
+  "programs": [
+    {
+      "program_id": "64883",
+      "program_name": "理想汽车安全应急响应中心",
+      "program_type": "专属SRC",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 50,
+      "reward_max": 20000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "IoT"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见（报名前可测/非可测资产范围均显示“参与该计划需要完成报名才能参与”）",
+      "automation_policy_summary": "禁止病毒/木马/后门；禁止大量客户信息篡改/删除/泄漏；禁止DoS/DDoS、自动化扫描、高频请求；仅收范围内漏洞；内网/数据库漏洞证明即可；禁止公开传播。",
+      "interesting_for_agent_system": false,
+      "reason": "典型专属SRC：报名+实战认证双门槛，且明确禁止自动化扫描/高频请求；当前账号不能提交。"
+    },
+    {
+      "program_id": null,
+      "program_name": "奇安信集团安全应急响应中心",
+      "program_type": "专属SRC",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 30,
+      "reward_max": 20000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "IoT"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台行为规范+项目规则；禁止大规模扫描/内网渗透/DoS。",
+      "interesting_for_agent_system": false,
+      "reason": "补天自有厂商高赏金项目，但专属SRC门槛未满足。"
+    },
+    {
+      "program_id": null,
+      "program_name": "嘉立创安全应急响应中心",
+      "program_type": "专属SRC",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 50,
+      "reward_max": 2500,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "PC"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台行为规范+项目规则。",
+      "interesting_for_agent_system": false,
+      "reason": "与漏洞盒子已加入的嘉立创同名厂商；可用于跨平台厂商映射，但补天侧未报名/未认证。"
+    },
+    {
+      "program_id": null,
+      "program_name": "金蝶软件安全应急响应中心",
+      "program_type": "专属SRC",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 20,
+      "reward_max": 10000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台行为规范+项目规则。",
+      "interesting_for_agent_system": false,
+      "reason": "企业软件/SaaS 资产，赏金中等；未满足专属SRC门槛。"
+    },
+    {
+      "program_id": null,
+      "program_name": "追觅科技赏金计划",
+      "program_type": "专属SRC",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 50,
+      "reward_max": 2000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "IoT"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台行为规范+项目规则。",
+      "interesting_for_agent_system": false,
+      "reason": "智能硬件/IoT 资产；未满足门槛。"
+    },
+    {
+      "program_id": null,
+      "program_name": "乐信集团安全应急响应中心",
+      "program_type": "专属SRC",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 50,
+      "reward_max": 6000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台行为规范+项目规则；金融数据敏感。",
+      "interesting_for_agent_system": false,
+      "reason": "金融科技，数据合规要求高；未满足门槛。"
+    },
+    {
+      "program_id": null,
+      "program_name": "知乎安全应急响应中心",
+      "program_type": "专属SRC",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 30,
+      "reward_max": 4000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台行为规范+项目规则。",
+      "interesting_for_agent_system": false,
+      "reason": "内容社区，用户数据敏感；未满足门槛。"
+    },
+    {
+      "program_id": null,
+      "program_name": "华住酒店安全应急响应中心",
+      "program_type": "专属SRC",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 30,
+      "reward_max": 4200,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台行为规范+项目规则。",
+      "interesting_for_agent_system": false,
+      "reason": "酒店/会员数据；未满足门槛。"
+    },
+    {
+      "program_id": null,
+      "program_name": "美团安全应急响应中心（大众点评专测活动）",
+      "program_type": "专属SRC/专项活动",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 70,
+      "reward_max": 24000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台行为规范+项目规则。",
+      "interesting_for_agent_system": false,
+      "reason": "高赏金专项，但专属SRC门槛未满足。"
+    },
+    {
+      "program_id": null,
+      "program_name": "广东堡塔安全技术有限公司",
+      "program_type": "专属SRC",
+      "status": "进行中",
+      "eligibility": "LOCKED_BY_REPUTATION",
+      "reward_min": 100,
+      "reward_max": 88888,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "PC",
+        "通用软件"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台行为规范+项目规则。",
+      "interesting_for_agent_system": false,
+      "reason": "赏金上限高（88,888元），但服务器软件/通用软件类别当前接收口径存疑；未满足门槛。"
+    },
+    {
+      "program_id": null,
+      "program_name": "公益SRC（事件漏洞）",
+      "program_type": "公益SRC",
+      "status": "进行中",
+      "eligibility": "REQUIRES_REVIEW",
+      "reward_min": 100,
+      "reward_max": 600,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "IoT"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_visibility": "无项目级可测清单；按厂商名称判断",
+      "automation_policy_summary": "平台行为规范；禁止大规模扫描/内网/DoS；SQLi仅证明；越权不获取数据。",
+      "interesting_for_agent_system": true,
+      "reason": "无需项目报名、低门槛、适合新人第一洞；但当前合规考核未完成，且新用户待审核限5个。"
+    },
+    {
+      "program_id": null,
+      "program_name": "公益SRC（通用漏洞）",
+      "program_type": "公益SRC",
+      "status": "进行中",
+      "eligibility": "REQUIRES_REVIEW",
+      "reward_min": 200,
+      "reward_max": 10000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "通用软件",
+        "APP",
+        "IoT"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_visibility": "按通用漏洞规则",
+      "automation_policy_summary": "平台行为规范；需提供组件/版本/环境/EXP。",
+      "interesting_for_agent_system": true,
+      "reason": "通用漏洞奖励高于事件漏洞；但提交页提示通用软件近期暂停接收，需人工确认。"
+    },
+    {
+      "program_id": null,
+      "program_name": "未注册厂商漏洞",
+      "program_type": "未注册厂商",
+      "status": "进行中",
+      "eligibility": "REQUIRES_REVIEW",
+      "reward_min": 100,
+      "reward_max": 600,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "IoT"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_visibility": "按厂商资产自行判断",
+      "automation_policy_summary": "平台行为规范；需确认厂商归属；平台联系厂商。",
+      "interesting_for_agent_system": false,
+      "reason": "范围不确定、厂商认领周期长；适合人工判断。"
+    },
+    {
+      "program_id": null,
+      "program_name": "通用2.0漏洞奖励计划（A类产品）",
+      "program_type": "通用2.0",
+      "status": "进行中",
+      "eligibility": "REQUIRES_REVIEW",
+      "reward_min": 20000,
+      "reward_max": 1000000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "通用软件",
+        "VPN",
+        "防火墙",
+        "EDR",
+        "虚拟化"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_visibility": "公告产品清单A-E类",
+      "automation_policy_summary": "需本地复现环境+EXP；禁止破坏性测试；同类型>3个暂停收取；提交前向运营butiansec询价。",
+      "interesting_for_agent_system": false,
+      "reason": "赏金极高但要求未授权RCE/EXP/本地环境，远超当前账号能力；且与提交页“通用软件暂停接收”口径冲突。"
+    },
+    {
+      "program_id": null,
+      "program_name": "补天众测",
+      "program_type": "众测",
+      "status": "UNKNOWN",
+      "eligibility": "INVITE_ONLY",
+      "reward_min": null,
+      "reward_max": null,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "API",
+        "IoT"
+      ],
+      "requires_application": true,
+      "joined": false,
+      "scope_visibility": "项目定向，签NDA后可见",
+      "automation_policy_summary": "实名+双因子+网络监管；项目定向测试；签保密协议。",
+      "interesting_for_agent_system": false,
+      "reason": "门槛：排名前300/近一年专属SRC高危5+/其他SRC前3/内推，满足两条+邀请码；当前不满足。"
+    },
+    {
+      "program_id": null,
+      "program_name": "2026 GROW计划（AI辅助漏洞挖掘赛道 / 漏洞挖掘实战第二期）",
+      "program_type": "校园计划",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 0,
+      "reward_max": 20000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "IoT",
+        "通用"
+      ],
+      "requires_application": true,
+      "signup_window": "2026-08-25~2026-11-30",
+      "task_window": "2026-09-01~2026-11-30（漏洞挖掘实战第二期月度阶段 2026-10-01~2026-10-31）",
+      "joined": false,
+      "scope_visibility": "活动规则/校园团队榜单",
+      "automation_policy_summary": "校园团队；AI辅助赛道允许AI挖洞但需勾选并填写模型/工具；有效漏洞≥10才可评奖。",
+      "interesting_for_agent_system": true,
+      "reason": "学生专属、当前进行中（GROW报名至2026-11-30、活动至2026-11-30；漏洞挖掘实战第二期为月度阶段10-01~10-31）、有AI辅助挖洞赛道；最贴合用户的高校学生身份，但需学生认证/组队。"
+    },
+    {
+      "program_id": null,
+      "program_name": "人生第一洞-金秋任务",
+      "program_type": "新人任务",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 0,
+      "reward_max": 0,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "IoT"
+      ],
+      "requires_application": false,
+      "joined": false,
+      "scope_visibility": "个人空间挖洞任务",
+      "automation_policy_summary": "提交有效漏洞后领取；奖励萌新白帽+1、荣誉币+3000。",
+      "interesting_for_agent_system": true,
+      "reason": "新人首个有效漏洞任务，显示“领取”按钮；需先完成合规考核并提交有效漏洞。"
+    }
+  ],
+  "evidence": [
+    {
+      "type": "ACCOUNT",
+      "title": "补天极客空间",
+      "url": "https://www.butian.net/WhiteHat/Center",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "理想汽车专属SRC",
+      "url": "https://www.butian.net/Company/64883",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "项目大厅",
+      "url": "https://www.butian.net/Reward/plan/2",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "ANNOUNCEMENT",
+      "title": "2026补天通用2.0漏洞奖励计划",
+      "url": "https://www.butian.net/Article/content/id/667",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "ANNOUNCEMENT",
+      "title": "校园GROW计划",
+      "url": "https://www.butian.net/Grow",
+      "observed_at": "2026-10-31"
+    }
+  ]
+}

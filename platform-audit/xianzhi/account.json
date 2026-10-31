@@ -1,0 +1,85 @@
+{
+  "platform": "xianzhi",
+  "platform_name": "阿里云先知（含 ASRC，新先知平台）",
+  "observed_at": "2026-10-31",
+  "account": {
+    "registered": true,
+    "identity_verified": true,
+    "identity_status_text": "阿里云账号个人实名认证：个人扫脸已认证；个人支付宝扫码未认证（二者其一即可）",
+    "researcher_level": "无（未获得白帽子等级/称号；英雄榜可见梅花A/方块A/红桃A等王牌A等级，本账号无称号）",
+    "reputation_score": 0,
+    "reputation_metric": "积分（页面同时展示贡献值/安全币概念，本账号均为0）",
+    "rank": null,
+    "newcomer_status": "无显式“新秀/新人”标识；当前无新秀榜；2024-11 曾有“新人专享活动”（已结束）",
+    "account_restrictions": [
+      "未报名任务时，“提交漏洞/情报”按钮为 disabled，无法进入提交表单",
+      "项目“资产范围/变更记录/白帽子排行榜”页签未报名时返回 NotSignUp，无法查看",
+      "提交漏洞总数0、情报总数0、积分0、赏金¥0；未加入任何任务",
+      "未发现平台级等级门槛阻止报名；但王牌A/月度奖励等权益依赖历史战绩"
+    ],
+    "submission_quota": null,
+    "pending_submission_limit": null,
+    "payout_configured": false,
+    "payout_method_types": [],
+    "profile_completion_status": "部分完成：实名认证已完成；先知昵称为空（显示“--”）；称号/团队/名人榜排名为空；阿里云账号联系方式与收货信息字段存在（未读取具体值）",
+    "notes": "账号为阿里云主账号（个人实名），首次进入新先知平台，历史数据需通过“历史数据同步”迁移；当前无任何提交或赏金记录。"
+  },
+  "account_stats": {
+    "tasks_total_visible": 91,
+    "tasks_joined": 0,
+    "submitted_vulnerabilities": 0,
+    "approved_vulnerabilities": 0,
+    "submitted_intelligence": 0,
+    "approved_intelligence": 0,
+    "points": 0,
+    "bounty_total_cny": 0,
+    "pending_payout_cny": null,
+    "leaderboard_rank": null
+  },
+  "privileges_and_gates": {
+    "can_browse_programs": true,
+    "can_view_program_detail": true,
+    "can_view_asset_scope_without_signup": false,
+    "can_submit_without_signup": false,
+    "can_apply_to_program": true,
+    "apply_button_enabled": true,
+    "level_gate_observed": false,
+    "invitation_gate_observed_on_visible_programs": false,
+    "slot_limit_observed": true,
+    "slot_limit_examples": [
+      "2026年10月众测活动：30人",
+      "通用漏洞收集计划十二期：100人",
+      "某银行10月众测：30人"
+    ]
+  },
+  "evidence": [
+    {
+      "type": "ACCOUNT",
+      "title": "先知众测 / 个人资料",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/personal-center/personal-info",
+      "observed_at": "2026-10-31",
+      "supports": ["实名认证", "积分0", "赏金0", "昵称/称号/团队为空"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "先知众测 / 财务管理",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/personal-center/finance-manage",
+      "observed_at": "2026-10-31",
+      "supports": ["赏金累计--", "待打款--", "积分累计0", "无支付记录", "存在“修改支付信息”入口"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "先知众测 / 漏洞管理",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/vulnerabilityManagement/whiteHat",
+      "observed_at": "2026-10-31",
+      "supports": ["提交漏洞总数0", "审核通过0", "待打款0", "提交情报0", "无记录"]
+    },
+    {
+      "type": "ACCOUNT",
+      "title": "先知众测 / 任务列表",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/all",
+      "observed_at": "2026-10-31",
+      "supports": ["任务总数91", "参与的任务总数0", "我的任务：暂无数据"]
+    }
+  ]
+}

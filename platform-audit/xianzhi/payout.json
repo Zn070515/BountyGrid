@@ -1,0 +1,52 @@
+{
+  "platform": "xianzhi",
+  "observed_at": "2026-10-31",
+  "payout": {
+    "methods": [],
+    "methods_supported": "UNKNOWN",
+    "minimum": null,
+    "cycle": "UNKNOWN",
+    "tax_withholding": "UNKNOWN（通义实验室项目奖励表标注“现金对应表（税后）”，提示按税后金额发放；未找到平台级代扣说明）",
+    "contract_required": null,
+    "invoice_required": null,
+    "current_account_ready": false,
+    "verification_required": true,
+    "notes": "财务管理页展示赏金累计“--”、待打款“--”、积分累计0，无任何支付记录；页面存在“修改支付信息”入口。本账号尚未配置可确认的收款方式。平台未在可见页面展示最低提现额、结算周期、代扣税或劳务协议要求。"
+  },
+  "account_payout_state": {
+    "bounty_total_visible": "--",
+    "pending_payout_visible": "--",
+    "points_total": 0,
+    "payment_method_visible": false,
+    "payment_edit_entry_present": true,
+    "last_payout_visible": null
+  },
+  "open_questions": [
+    "最低提现额度/起付线：平台页面未展示，UNKNOWN",
+    "发奖周期（按月/按审核通过）：未展示，UNKNOWN",
+    "是否代扣个人所得税：仅在单个项目奖励表看到“税后”字样，平台级规则 UNKNOWN",
+    "是否需要签署劳务协议/发票：未展示，UNKNOWN",
+    "收款方式类型（支付宝/银行卡/其他）：未配置，UNKNOWN",
+    "是否需要额外实名或收款实名：个人实名已完成；收款账户实名要求 UNKNOWN"
+  ],
+  "safe_handling": {
+    "do_not_record": ["银行卡号", "支付宝账号", "身份证号", "手机号", "姓名"],
+    "observed_sensitive_values_written": false
+  },
+  "evidence": [
+    {
+      "type": "PAYOUT",
+      "title": "先知众测 / 财务管理",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/personal-center/finance-manage",
+      "observed_at": "2026-10-31",
+      "supports": ["赏金累计--", "待打款--", "积分累计0", "修改支付信息入口", "无记录"]
+    },
+    {
+      "type": "PROGRAM",
+      "title": "通义实验室 / 现金对应表（税后）",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/151",
+      "observed_at": "2026-10-31",
+      "supports": ["奖励表标注税后"]
+    }
+  ]
+}

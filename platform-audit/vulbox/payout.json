@@ -1,0 +1,96 @@
+{
+  "platform": "vulbox",
+  "observed_at": "2026-10-31",
+  "payout": {
+    "methods": ["银行卡"],
+    "methods_supported": "银行卡（必须绑定本人银行卡；银行转账）",
+    "minimum": 300,
+    "minimum_notes": "每次提现最低300元；每年6月、12月提现没有最低金额限制",
+    "cycle": "提现申请后，财务固定在申请次月10-15日打款",
+    "tax_withholding": true,
+    "tax_notes": "平台按段位提供“基础免税额度”（默认段位5000/白银6000/黄金8000/钻石12000/传说20000），超出部分涉及税费；S级白帽享“免税券（你的提现奖金，平台帮你交税）”，说明平台通常代扣/代缴或提供免税额度机制。具体税率与代扣流程页面未展示。",
+    "contract_required": null,
+    "contract_notes": "普通提现未提及劳务协议；高级/私密项目入选后需签署保密协议（NDA），是否为劳务/结算协议未展示。",
+    "invoice_required": null,
+    "current_account_ready": false,
+    "current_account_note": "未绑定银行卡；财务中心提现弹窗明确“您当前还未绑定银行卡”。普通账户/专属账户均为0。",
+    "additional_verification": "已实名、手机/邮箱/微信已绑定；银行卡未绑定"
+  },
+  "account_payout_state": {
+    "ordinary_account_cny": 0,
+    "exclusive_account_cny": 0,
+    "total_bounty_cny": 0,
+    "withdrawn_cny": 0,
+    "withdrawal_frozen_cny": 0,
+    "bank_card_bound": false,
+    "payment_method_visible": false,
+    "commission_cny": 0,
+    "coupons": {
+      "double_points": 0,
+      "project_entry": 0,
+      "clue": 0,
+      "withdrawal_fee_waiver": 0,
+      "lottery": 0,
+      "replenish_card": 0,
+      "multi_bounty": 0
+    }
+  },
+  "fee_policy": {
+    "withdrawal_fee_waiver_quota": "月度基础免手续费额度 = 段位基准额度 + 2000 × (本赛季高级项目高危及以上有效漏洞数 ÷ 3)",
+    "tier_base_quota_cny": {
+      "默认段位": 5000,
+      "白银": 6000,
+      "黄金": 8000,
+      "钻石": 12000,
+      "传说": 20000
+    },
+    "waiver_coupon": "超出当月基础额度可使用“提现免手续费券”"
+  },
+  "open_questions": [
+    "个人所得税具体税率/代扣比例：UNKNOWN",
+    "是否需要签署劳务协议/发票：UNKNOWN",
+    "重复漏洞赏金计算：UNKNOWN（FAQ文章为空）",
+    "专属账户的提现规则是否与普通账户一致：UNKNOWN"
+  ],
+  "safe_handling": {
+    "do_not_record": ["银行卡号", "支付宝账号", "身份证号", "手机号", "姓名", "邮箱", "上次登录IP"],
+    "observed_sensitive_values_written": false
+  },
+  "evidence": [
+    {
+      "type": "PAYOUT",
+      "title": "财务中心",
+      "url": "https://user.vulbox.com/finance",
+      "observed_at": "2026-10-31",
+      "supports": ["普通账户0", "专属账户0", "累计赏金0", "提现未绑定银行卡"]
+    },
+    {
+      "type": "POLICY",
+      "title": "FAQ：什么时候可以提现",
+      "url": "https://www.vulbox.com/faq?id=5",
+      "observed_at": "2026-10-31",
+      "supports": ["最低300元", "6月/12月无最低", "次月10-15日打款"]
+    },
+    {
+      "type": "POLICY",
+      "title": "FAQ：如何提现账户余额 / 提现免手续费额度",
+      "url": "https://www.vulbox.com/faq?id=5",
+      "observed_at": "2026-10-31",
+      "supports": ["必须绑定本人银行卡", "段位免手续费额度"]
+    },
+    {
+      "type": "POLICY",
+      "title": "FAQ：S级白帽/精英白帽是什么",
+      "url": "https://www.vulbox.com/faq?id=5",
+      "observed_at": "2026-10-31",
+      "supports": ["S级免税券，平台帮交税"]
+    },
+    {
+      "type": "POLICY",
+      "title": "FAQ：提成金是什么",
+      "url": "https://www.vulbox.com/faq?id=5",
+      "observed_at": "2026-10-31",
+      "supports": ["仅众测项目；次月1日或关闭后发放"]
+    }
+  ]
+}

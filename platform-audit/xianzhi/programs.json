@@ -1,0 +1,385 @@
+{
+  "platform": "xianzhi",
+  "observed_at": "2026-10-31",
+  "summary": {
+    "total_visible": 91,
+    "by_type": {
+      "SRC": 61,
+      "企业众测": 30
+    },
+    "by_state": {
+      "进行中": 34,
+      "任务结束": 54,
+      "任务暂停": 3
+    },
+    "joined": 0,
+    "eligibility_note": "所有可见项目都要求先“报名”；未报名时不能提交，且资产范围/变更记录/排行榜不可见。按钮“我要报名”在已结束项目上仍可能为 enabled，不能作为资格判据。",
+    "representative_sample_size": 15,
+    "eligibility_field_note": "本文件的 eligibility 是审计摘要标签，不是 BountyGrid 领域模型；权威模型是 architecture/domain-model.md 的 EligibilityState{Decision,Gates[]}。"
+  },
+  "programs": [
+    {
+      "program_id": "152",
+      "program_name": "阿里云产品",
+      "program_type": "常驻品牌 SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 20,
+      "reward_max": 100000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "云资产",
+        "WEB"
+      ],
+      "requires_application": true,
+      "signup_window": "2024-04-01~2050-04-01",
+      "task_window": "长期（页面截止时间显示 --）",
+      "participant_limit": 999999,
+      "scope_visibility": "报名后可见（未报名返回 NotSignUp）",
+      "automation_policy_summary": "遵循平台《测试红线》《SRC行业安全测试规范》；AI辅助允许但必须人工复现；禁止后台/私密项目扫描、内网渗透、DoS、批量读数据。",
+      "interesting_for_agent_system": true,
+      "reason": "赏金上限最高（超级资产严重漏洞10万元），资产按超级/关键/核心分级且奖励明确；但未报名无法读取资产范围。"
+    },
+    {
+      "program_id": "153",
+      "program_name": "阿里云",
+      "program_type": "常驻品牌 SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 0,
+      "reward_max": 15000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "云资产",
+        "WEB"
+      ],
+      "requires_application": true,
+      "signup_window": "2024-04-01~2050-04-01",
+      "task_window": "长期",
+      "participant_limit": 999999,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "同平台规则；禁止内网渗透、DoS、批量读敏感数据。",
+      "interesting_for_agent_system": true,
+      "reason": "阿里云官网/控制台等非云产品类资产入口；与“阿里云产品”项目边界需在Go中建模为业务线路由。"
+    },
+    {
+      "program_id": "151",
+      "program_name": "通义实验室",
+      "program_type": "常驻品牌 SRC（AI/大模型资产）",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 20,
+      "reward_max": 30000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "API"
+      ],
+      "requires_application": true,
+      "signup_window": "2024-04-01~2050-04-01",
+      "task_window": "长期",
+      "participant_limit": 999999,
+      "scope_visibility": "报名后可见；任务说明已列出核心域名 *.qwen.ai、*.modelscope.cn",
+      "automation_policy_summary": "平台规则+项目规则：大模型越狱风险不收录；仅收核心业务；禁止批量读取；AI辅助需人工验证。",
+      "interesting_for_agent_system": true,
+      "reason": "最明确的AI/大模型资产范围（Qwen、ModelScope），奖励按关键/核心/一般/边缘应用分级。"
+    },
+    {
+      "program_id": "150",
+      "program_name": "淘天集团",
+      "program_type": "常驻品牌 SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 0,
+      "reward_max": 15000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": true,
+      "signup_window": "2024-04-01~2050-04-01",
+      "task_window": "长期",
+      "participant_limit": 999999,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "同平台规则；电商业务需注意用户数据读取上限与不干扰业务。",
+      "interesting_for_agent_system": true,
+      "reason": "淘天是反爬、情报、双11等专项的母业务；与反爬专项存在资产重叠，需要项目路由与去重。"
+    },
+    {
+      "program_id": "324",
+      "program_name": "2026年10月众测活动",
+      "program_type": "限额众测",
+      "status": "进行中",
+      "eligibility": "UNKNOWN",
+      "reward_min": 20,
+      "reward_max": 3375,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "UNKNOWN"
+      ],
+      "requires_application": true,
+      "signup_window": "2026-10-16 15:55:53~2026-10-21 15:55:57（已过）",
+      "task_window": "2026-10-19~2026-10-31 23:55:45",
+      "participant_limit": 30,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "众测通用规则：需VPN、仅限项目范围、查询≤5条、禁止改动线上数据、禁止扫描后台/私密项目。",
+      "interesting_for_agent_system": false,
+      "reason": "报名窗口已过但任务仍在进行且按钮 enabled；未点击验证，资格记为UNKNOWN。名额仅30人。"
+    },
+    {
+      "program_id": "323",
+      "program_name": "双11-情报全线双倍奖励活动-2026",
+      "program_type": "情报活动（2倍奖励）",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 200,
+      "reward_max": 60000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "情报"
+      ],
+      "requires_application": true,
+      "signup_window": "2026-09-08~2026-11-11",
+      "task_window": "2026-09-14~2026-11-11",
+      "participant_limit": 999999,
+      "scope_visibility": "活动页公开说明情报接收范围；报告提交跳转至阿里集团情报任务",
+      "automation_policy_summary": "情报线索收集，不涉及对厂商资产主动测试；需提供售卖渠道、聊天记录、样本等证据；纯线索/影响小可能驳回。",
+      "interesting_for_agent_system": true,
+      "reason": "双倍奖励、范围公开、奖励上限6万元；但属于情报而非漏洞测试，Go需要独立情报任务模型。"
+    },
+    {
+      "program_id": "311",
+      "program_name": "淘天电商反爬专项-2026",
+      "program_type": "专项活动（反爬/数据爬取）",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 500,
+      "reward_max": 20000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "H5",
+        "APP"
+      ],
+      "requires_application": true,
+      "signup_window": "2026-03-20~2027-04-01",
+      "task_window": "2026-03-20~2027-04-01",
+      "participant_limit": 999999,
+      "scope_visibility": "任务说明公开写清范围与排除类目；资产范围页签仍需报名",
+      "automation_policy_summary": "明确允许 hook真机、模拟器、浏览器自动化、纯脚本；但按接口设日限额（如1万/天）、总预算50万元、同一接口/方法先到先得；测试淘宝账号须提前报备；禁止众包。",
+      "interesting_for_agent_system": true,
+      "reason": "唯一明确写“允许浏览器自动化/纯脚本”的项目，是Go执行层最直接的合规模板；但限额、报备、预算封顶与人工视频证据要求高。"
+    },
+    {
+      "program_id": "316",
+      "program_name": "通用漏洞收集计划十二期",
+      "program_type": "按期通用漏洞计划",
+      "status": "任务结束",
+      "eligibility": "ENDED",
+      "reward_min": 20,
+      "reward_max": 3375,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "云资产"
+      ],
+      "requires_application": true,
+      "signup_window": "2026-07-02 09:00~2026-07-09 12:00",
+      "task_window": "至2026-07-09 12:00",
+      "participant_limit": 100,
+      "scope_visibility": "任务说明列出收取产品；仅收高危/严重前台RCE",
+      "automation_policy_summary": "仅收列表内产品的高危/严重前台RCE；报告必须通过平台提交，附件可外链。",
+      "interesting_for_agent_system": false,
+      "reason": "已结束；按期开放、限100人、规则稳定，适合作为项目订阅与开期提醒样本。"
+    },
+    {
+      "program_id": null,
+      "program_name": "通用漏洞收集计划AI应用专项",
+      "program_type": "按期通用漏洞计划（AI专项）",
+      "status": "任务结束",
+      "eligibility": "ENDED",
+      "reward_min": 20,
+      "reward_max": 3375,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "AI应用"
+      ],
+      "requires_application": true,
+      "signup_window": "2026-03-06~2026-03-15",
+      "task_window": "已结束",
+      "participant_limit": 100,
+      "scope_visibility": "UNKNOWN（未打开详情）",
+      "automation_policy_summary": "UNKNOWN（沿用平台AI政策与通用计划规则）",
+      "interesting_for_agent_system": false,
+      "reason": "已结束的AI专项，说明平台会周期性开设AI主题；program_id未采集，下一期开放时补录。"
+    },
+    {
+      "program_id": "117",
+      "program_name": "千问C端",
+      "program_type": "常驻品牌 SRC（AI C端）",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 0,
+      "reward_max": 2400,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": true,
+      "signup_window": "2024-04-01~2050-04-01",
+      "task_window": "长期",
+      "participant_limit": 999999,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台规则；大模型越狱类风险按通义实验室规则不收录（需按项目确认）。",
+      "interesting_for_agent_system": true,
+      "reason": "C端AI产品，与通义实验室存在资产边界，适合测试Go的业务线路由。"
+    },
+    {
+      "program_id": "120",
+      "program_name": "优酷&土豆",
+      "program_type": "常驻品牌 SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 20,
+      "reward_max": 30000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP"
+      ],
+      "requires_application": true,
+      "signup_window": "2024-04-01~2050-04-01",
+      "task_window": "长期",
+      "participant_limit": 999999,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台规则；视频/内容业务需注意版权与用户数据。",
+      "interesting_for_agent_system": true,
+      "reason": "中等赏金上限3万元，长期开放；非电商类业务线样本。"
+    },
+    {
+      "program_id": "100",
+      "program_name": "集团安全部",
+      "program_type": "常驻品牌 SRC",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 0,
+      "reward_max": 15000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "云资产"
+      ],
+      "requires_application": true,
+      "signup_window": "2024-04-01~2050-04-01",
+      "task_window": "长期",
+      "participant_limit": 999999,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "平台规则。",
+      "interesting_for_agent_system": true,
+      "reason": "集团安全部资产通常为高价值内部系统；获得授权后可作为高优先级队列。"
+    },
+    {
+      "program_id": "79",
+      "program_name": "阿里集团情报",
+      "program_type": "情报收集",
+      "status": "进行中",
+      "eligibility": "APPLY_AVAILABLE",
+      "reward_min": 0,
+      "reward_max": 30000,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "情报"
+      ],
+      "requires_application": true,
+      "signup_window": "2024-04-01~2050-04-01",
+      "task_window": "长期",
+      "participant_limit": 999999,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "情报线索；禁止以收集情报为由参与众包；需证据链。",
+      "interesting_for_agent_system": true,
+      "reason": "情报任务的母任务；双11情报活动最终跳转至此，Go需区分漏洞任务与情报任务两类工作流。"
+    },
+    {
+      "program_id": "132",
+      "program_name": "灵犀互娱",
+      "program_type": "常驻品牌 SRC（已暂停）",
+      "status": "任务暂停",
+      "eligibility": "PAUSED",
+      "reward_min": 0,
+      "reward_max": 2400,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "WEB",
+        "APP",
+        "IP"
+      ],
+      "requires_application": true,
+      "signup_window": "2024-04-01~2050-04-01",
+      "task_window": "页面截止时间 --",
+      "participant_limit": 999999,
+      "scope_visibility": "任务说明公开域名列表；状态=已暂停",
+      "automation_policy_summary": "已停止接收漏洞，不应安排任何测试。",
+      "interesting_for_agent_system": false,
+      "reason": "Kill Switch样本：任务状态由进行中变为已暂停，并写明停止日期2026-08-31；Go必须调度前读取此状态。"
+    },
+    {
+      "program_id": null,
+      "program_name": "某银行10月众测",
+      "program_type": "限额企业众测（银行）",
+      "status": "任务结束",
+      "eligibility": "ENDED",
+      "reward_min": 20,
+      "reward_max": 3375,
+      "reward_currency": "CNY",
+      "asset_types": [
+        "UNKNOWN"
+      ],
+      "requires_application": true,
+      "signup_window": "2025-10-14~2025-10-31",
+      "task_window": "已结束",
+      "participant_limit": 30,
+      "scope_visibility": "报名后可见",
+      "automation_policy_summary": "众测规则；需VPN、仅限项目范围、禁止改动线上数据。",
+      "interesting_for_agent_system": false,
+      "reason": "典型限额+银行+短窗口众测，说明众测机会高度依赖名额与时间窗；program_id未采集。"
+    }
+  ],
+  "evidence": [
+    {
+      "type": "ACCOUNT",
+      "title": "任务列表全量（5页，91条）",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/all",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "阿里云产品详情",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/152",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "通义实验室详情",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/151",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "淘天电商反爬专项详情",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/311",
+      "observed_at": "2026-10-31"
+    },
+    {
+      "type": "PROGRAM",
+      "title": "灵犀互娱详情（任务暂停）",
+      "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/132",
+      "observed_at": "2026-10-31"
+    }
+  ]
+}

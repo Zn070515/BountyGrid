@@ -1,0 +1,229 @@
+{
+  "platform": "xianzhi",
+  "display_name": "阿里云先知 / ASRC（新先知平台）",
+  "observed_at": "2026-10-31",
+  "urls": {
+    "public_portal": "https://xianzhi.aliyun.com/#/home/index",
+    "workbench": "https://yundun.console.aliyun.com/?p=xznew",
+    "task_list": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/all",
+    "task_detail_pattern": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/{id}",
+    "vulnerability_management": "https://yundun.console.aliyun.com/?p=xznew#/vulnerabilityManagement/whiteHat",
+    "profile": "https://yundun.console.aliyun.com/?p=xznew#/personal-center/personal-info",
+    "finance": "https://yundun.console.aliyun.com/?p=xznew#/personal-center/finance-manage",
+    "leaderboard": "https://xianzhi.aliyun.com/#/home/heroes-rank",
+    "announcement_pattern": "https://xianzhi.aliyun.com/#/bulletin-detail/{id}",
+    "community": "https://xz.aliyun.com/"
+  },
+  "authentication": {
+    "login_provider": "阿里云账号（account.aliyun.com）",
+    "login_methods_observed": ["二维码扫码（阿里云APP/支付宝/钉钉）", "手机号+短信验证码", "账密登录", "通行密钥", "RAM登录"],
+    "session_type": "浏览器 Cookie / OAuth 回调",
+    "sso_scope": "阿里云控制台 SSO；yundun.console.aliyun.com 与 xianzhi.aliyun.com 共享登录态",
+    "api_token_observed": false,
+    "notes": "登录跳转 account.aliyun.com，成功后回调 xianzhi.aliyun.com；工作台位于 yundun.console.aliyun.com。"
+  },
+  "project_system": {
+    "total_visible_to_account": 91,
+    "ui_filter_task_types": ["SRC", "企业众测"],
+    "counts_by_ui_type": {"SRC": 61, "企业众测": 30},
+    "counts_by_state": {"进行中": 34, "任务结束": 54, "任务暂停": 3},
+    "program_types": [
+      {
+        "program_type": "常驻品牌 SRC（业务线长期项目）",
+        "count_observed": 31,
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": true,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "points", "安全币"],
+        "notes": "如阿里云、阿里云产品、通义实验室、淘天集团、1688、菜鸟、钉钉、高德等；报名窗口普遍为2024-04-01~2050-04-01。必须报名后才能提交，报名前资产范围不可见。"
+      },
+      {
+        "program_type": "活动型专项 / 大促活动",
+        "count_observed": 8,
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": true,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "points", "实物/活动奖励"],
+        "notes": "双11、618、情报双倍、反爬专项、高德双倍等；有独立报名/任务时间窗；部分限制人数（20/30人）。"
+      },
+      {
+        "program_type": "企业众测（客户/企业项目）",
+        "count_observed": 30,
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": true,
+        "requires_invitation": null,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "points"],
+        "notes": "UI任务类型为企业众测；含银行类众测（30人）、私密专项（20人）、企业活动。部分可能需审核/邀请，未报名无法确认。"
+      },
+      {
+        "program_type": "通用漏洞收集计划（按期开放）",
+        "count_observed": 8,
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": true,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "points"],
+        "notes": "第六期至第十二期 + AI应用专项；每期限额100~1000人；赏金20-3375元；当前十二期已结束，下一期未发布。"
+      },
+      {
+        "program_type": "情报收集（非漏洞）",
+        "count_observed": 4,
+        "discoverable": true,
+        "open_to_new_user": true,
+        "requires_application": true,
+        "requires_invitation": false,
+        "requires_reputation": false,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "points"],
+        "notes": "如“双11-情报全线双倍奖励活动-2026”“阿里集团情报”；提交对象为情报线索而非漏洞，报告入口可能跳转到独立情报任务。"
+      },
+      {
+        "program_type": "AI 安全 / 大模型专项",
+        "count_observed": 4,
+        "discoverable": true,
+        "open_to_new_user": null,
+        "requires_application": true,
+        "requires_invitation": null,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "points"],
+        "notes": "AI应用专项、双11大模型专项-2025、AI安全赛道二/三均为已结束活动；当前AI资产由通义实验室、千问C端等品牌SRC承载。"
+      },
+      {
+        "program_type": "私密/限额项目",
+        "count_observed": 3,
+        "discoverable": true,
+        "open_to_new_user": null,
+        "requires_application": true,
+        "requires_invitation": null,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": ["cash", "points"],
+        "notes": "如双11-淘天情报私密专项（20人）、618淘天情报私密专项（20人）；是否邀请制未报名无法确认。"
+      },
+      {
+        "program_type": "已暂停品牌 SRC",
+        "count_observed": 3,
+        "discoverable": true,
+        "open_to_new_user": false,
+        "requires_application": null,
+        "requires_invitation": null,
+        "requires_reputation": null,
+        "requires_contract": null,
+        "requires_nda": null,
+        "reward_type": [],
+        "notes": "灵犀互娱、端点科技、银泰；任务状态=已暂停。灵犀互娱明确写“2026年8月31日起停止在ASRC接收漏洞”。"
+      }
+    ],
+    "state_semantics": {
+      "进行中": "任务在任务时间内且可报名/可提交",
+      "任务结束": "任务时间已结束；仍显示“我要报名”按钮，按钮存在不代表可参与",
+      "任务暂停": "项目暂停接收漏洞；详情页“任务状态=已暂停”",
+      "注意": "UI中“我要报名”按钮在已结束任务上仍为enabled，不能用按钮存在判断资格"
+    }
+  },
+  "scope_model": {
+    "include_assets": true,
+    "exclude_assets": true,
+    "asset_priority": true,
+    "asset_reward_multiplier": true,
+    "asset_specific_rules": true,
+    "environment_type": ["WEB", "PC", "APP", "小程序", "云资产", "IOT"],
+    "scope_change_history": true,
+    "scope_visibility": {
+      "before_signup": "仅任务说明中的文字范围；资产范围页签不可用（NotSignUp）",
+      "after_signup": "资产范围页签展示表格：资产等级 / 业务名称 / 资产名称 / 资产类型",
+      "change_history": "变更记录页签存在；未报名时同样不可见"
+    },
+    "asset_tiers_observed": ["超级资产", "关键资产", "核心资产", "一般应用", "边缘应用"],
+    "include_asset_kinds_observed": ["域名", "子域名", "IP", "APP", "H5/PCWEB", "云产品/云资产", "小程序", "IOT", "情报线索"],
+    "exclude_asset_kinds_observed": [
+      "非阿里云域名的云产品模块（阿里云产品项目）",
+      "大模型越狱风险、Clickjacking、PDF XSS、测试环境RCE（通义实验室项目）",
+      "aliyuncs.com、aliyunpds.com、aliyunidaas.com 等为用户提供服务的子域前端漏洞（视具体规则）"
+    ],
+    "conditional_scope_examples": [
+      "通义实验室：*.qwen.ai、*.modelscope.cn 为核心；千问APP/qianwen.com/tongyi.com 归 UC 项目；通义灵码/Qoder/百炼/tongyi.aliyun.com 归阿里云项目",
+      "淘天反爬：仅淘宝+天猫 PCWEB、H5、APP；排除阿里拍卖、天猫汽车、天猫优品、天猫校园、天猫优享、天猫好房、淘鲜达、小时达等",
+      "灵犀互娱：2026-08-31 起停止接收"
+    ],
+    "normalized_go_model": {
+      "AssetScope": ["INCLUDE", "EXCLUDE", "CONDITIONAL", "UNKNOWN"],
+      "notes": "平台原生已具备资产等级、业务线、资产类型、排除项、变更记录；未报名项目整体为 UNKNOWN。"
+    }
+  },
+  "kill_switch": {
+    "supported_states": ["RUNNING", "PAUSED", "STOP_TESTING", "ENDED", "RULE_CHANGED"],
+    "observed_state_fields": ["任务状态", "任务截止时间", "报名时间", "任务时间", "变更记录", "公告"],
+    "evidence": [
+      "灵犀互娱：任务状态=已暂停，说明“因公司业务调整，2026年8月31日起停止在ASRC接收漏洞”",
+      "端点科技、银泰：任务状态=已暂停",
+      "任务列表：任务结束/任务暂停状态直接写入标题文本",
+      "项目详情：变更记录页签（报名后可见）",
+      "活动页：独立报名时间/活动时间，过期即结束"
+    ],
+    "platform_wide_stop_announcement_observed": false,
+    "notes": "未发现“全平台临时禁止测试”的统一开关；暂停/结束以项目为单位。"
+  },
+  "competition": {
+    "active_researchers_visible": 28,
+    "rewarded_researchers_visible": 27,
+    "top10_share_estimate": 0.708,
+    "newcomer_ranking_exists": false,
+    "newcomer_reward_exists": null,
+    "reputation_gate_strength": "medium",
+    "observed_month": "2026-10",
+    "leaderboard_notes": "英雄总榜单展示前28名；第1名赏金3900元、积分150；前10名赏金合计10400元，占可见总额14680元的70.8%；第10名赏金300元；尾部40-50元。只有英雄总榜单/英雄团榜，无新秀榜。",
+    "newcomer_reward_notes": "2024-11 曾有“新人专享活动”，已结束；当前无新人活动。"
+  },
+  "programmatic_interface": {
+    "official_public_api": false,
+    "documented_api": false,
+    "internal_authenticated_api_observed": true,
+    "internal_endpoints_observed": [
+      "GET https://xianzhi.aliyun.com/openapi/cst/2023-12-08/DescribeWebsiteTaskList.json",
+      "GET https://xianzhi.aliyun.com/openapi/cst/2023-12-08/DescribeWebsiteAnnouncementList.json",
+      "GET https://xianzhi.aliyun.com/openapi/cst/2023-12-08/DescribeWebsiteTopUserList.json"
+    ],
+    "internal_api_notes": "由前端页面正常加载触发，参数为 regionId + data(JSON) + pageMd5；仅记录结构，未绕过认证、未修改请求、未调用后台管理接口。",
+    "rss": false,
+    "webhook": null,
+    "project_subscription": null,
+    "notification_channels_observed": ["阿里云消息中心站内信"],
+    "data_export_observed": false,
+    "preferred_data_sources_ranked": [
+      "AUTHENTICATED_WEB",
+      "BROWSER_AUTOMATION",
+      "MANUAL_IMPORT",
+      "PUBLIC_WEB"
+    ],
+    "risk_notes": "内部 openapi 无公开文档与稳定性承诺；未经平台书面许可不应作为生产数据源。"
+  },
+  "evidence": [
+    {"type": "ACCOUNT", "title": "任务列表（全部任务/我的任务）", "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/all", "observed_at": "2026-10-31"},
+    {"type": "PROGRAM", "title": "阿里云产品任务详情", "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/152", "observed_at": "2026-10-31"},
+    {"type": "PROGRAM", "title": "通义实验室任务详情", "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/151", "observed_at": "2026-10-31"},
+    {"type": "PROGRAM", "title": "淘天电商反爬专项-2026", "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/311", "observed_at": "2026-10-31"},
+    {"type": "PROGRAM", "title": "灵犀互娱（已暂停）", "url": "https://yundun.console.aliyun.com/?p=xznew#/taskmanagement/tasks/detail/132", "observed_at": "2026-10-31"},
+    {"type": "ANNOUNCEMENT", "title": "英雄榜（2026-10）", "url": "https://xianzhi.aliyun.com/#/home/heroes-rank", "observed_at": "2026-10-31"},
+    {"type": "POLICY", "title": "先知平台关于AI生成漏洞报告的处置公告", "url": "https://xianzhi.aliyun.com/#/bulletin-detail/28", "observed_at": "2026-10-31"}
+  ]
+}
