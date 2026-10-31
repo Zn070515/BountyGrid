@@ -156,6 +156,8 @@
 - 三平台榜单/项目数/奖励池；Top1/3/10 share；confidence。
 - 退出条件：先知 70.8%、漏洞盒子 Top10 传说、补天 164,012 元三个样本可复算。
 
+**当前实现（2026-10-31）**：`competition` CLI 从带 Evidence 的 JSON 导入快照，校验 share/confidence，写 `competition_snapshots`；三份审计快照已落库（先知 0.708/0.7、漏洞盒子 0.5/0.5、补天 0.5/0.5，后两者 top10 share 缺失按 0.5 保守估计并在 Evidence 注明）。`schedule` 读取每平台最新 PLATFORM 快照；重调度后 Vulbox confidence 0.5/penalty 0.645、Xianzhi 0.7/0.608。剩余：自动采集榜单（当前是人工导入）、Program-scoped 快照。
+
 ### 4.2 Opportunity Engine
 
 - 期望收益/成本/竞争惩罚/置信度。

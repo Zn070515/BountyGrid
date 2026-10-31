@@ -457,6 +457,52 @@ func (r *Repo) GetDecision(ctx context.Context, id domain.DecisionID) (domain.Ac
 	return d, nil
 }
 
+func (r *Repo) PutCompetitionSnapshot(ctx context.Context, s domain.CompetitionSnapshot) error {
+	data, err := mustJSON(s)
+	if err != nil {
+		return err
+	}
+	_, err = r.Pool.Exec(ctx, `
+		INSERT INTO competition_snapshots
+			(id, platform, scope, program_id, observed_at, top1_share, top3_share,
+			 top10_share, duplicate_pressure, saturation, confidence, data)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+		ON CONFLICT (id) DO UPDATE SET
+			observed_at=EXCLUDED.observed_at,
+			top1_share=EXCLUDED.top1_share, top3_share=EXCLUDED.top3_share,
+			top10_share=EXCLUDED.top10_share,
+			duplicate_pressure=EXCLUDED.duplicate_pressure,
+			saturation=EXCLUDED.saturation, confidence=EXCLUDED.confidence,
+			data=EXCLUDED.data`,
+		s.ID, s.Platform, s.Scope, s.ProgramID, s.ObservedAt,
+		s.Top1Share, s.Top3Share, s.Top10Share,
+		s.DuplicatePressure, s.Saturation, s.Confidence, data,
+	)
+	if err != nil {
+		return fmt.Errorf("postgres: put competition snapshot: %w", err)
+	}
+	return nil
+}
+
+func (r *Repo) GetLatestCompetitionSnapshot(ctx context.Context, platform domain.Platform, scope string) (domain.CompetitionSnapshot, error) {
+	var data []byte
+	err := r.Pool.QueryRow(ctx, `
+		SELECT data FROM competition_snapshots
+		WHERE platform=$1 AND scope=$2
+		ORDER BY observed_at DESC LIMIT 1`, string(platform), scope).Scan(&data)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return domain.CompetitionSnapshot{}, ErrNotFound
+		}
+		return domain.CompetitionSnapshot{}, fmt.Errorf("postgres: get competition snapshot: %w", err)
+	}
+	var s domain.CompetitionSnapshot
+	if err := json.Unmarshal(data, &s); err != nil {
+		return domain.CompetitionSnapshot{}, fmt.Errorf("postgres: decode competition snapshot: %w", err)
+	}
+	return s, nil
+}
+
 // ListStates returns the freshest valid state per program for a subject.
 func (r *Repo) ListStates(ctx context.Context, platform domain.Platform, subject domain.StateSubject) ([]domain.DerivedState, error) {
 	rows, err := r.Pool.Query(ctx, `
@@ -552,7 +598,14 @@ func (r *Repo) PutOpportunity(ctx context.Context, o domain.Opportunity) error {
 			(id, program_id, asset_id, expected_return, expected_return_per_cost,
 			 competition_penalty, confidence, evaluated_at, data)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
-		ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, evaluated_at=EXCLUDED.evaluated_at`,
+		ON CONFLICT (id) DO UPDATE SET
+			program_id=EXCLUDED.program_id, asset_id=EXCLUDED.asset_id,
+			expected_return=EXCLUDED.expected_return,
+			expected_return_per_cost=EXCLUDED.expected_return_per_cost,
+			competition_penalty=EXCLUDED.competition_penalty,
+			confidence=EXCLUDED.confidence,
+			evaluated_at=EXCLUDED.evaluated_at,
+			data=EXCLUDED.data`,
 		o.ID, o.ProgramID, o.AssetID, o.ExpectedReturn, o.ExpectedReturnPerCost,
 		o.CompetitionPenalty, o.Confidence, o.EvaluatedAt, data)
 	return err
