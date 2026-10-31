@@ -198,10 +198,10 @@ func (a Account) Validate() error {
 		for _, g := range a.Gates {
 			// Program-scoped gates constrain one program's submission, not the
 			// account-wide capability (e.g. Butian practical certification).
-			if g.ProgramID != nil {
+			if g.ProgramID != nil || !g.Required || !g.Blocking || g.Satisfied != GateUnsatisfied {
 				continue
 			}
-			if g.Required && g.Blocking && g.Satisfied == GateUnsatisfied {
+			if g.Kind.BlocksSubmit() {
 				return fmt.Errorf("account %s: CanSubmit with blocking gate %s", a.ID, g.Kind)
 			}
 		}
@@ -209,8 +209,18 @@ func (a Account) Validate() error {
 			return fmt.Errorf("account %s: CanSubmit with incomplete compliance exam", a.ID)
 		}
 	}
-	if a.Capability.CanPayout && a.BankBound != nil && !*a.BankBound {
-		return fmt.Errorf("account %s: CanPayout with unbound bank card", a.ID)
+	if a.Capability.CanPayout {
+		for _, g := range a.Gates {
+			if g.ProgramID != nil || !g.Required || !g.Blocking || g.Satisfied != GateUnsatisfied {
+				continue
+			}
+			if g.Kind.BlocksPayout() {
+				return fmt.Errorf("account %s: CanPayout with blocking gate %s", a.ID, g.Kind)
+			}
+		}
+		if a.BankBound != nil && !*a.BankBound {
+			return fmt.Errorf("account %s: CanPayout with unbound bank card", a.ID)
+		}
 	}
 	return nil
 }

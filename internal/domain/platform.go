@@ -114,6 +114,28 @@ func (g GateKind) Valid() bool {
 }
 
 // HumanResolvable reports whether a gate can only be satisfied by a human action.
+// BlocksSubmit reports whether an unsatisfied account-wide gate makes
+// submission impossible. Bank/payout gates must not be included here.
+func (g GateKind) BlocksSubmit() bool {
+	switch g {
+	case GateIdentityVerified, GateComplianceExam:
+		return true
+	default:
+		return false
+	}
+}
+
+// BlocksPayout reports whether an unsatisfied account-wide gate makes payout
+// impossible.
+func (g GateKind) BlocksPayout() bool {
+	switch g {
+	case GateBankBinding, GatePayoutSetup:
+		return true
+	default:
+		return false
+	}
+}
+
 func (g GateKind) HumanResolvable() bool {
 	switch g {
 	case GateProgramSignup, GateApplicationReview, GateComplianceExam,

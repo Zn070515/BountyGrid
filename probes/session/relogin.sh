@@ -31,7 +31,9 @@ esac
 
 echo "Opening $PLATFORM login in session '$SESSION' (headed)."
 echo "Please log in manually. Do NOT ask the probe to accept agreements."
-agent-browser --session "$SESSION" --headed --state "$STATE" open "$URL" >/dev/null 2>&1 || true
+# Deliberately start without --state: a stale/contaminated state file can make
+# the browser hang on navigation. A successful login overwrites it below.
+agent-browser --session "$SESSION" --headed open "$URL" >/dev/null 2>&1 || true
 
 ok=0
 for _ in $(seq 1 200); do

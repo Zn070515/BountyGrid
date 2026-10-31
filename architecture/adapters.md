@@ -142,6 +142,42 @@ Observed API: vapi.vulbox.com/web/*; vbapi.vulbox.com/v1/user/identity_info
 - 专属/私密项目入口先弹《保密承诺书》→ Adapter 必须停止并返回 `GATED_BY_NDA`。
 - 联想SRC禁止上传webshell；平台默认禁止大流量/大线程/大规模扫描。
 
+#### Phase 1 实现记录（2026-10-31）
+
+```text
+internal/sidecar        agent-browser 只读客户端：
+                        open / wait --load networkidle / eval --stdin / get /
+                        state save / close；不提供 click/fill/submit
+internal/adapter        Reader 接口与快照类型
+internal/adapter/vulbox AuthStatus / SyncAccount / SyncPrograms
+cmd/bountygrid sync     -programs / -account / -pages / -page-size / -session
+```
+
+已观测的公开列表接口（页面正常加载时自身发出的只读 GET，不绕过认证）：
+
+```text
+GET https://vapi.vulbox.com/web/project/projects
+    ?type=-1&status=0&flag=0&search=&page=N&page_size=10..100
+    &direction=desc&order_by=normal&limit=
+```
+
+字段映射（当前已验证）：
+
+| 原生字段 | 映射 |
+|---|---|
+| `type=0/1/5/6/7/8` | 普通 / 高级 / 攻防众测 / 线下兼职 / 企业SRC / 公益SRC |
+| `status=0/1/3` | `RUNNING` / `PAUSED` / `ENDED`；其他值 → `UNKNOWN` |
+| `is_join` / `is_apply` | `PROGRAM_SIGNUP` / `APPLICATION_REVIEW` gate |
+| 普通项目无 join/apply 标志 | `EligibilityUnknown`（不猜 ELIGIBLE） |
+| `bonus_range` | `RewardPolicy.Min/Max`（CNY，现金）；其他奖励类型未知 |
+| `task_stime/task_etime` | `program.start/end`（Unix → UTC time） |
+
+`SyncPrograms` 一次只取 `MaxPages` 页；批次带 `EstimatedTotal` 与 `Estimated=true`（1513 来自分页推算）。每个响应页生成一条 Evidence，Fact ID 由 `evidence/native_id/predicate` 组成，重跑同一 Evidence 幂等。
+
+`SyncProgram/SyncScope/SyncPolicy` 在详情页选择器验证前返回 `ErrUnsupported`：不猜 Scope、不把未知规则写成 `ALLOW`。下一步需要在已登录会话中打开 `user.vulbox.com/projectHall/projectDetail/<id>` 或企业 SRC 子域，确认资产范围/公告的 DOM，再把真实值写入 `Scope`/`AutomationPolicy`。
+
+本机会话：`probes/session/relogin.sh vulbox` 使用 `vbprobe` 并保存 state；产品 `sync` 默认复用同一个已登录会话（`-session vbprobe`），不加载旧 state 文件（损坏的 state 会让导航挂起）。其他机器用 `-session` 指定独立会话。
+
 ### 4.3 补天
 
 ```text

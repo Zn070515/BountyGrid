@@ -39,6 +39,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "rollback:", err)
 			os.Exit(1)
 		}
+	case "sync":
+		syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := runSync(syncCtx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "sync:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("bountygrid dev")
 	default:
@@ -48,7 +55,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|version>")
+	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|version>")
 }
 
 func dsn() (string, error) {

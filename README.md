@@ -115,10 +115,28 @@ bash probes/butian/grow-dates.sh
 |---|---|---|
 | Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
 | 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
-| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 下一步（Vulbox Reader 优先） |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：sidecar + Vulbox 公开项目列表/账号 Reader；Scope/Policy 详情页待登录后接入 |
 | Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
 | Phase 4 | Opportunity / Scheduler | Phase 1 Reader 接入之后 |
 | Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
+
+### Phase 1 progress · Browser Sidecar + Vulbox Reader
+
+已落地（只读，不点击提交/报名/NDA）：
+
+- `internal/sidecar`：`agent-browser` 只读客户端，只暴露 `open/wait/eval/get/screenshot/state save/close`；按命令限速，不提供 click/fill。
+- `internal/adapter/vulbox`：`AuthStatus`、`SyncAccount`（需登录）、`SyncPrograms`（公开项目列表，走页面自身的只读 GET）；`SyncProgram/SyncScope/SyncPolicy` 在详情页验证前 fail-closed 返回 `ErrUnsupported`，不猜 Scope/规则。
+- `cmd/bountygrid sync`：`-programs`（默认）、`-account`、`-pages`、`-page-size`、`-session`（默认 `vbprobe`）、`-raw-dir`；输出 JSON 摘要，不打印页面原文。
+- 原始证据脱敏后写入 `.evidence/`（gitignored），数据库/仓库不保存页面原文。
+
+实测（2026-10-31）：公开项目列表第 1 页 10 个项目、`estimated_total=1513`、150 条 Fact、1 条 Evidence；所有 Fact 都有 EvidenceRef。账号同步需先人工登录：
+
+```bash
+bash probes/session/relogin.sh vulbox
+go run ./cmd/bountygrid sync -account -programs -pages=1
+```
+
+`relogin.sh` 现在故意不加载旧 state（损坏的 state 会让浏览器导航挂起），登录成功后重新保存。单机上产品 Reader 复用探针会话 `vbprobe`；其他环境用 `-session` 覆盖。
 
 ### Phase 0 + core kernel hardening
 
@@ -198,14 +216,16 @@ bash probes/butian/grow-dates.sh
 ## 目录结构 · Layout
 
 ```text
-cmd/bountygrid/              migrate / ping / version 入口
+cmd/bountygrid/              migrate / rollback / ping / sync / version 入口
 internal/domain/             平台/账号/项目/Scope/Eligibility/Action/Research/Ledger 类型与不变量
 internal/evidence/           不可变 Evidence Store（接口 + 内存实现）
 internal/audit/              审计事件（不可变、可过滤）
 internal/facts/              抽取器接口、FactSet、内存 Store、补天 GROW 抽取器
 internal/state/              程序状态/报名窗口/Scope/账号能力派生
 internal/policy/             Eligibility 合并 + 动作矩阵 + 人工审批
-internal/store/postgres/     pgxpool、嵌入式迁移（Postgres 仓储实现待 Phase 2）
+internal/sidecar/            agent-browser 只读客户端（open/wait/eval/get/state save/close）
+internal/adapter/            Reader 接口 + Vulbox Reader（公开列表/账号；详情待接入）
+internal/store/postgres/     pgxpool、嵌入式迁移、仓储与一次性审批账本
 platform-audit/              三平台账号/项目/规则/收款/自动化边界审计与证据
 architecture/                完整 Go 架构：Domain/Evidence/Adapter/Policy/Opportunity/Harness/Submission/Ledger
 probes/                      本机只读探针（不属于产品代码）
