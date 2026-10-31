@@ -5,17 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/adapter"
 	"github.com/Zn070515/BountyGrid/internal/adapter/vulbox"
+	"github.com/Zn070515/BountyGrid/internal/adapter/xianzhi"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/sidecar"
 )
 
 type syncOptions struct {
+	Platform    string
 	Programs    bool
 	Account     bool
 	ProgramID   string
@@ -91,19 +94,35 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 	var o syncOptions
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.BoolVar(&o.Programs, "programs", true, "read the project hall list")
+	fs.StringVar(&o.Platform, "platform", "vulbox", "platform: vulbox or xianzhi")
+	fs.BoolVar(&o.Programs, "programs", true, "read the project/task list")
 	fs.BoolVar(&o.Account, "account", false, "read the account (requires a logged-in session)")
-	fs.StringVar(&o.ProgramID, "program", "", "read one enterprise SRC by native id (e.g. 444); implies scope+policy")
-	fs.IntVar(&o.Pages, "pages", 1, "maximum project-list pages (1-152)")
-	fs.IntVar(&o.PageSize, "page-size", 50, "project-list page size (10-100)")
-	fs.StringVar(&o.RawDir, "raw-dir", ".evidence/vulbox", "local directory for redacted raw evidence")
-	fs.StringVar(&o.Session, "session", "vbprobe", "agent-browser session name (default matches probes/session/relogin.sh)")
+	fs.StringVar(&o.ProgramID, "program", "", "read one program/task by native id (e.g. vulbox 444); implies scope+policy")
+	fs.IntVar(&o.Pages, "pages", 1, "maximum list pages (1-152)")
+	fs.IntVar(&o.PageSize, "page-size", 50, "Vulbox list page size (10-100)")
+	fs.StringVar(&o.RawDir, "raw-dir", "", "local directory for redacted raw evidence (default .evidence/<platform>)")
+	fs.StringVar(&o.Session, "session", "", "agent-browser session (default vbprobe/xzprobe by platform)")
 	fs.StringVar(&o.State, "state", "", "optional saved browser state JSON; usually the running session already holds the login")
 	fs.DurationVar(&o.Timeout, "timeout", 60*time.Second, "per-command timeout")
 	fs.DurationVar(&o.MinInterval, "min-interval", 2*time.Second, "minimum spacing between browser commands")
 	fs.BoolVar(&o.Close, "close", false, "close the browser session when done (default: keep the login alive)")
 	if err := fs.Parse(args); err != nil {
 		return o, err
+	}
+	switch o.Platform {
+	case "vulbox":
+		if o.Session == "" {
+			o.Session = "vbprobe"
+		}
+	case "xianzhi":
+		if o.Session == "" {
+			o.Session = "xzprobe"
+		}
+	default:
+		return o, errors.New("sync: -platform must be vulbox or xianzhi")
+	}
+	if o.RawDir == "" {
+		o.RawDir = ".evidence/" + o.Platform
 	}
 	if !o.Programs && !o.Account && o.ProgramID == "" {
 		return o, errors.New("sync: choose -programs, -account and/or -program")
@@ -125,7 +144,7 @@ func runSync(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	reader, client, err := newVulboxReader(opts)
+	reader, client, err := newReader(opts)
 	if err != nil {
 		return err
 	}
@@ -135,7 +154,7 @@ func runSync(ctx context.Context, args []string) error {
 	return executeSync(ctx, reader, opts, os.Stdout)
 }
 
-func newVulboxReader(opts syncOptions) (*vulbox.Reader, *sidecar.Client, error) {
+func newReader(opts syncOptions) (adapter.Reader, *sidecar.Client, error) {
 	client, err := sidecar.NewClient(sidecar.Config{
 		Session:     opts.Session,
 		StatePath:   opts.State,
@@ -145,7 +164,15 @@ func newVulboxReader(opts syncOptions) (*vulbox.Reader, *sidecar.Client, error) 
 	if err != nil {
 		return nil, nil, err
 	}
-	reader, err := vulbox.NewReader(client, vulbox.ReaderOptions{RawDir: opts.RawDir})
+	var reader adapter.Reader
+	switch opts.Platform {
+	case "vulbox":
+		reader, err = vulbox.NewReader(client, vulbox.ReaderOptions{RawDir: opts.RawDir})
+	case "xianzhi":
+		reader, err = xianzhi.NewReader(client, xianzhi.ReaderOptions{RawDir: opts.RawDir})
+	default:
+		err = fmt.Errorf("sync: unsupported platform %q", opts.Platform)
+	}
 	if err != nil {
 		_ = client.Close(context.Background())
 		return nil, nil, err
@@ -186,7 +213,11 @@ func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w
 		}
 	}
 	if opts.ProgramID != "" {
-		pid := domain.ProgramID("vulbox/" + opts.ProgramID)
+		platform := opts.Platform
+		if platform == "" {
+			platform = "vulbox"
+		}
+		pid := domain.ProgramID(platform + "/" + opts.ProgramID)
 		snap, err := reader.SyncProgram(ctx, pid)
 		if err != nil {
 			return err

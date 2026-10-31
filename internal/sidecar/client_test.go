@@ -152,6 +152,41 @@ func TestRateLimitSleepsBetweenCommands(t *testing.T) {
 	}
 }
 
+func TestReloadUsesFixedCommand(t *testing.T) {
+	f := &fakeRunner{}
+	c := newTestClient(t, f, Config{Session: "s1", MinInterval: 0})
+	if err := c.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.last().args, " "); got != "--session s1 reload" {
+		t.Fatalf("args = %q", got)
+	}
+	if f.last().capture {
+		t.Fatal("reload must not capture stdout")
+	}
+}
+
+func TestWaitFnUsesFixedCommand(t *testing.T) {
+	f := &fakeRunner{}
+	c := newTestClient(t, f, Config{Session: "s1", MinInterval: 0})
+	if err := c.WaitFn(context.Background(), "document.querySelectorAll('.card-item').length > 0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.last().args, " "); !strings.HasSuffix(got, "wait --fn document.querySelectorAll('.card-item').length > 0") {
+		t.Fatalf("args = %q", got)
+	}
+	if f.last().capture {
+		t.Fatal("wait must not capture stdout")
+	}
+}
+
+func TestWaitFnRejectsEmptyExpression(t *testing.T) {
+	c := newTestClient(t, &fakeRunner{}, Config{Session: "s1"})
+	if err := c.WaitFn(context.Background(), "  "); err == nil {
+		t.Fatal("empty expression should be rejected")
+	}
+}
+
 func TestCloseUsesFixedCommand(t *testing.T) {
 	f := &fakeRunner{}
 	c := newTestClient(t, f, Config{Session: "s1", MinInterval: 0})

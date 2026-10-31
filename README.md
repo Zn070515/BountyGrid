@@ -115,7 +115,7 @@ bash probes/butian/grow-dates.sh
 |---|---|---|
 | Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
 | 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
-| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：Vulbox 公开列表、账号、企业SRC Scope/Policy 已实测；Xianzhi/Butian 未开始 |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：Vulbox 与 Xianzhi 任务/账号已实测（Xianzhi 91=34/54/3，账号实名状态文本不可见、fail-closed）；Butian 未开始 |
 | Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
 | Phase 4 | Opportunity / Scheduler | Phase 1 Reader 接入之后 |
 | Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
@@ -136,6 +136,19 @@ bash probes/butian/grow-dates.sh
 账号    ：见习白帽 / exp 10 / 信誉 100 / 排名 9999+ / 实名 / CanSubmit / 已加入 2
 联想 444：RUNNING / ELIGIBLE；Scope PUBLIC+GRANTED+known；include 9 条、exclude *.sunits.com；
           FileUpload=FORBIDDEN，AIAnalysis=CONDITIONAL，HumanVerificationRequired=true
+```
+
+### Xianzhi Reader（任务列表已实测）
+
+- `internal/adapter/xianzhi`：`AuthStatus`、`SyncAccount`、`SyncPrograms`（5 页/91 任务）、`SyncProgram`、`SyncScope`（未报名 → `GATED_BY_SIGNUP + NOT_GRANTED`）、`SyncPolicy`（保守 `UNKNOWN`）。
+- 任务数据来自页面 React fiber 的 `task` 对象；状态映射实测：`4=RUNNING`、`5=ENDED`、`6=PAUSED`；类型 `1=SRC`、`2=企业众测`。实测 91 条：**34 RUNNING / 54 ENDED / 3 PAUSED**，**61 BRAND_SRC / 30 CROWD_TEST**，1058 条 Fact、5 条 Evidence，与审计完全一致。
+- 翻页/重开同一 hash URL 可能是 no-op；`openList` 会 `reload` 强制重新取数。曾遇到控制台数据接口 `os error 10060` 时 SPA 只剩壳（0 卡片），reload 后恢复。
+- 账号同步已跑通（`auth=OK`），但个人资料页只显示“实名认证”标签、没有文本状态，当前 `identity_verified` 保持 nil（`CanSubmit=false`，fail-closed）；需要补账号状态提取器。
+- 已报名任务的可见 Scope 解析尚未验证；未报名任务一律返回 GATED。
+
+```bash
+go run ./cmd/bountygrid sync -platform xianzhi -programs -pages=5
+go run ./cmd/bountygrid sync -platform xianzhi -programs=false -account
 ```
 
 账号与单项目同步需先人工登录：

@@ -181,4 +181,23 @@ func TestParseSyncOptionsDefaults(t *testing.T) {
 	if opts.Close {
 		t.Fatal("sync must keep the login session alive by default")
 	}
+	if opts.Platform != "vulbox" || opts.Session != "vbprobe" || opts.RawDir != ".evidence/vulbox" {
+		t.Fatalf("defaults = %+v", opts)
+	}
+}
+
+func TestParseSyncOptionsXianzhi(t *testing.T) {
+	opts, err := parseSyncOptions([]string{"-platform", "xianzhi", "-pages", "5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Session != "xzprobe" || opts.RawDir != ".evidence/xianzhi" {
+		t.Fatalf("opts = %+v", opts)
+	}
+}
+
+func TestParseSyncOptionsRejectsUnknownPlatform(t *testing.T) {
+	if _, err := parseSyncOptions([]string{"-platform", "butian"}); err == nil {
+		t.Fatal("unknown platform should be rejected")
+	}
 }
