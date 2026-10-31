@@ -129,7 +129,7 @@ bash probes/butian/grow-dates.sh
 - Scope 拆成 `Visibility`（披露）与 `Access`（当前账号访问）；报名后可为 `GATED_BY_SIGNUP + GRANTED`
 - Policy 增加 `Asset` 校验：缺失、跨 Program、Scope 外、Conditional 分别处理
 - Policy 消费 `AutomationPolicy`：`FORBIDDEN` 不可被人工审批覆盖；`ALLOW` 可覆盖默认条件矩阵
-- `HumanApproval` 绑定 `request_id/action/program/asset/resource/parameters_hash/expires/single_use`，并由 `ApprovalLedger` 一次性消费
+- `HumanApproval` 绑定 `request_id/action/program/asset/resource/parameters_hash/expires/single_use`，并由 PostgreSQL `consumed_approvals` 持久化一次性消费
 - `PRACTICAL_CERTIFICATION` 改为 Program-scoped，不再阻断普通/公益提交
 - State 保留输入 Fact/Evidence provenance，并提供 supersede invalidation tracker
 - GROW 日期按 `Asia/Shanghai`、date-only、inclusive end 处理

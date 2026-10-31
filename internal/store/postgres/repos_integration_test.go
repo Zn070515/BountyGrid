@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -38,6 +39,7 @@ func TestRepoRoundTrip(t *testing.T) {
 	factID := domain.FactID("it-fact-" + suffix)
 
 	t.Cleanup(func() {
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM consumed_approvals WHERE approval_id LIKE 'it-approval-%'`)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM audit_events WHERE entity_id=$1`, string(progID))
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM ledger_entries WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM submissions WHERE program_id=$1`, progID)
@@ -162,5 +164,14 @@ func TestRepoRoundTrip(t *testing.T) {
 	events, err := auditStore.List(ctx, audit.Filter{EntityID: string(progID)})
 	if err != nil || len(events) == 0 {
 		t.Fatalf("audit list: %+v %v", events, err)
+	}
+
+	ledger := NewPostgresApprovalLedger(r.Pool)
+	approvalID := "it-approval-" + suffix
+	if err := ledger.Consume(ctx, approvalID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Consume(ctx, approvalID); !errors.Is(err, ErrApprovalConsumed) {
+		t.Fatalf("second consume = %v, want ErrApprovalConsumed", err)
 	}
 }
