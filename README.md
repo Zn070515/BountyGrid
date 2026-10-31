@@ -136,7 +136,7 @@ bash probes/session/relogin.sh vulbox
 go run ./cmd/bountygrid sync -account -programs -pages=1
 ```
 
-`relogin.sh` 现在故意不加载旧 state（损坏的 state 会让浏览器导航挂起），登录成功后重新保存。单机上产品 Reader 复用探针会话 `vbprobe`；其他环境用 `-session` 覆盖。
+`relogin.sh` 现在故意不加载旧 state（损坏的 state 会让浏览器导航挂起），登录成功后重新保存。单机上产品 Reader 复用探针会话 `vbprobe`；其他环境用 `-session` 覆盖。`sync` 默认**不关闭**会话，避免把内存中的登录态关掉；需要清理时显式加 `-close=true`。
 
 ### Phase 0 + core kernel hardening
 

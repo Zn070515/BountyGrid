@@ -6,6 +6,7 @@ package sidecar
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,11 @@ import (
 	"sync"
 	"time"
 )
+
+// ErrNavigationTimeout means the page did not reach network-idle in time. The
+// page may still be usable; Readers should check the URL/content before
+// treating the navigation as failed.
+var ErrNavigationTimeout = errors.New("sidecar: navigation timed out")
 
 // Runner executes one agent-browser command. capture selects whether stdout
 // is needed; commands that start/stop the browser must not capture it because
@@ -73,12 +79,28 @@ func (c *Client) Open(ctx context.Context, url string) error {
 		return fmt.Errorf("sidecar: url is empty")
 	}
 	_, err := c.run(ctx, "", false, "open", url)
+	if err != nil {
+		if isTimeout(err) {
+			return fmt.Errorf("%w: %v", ErrNavigationTimeout, err)
+		}
+		return err
+	}
+	return nil
+}
+
+// WaitLoad is best-effort: platforms with long-polling never reach network
+// idle, and the probes already tolerate that.
+func (c *Client) WaitLoad(ctx context.Context) error {
+	_, err := c.run(ctx, "", false, "wait", "--load", "networkidle")
+	if err != nil && isTimeout(err) {
+		return nil
+	}
 	return err
 }
 
-func (c *Client) WaitLoad(ctx context.Context) error {
-	_, err := c.run(ctx, "", false, "wait", "--load", "networkidle")
-	return err
+func isTimeout(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "timed out") || strings.Contains(s, "timeout")
 }
 
 // Eval runs JavaScript in the current page and returns its trimmed output.

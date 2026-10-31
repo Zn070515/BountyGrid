@@ -13,6 +13,7 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/adapter"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/facts"
+	"github.com/Zn070515/BountyGrid/internal/sidecar"
 )
 
 var testNow = time.Date(2026, 10, 31, 14, 0, 0, 0, time.UTC)
@@ -198,6 +199,7 @@ type fakeBrowser struct {
 	pageText  map[string]string
 	responses map[string]string
 	redirect  map[string]string
+	openErr   error
 	evalErr   error
 }
 
@@ -207,7 +209,7 @@ func (f *fakeBrowser) Open(ctx context.Context, url string) error {
 	if target, ok := f.redirect[url]; ok {
 		f.url = target
 	}
-	return nil
+	return f.openErr
 }
 
 func (f *fakeBrowser) WaitLoad(ctx context.Context) error { return nil }
@@ -329,6 +331,23 @@ func TestSyncProgramsPublicList(t *testing.T) {
 	}
 }
 
+func TestSyncProgramsToleratesNavigationTimeout(t *testing.T) {
+	f := &fakeBrowser{
+		openErr: sidecar.ErrNavigationTimeout,
+		responses: map[string]string{
+			"page=1&page_size=10": listResponse(t, []apiProject{sampleProject()}),
+		},
+	}
+	r := newReader(t, f)
+	batch, err := r.SyncPrograms(context.Background(), adapter.SyncOptions{PageSize: 10, MaxPages: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Programs) != 1 {
+		t.Fatalf("programs = %d", len(batch.Programs))
+	}
+}
+
 func TestSyncProgramsSkipsUnsupportedType(t *testing.T) {
 	p := sampleProject()
 	p.ID, p.ProjectID = "99", "99"
@@ -377,6 +396,40 @@ func TestAuthStatus(t *testing.T) {
 	state, err = r2.AuthStatus(context.Background())
 	if err != nil || state != adapter.AuthRequired {
 		t.Fatalf("redirected = %s err=%v, want REQUIRED", state, err)
+	}
+}
+
+func TestAuthStatusToleratesNavigationTimeout(t *testing.T) {
+	f := &fakeBrowser{url: "https://user.vulbox.com/home", openErr: sidecar.ErrNavigationTimeout}
+	r := newReader(t, f)
+	state, err := r.AuthStatus(context.Background())
+	if err != nil || state != adapter.AuthOK {
+		t.Fatalf("state = %s err=%v, want OK", state, err)
+	}
+}
+
+func TestSyncAccountToleratesNavigationTimeout(t *testing.T) {
+	home := "信誉优秀 | 100 分\n当前等级:\n见习白帽\n经验值:\n9\n下一等级:\n初级白帽\n" +
+		"赛季战况\nS3\n赛季积分\n0\n赛季排名\n9999+\n账户余额\n0 元\n提成金\n0 元\n" +
+		"我的券\n0 张\n待审阅\n0\n处理中\n0\n已打款\n0"
+	profile := "个人中心\n已实名\n手机已绑定\n邮箱已绑定\n微信已绑定\n银行卡未绑定"
+	joined := "我的项目\n联想集团安全应急响应中心\n已加入\n嘉立创安全应急响应中心\n已加入\n共 2 条数据"
+	f := &fakeBrowser{
+		url:     "https://user.vulbox.com/home",
+		openErr: sidecar.ErrNavigationTimeout,
+		pageText: map[string]string{
+			"https://user.vulbox.com/home":                  evalJSON(t, home),
+			"https://user.vulbox.com/personCenter":          evalJSON(t, profile),
+			"https://user.vulbox.com/projectHall/myProject": evalJSON(t, joined),
+		},
+	}
+	r := newReader(t, f)
+	snap, err := r.SyncAccount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Facts) == 0 {
+		t.Fatal("no facts")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/evidence"
 	"github.com/Zn070515/BountyGrid/internal/facts"
+	"github.com/Zn070515/BountyGrid/internal/sidecar"
 	accountstate "github.com/Zn070515/BountyGrid/internal/state"
 )
 
@@ -58,7 +59,7 @@ func (r *Reader) Platform() domain.Platform { return domain.PlatformVulbox }
 // AuthStatus opens the user center and reports whether the saved session is
 // still valid. It never attempts to log in.
 func (r *Reader) AuthStatus(ctx context.Context) (adapter.AuthState, error) {
-	if err := r.browser.Open(ctx, userHomeURL); err != nil {
+	if err := r.browser.Open(ctx, userHomeURL); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
 		return adapter.AuthUnknown, fmt.Errorf("vulbox: auth open: %w", err)
 	}
 	if err := r.browser.WaitLoad(ctx); err != nil {
@@ -288,7 +289,7 @@ func (r *Reader) openList(ctx context.Context) error {
 	if r.openedList {
 		return nil
 	}
-	if err := r.browser.Open(ctx, r.listPageURL); err != nil {
+	if err := r.browser.Open(ctx, r.listPageURL); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
 		return fmt.Errorf("vulbox: open project list: %w", err)
 	}
 	if err := r.browser.WaitLoad(ctx); err != nil {
@@ -348,7 +349,7 @@ func (r *Reader) pageText(ctx context.Context) (string, error) {
 }
 
 func (r *Reader) readPage(ctx context.Context, url, source string, sourceType domain.SourceType, title string, at time.Time) (string, domain.Evidence, error) {
-	if err := r.browser.Open(ctx, url); err != nil {
+	if err := r.browser.Open(ctx, url); err != nil && !errors.Is(err, sidecar.ErrNavigationTimeout) {
 		return "", domain.Evidence{}, fmt.Errorf("vulbox: open %s: %w", url, err)
 	}
 	if err := r.browser.WaitLoad(ctx); err != nil {

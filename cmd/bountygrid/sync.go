@@ -80,7 +80,7 @@ func parseSyncOptions(args []string) (syncOptions, error) {
 	fs.StringVar(&o.State, "state", "", "optional saved browser state JSON; usually the running session already holds the login")
 	fs.DurationVar(&o.Timeout, "timeout", 60*time.Second, "per-command timeout")
 	fs.DurationVar(&o.MinInterval, "min-interval", 2*time.Second, "minimum spacing between browser commands")
-	fs.BoolVar(&o.Close, "close", true, "close the browser session when done")
+	fs.BoolVar(&o.Close, "close", false, "close the browser session when done (default: keep the login alive)")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}

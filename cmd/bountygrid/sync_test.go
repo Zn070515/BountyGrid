@@ -116,4 +116,7 @@ func TestParseSyncOptionsDefaults(t *testing.T) {
 	if opts.MinInterval != 2*time.Second {
 		t.Fatalf("min interval = %v", opts.MinInterval)
 	}
+	if opts.Close {
+		t.Fatal("sync must keep the login session alive by default")
+	}
 }
