@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Go-1.27.3-00ADD8?logo=go&logoColor=white" alt="Go 1.27.3">
   <img src="https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
   <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/Phase-0--5%20partial%20%C2%B7%20execution%20disabled-blue" alt="Phase 0–5 partial; active execution disabled">
+  <img src="https://img.shields.io/badge/Phase-0--6%20partial%20%C2%B7%20execution%20disabled-blue" alt="Phase 0–6 partial; active execution disabled">
 </p>
 
 <p>
@@ -36,7 +36,7 @@ BountyGrid 是面向国内漏洞赏金平台（阿里云先知 / ASRC、漏洞�
 |---|---|---|---|
 | [`platform-audit/`](platform-audit/) | 事实线 | 三平台账号状态、项目体系、Scope、规则、AI 政策、收款、自动化边界 | 审计完成；[`CORRECTIONS.md`](platform-audit/CORRECTIONS.md) 记录 GROW 日期等纠正 |
 | [`architecture/`](architecture/) | 设计线 | Domain Model、Evidence/Fact/State、Adapter、Policy Engine、Opportunity、Harness、Submission、Ledger | 完整定稿；按依赖实现 |
-| [`internal/`](internal/) | 实现线 | Go 类型/不变量、Evidence Store、PostgreSQL 迁移/仓储、Audit/Facts/State/Policy、Readers、Opportunity/Scheduler、Harness | Phase 0 完成；Phase 1–5 部分完成；**主动执行仍禁用** |
+| [`internal/`](internal/) | 实现线 | Go 类型/不变量、Evidence Store、PostgreSQL 迁移/仓储、Audit/Facts/State/Policy、Readers、Opportunity/Scheduler、Harness | Phase 0 完成；Phase 1–6 部分完成；**主动执行仍禁用** |
 
 **不混用三条线。** 平台事实变化先改 `platform-audit/` 与 Evidence；领域语义变化先改 `architecture/` 与不变量；实现只消费前两者的结论，不把观察值直接写成业务规则。
 
@@ -111,7 +111,7 @@ bash probes/butian/grow-dates.sh
 
 ## 实现进度 · Implementation
 
-> **真实状态：Phase 0 complete; Phase 1–5 partially implemented; active execution remains disabled.** 三平台 Reader 主路径已通并落库；Policy/Gateway/Opportunity/Scheduler/Harness 已有实现并在控制层收口。Verification/Submission/Ledger 仍以领域类型为主。
+> **真实状态：Phase 0 complete; Phase 1–6 partially implemented; active execution remains disabled.** 三平台 Reader 主路径已通并落库；Policy/Gateway/Opportunity/Scheduler/Harness 已有实现并在控制层收口；Verification 规则引擎已实现；ReportDraft/Submission/Ledger 仍未进入。
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
@@ -322,7 +322,7 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - **CompetitionSnapshot TTL/decay**：`valid_until` 30 天硬上限；7 天后置信度线性衰减；`top1 <= top3 <= top10` 成为导入不变量。
 - **append-only 历史**：ResearchTask/机会评分使用每轮唯一 ID；同一 Program 最多一个 `QUEUED` 任务，被新任务 supersede；Scheduler 从数据库读取 cooldown。
 - **Butian 语义层次**：公益SRC 只发 `butian.pub.listed`，RUNNING 是派生状态；专属SRC/GROW 的报名与实战认证 Gate 不再写死 `UNSATISFIED`，由 Policy 结合账号状态解析。
-- **文档对齐**：CLAUDE/README/implementation-order 的阶段状态改为“Phase 0 complete; Phase 1–5 partially implemented; active execution disabled”。
+- **文档对齐**：CLAUDE/README/implementation-order 的阶段状态改为“Phase 0 complete; Phase 1–6 partially implemented; active execution disabled”。
 - **复核补修**：公益SRC 由 canonical `program.listed` 派生 RUNNING；回执绑定请求身份并按状态处理竞态；`AuthorizeWith` 要求新的 usage/budget/environment（环境 5 分钟过期）；Scheduler 使用账号重算的 Eligibility；列表页显式报名信号写入 `Account.JoinedProgramIDs`；审批参数保留原始字节并接受 canonical hash；回执保留 Evidence。
 
 ### Model Router（2026-11-01）

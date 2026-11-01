@@ -22,10 +22,18 @@ const (
 
 var ErrInvalidInput = errors.New("verify: invalid input")
 
+// EvidenceChecker verifies that an EvidenceID exists in the durable store.
+// When nil, the verifier can only check that IDs are syntactically non-empty.
+type EvidenceChecker interface {
+	HasEvidence(ctx context.Context, id domain.EvidenceID) (bool, error)
+}
+
 type Input struct {
 	Finding  domain.Finding
 	Program  domain.Program
 	Decision *domain.ActionDecision
+	// Evidence, when set, rejects fabricated evidence IDs.
+	Evidence EvidenceChecker
 
 	Reproduced           bool
 	ReproductionEvidence []domain.EvidenceID
@@ -89,13 +97,18 @@ func (r *RuleVerifier) Verify(ctx context.Context, in Input) (domain.Verificatio
 	}
 
 	v := domain.Verification{
-		ID:            fmt.Sprintf("ver/%s/%s", findingKey(in.Finding.ID), now.UTC().Format("20060102T150405.000000000")),
-		FindingID:     in.Finding.ID,
-		DuplicateRisk: in.DuplicateRisk,
-		VerifiedBy:    verifiedBy,
-		VerifiedAt:    now,
-		Reasons:       []string{},
-		Evidence:      unionEvidence(in.Finding.Evidence, in.ReproductionEvidence, in.ImpactEvidence),
+		ID:                   fmt.Sprintf("ver/%s/%s", findingKey(in.Finding.ID), now.UTC().Format("20060102T150405.000000000")),
+		FindingID:            in.Finding.ID,
+		DuplicateChecked:     in.DuplicateChecked,
+		DuplicateRisk:        in.DuplicateRisk,
+		PubliclyKnown:        in.PubliclyKnown,
+		AIAssisted:           in.AIAssisted,
+		HumanVerified:        in.HumanVerified,
+		HumanVerificationRef: in.HumanVerificationRef,
+		VerifiedBy:           verifiedBy,
+		VerifiedAt:           now,
+		Reasons:              []string{},
+		Evidence:             unionEvidence(in.Finding.Evidence, in.ReproductionEvidence, in.ImpactEvidence),
 	}
 	reject := func(verdict domain.VerificationVerdict, reason string) (domain.Verification, error) {
 		v.Verdict = verdict
@@ -140,6 +153,12 @@ func (r *RuleVerifier) Verify(ctx context.Context, in Input) (domain.Verificatio
 	if in.Decision.Decision != domain.DecisionAllow {
 		return reject(domain.VerdictRejected, "UNAUTHORIZED_ACTION")
 	}
+	// The decision must be structurally valid (ALLOW carries an expiry, the
+	// request/approval bindings are coherent). Verification may happen after the
+	// execution window, so wall-clock expiry is not re-checked here.
+	if err := in.Decision.Validate(); err != nil {
+		return reject(domain.VerdictRejected, "AUTHORIZATION_INVALID")
+	}
 	if in.Decision.ProgramID != in.Finding.ProgramID {
 		return reject(domain.VerdictRejected, "AUTHORIZATION_PROGRAM_MISMATCH")
 	}
@@ -166,6 +185,20 @@ func (r *RuleVerifier) Verify(ctx context.Context, in Input) (domain.Verificatio
 	}
 	if in.PubliclyKnown {
 		return reject(domain.VerdictRejected, "PUBLICLY_KNOWN")
+	}
+
+	// 4b. Evidence IDs must exist in the durable store; a syntactically valid
+	// ID is not proof.
+	if in.Evidence != nil {
+		for _, id := range v.Evidence {
+			ok, err := in.Evidence.HasEvidence(ctx, id)
+			if err != nil {
+				return domain.Verification{}, fmt.Errorf("verify: check evidence %s: %w", id, err)
+			}
+			if !ok {
+				return reject(domain.VerdictNeedsEvidence, "EVIDENCE_NOT_FOUND:"+string(id))
+			}
+		}
 	}
 
 	// 5. Duplicate risk. An unchecked finding cannot be verified.

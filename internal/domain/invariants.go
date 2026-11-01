@@ -519,6 +519,12 @@ func (v Verification) Validate() error {
 		if len(v.Evidence) == 0 {
 			return fmt.Errorf("verification %s: VERIFIED requires evidence", v.ID)
 		}
+		if !v.DuplicateChecked {
+			return fmt.Errorf("verification %s: VERIFIED requires duplicate_check", v.ID)
+		}
+		if v.AIAssisted && (!v.HumanVerified || v.HumanVerificationRef == "") {
+			return fmt.Errorf("verification %s: VERIFIED AI-assisted finding requires human verification trace", v.ID)
+		}
 	}
 	return nil
 }

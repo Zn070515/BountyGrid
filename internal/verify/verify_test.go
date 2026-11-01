@@ -38,9 +38,11 @@ func testFinding() domain.Finding {
 }
 
 func allowDecision(action domain.Action, asset *domain.AssetID) *domain.ActionDecision {
+	expires := testNow.Add(5 * time.Minute)
 	return &domain.ActionDecision{
 		ID: "d1", RequestID: "r1", ProgramID: "p1", Action: action,
 		Decision: domain.DecisionAllow, PolicyVersion: "test", DecidedAt: testNow,
+		ExpiresAt: &expires,
 		Request: domain.ActionRequest{
 			ID: "r1", Actor: domain.ActorRef{Kind: domain.ActorHarness, ID: "h1"},
 			AccountID: "acc1", ProgramID: "p1", AssetID: asset, Action: action, RequestedAt: testNow,
@@ -137,6 +139,43 @@ func TestAuthorizationGates(t *testing.T) {
 	if v := verifyInput(t, in); v.Verdict != domain.VerdictRejected || v.Reasons[0] != "INVALID_SOURCE_ACTION" {
 		t.Fatalf("view-rules finding = %s %v", v.Verdict, v.Reasons)
 	}
+
+	in = validInput()
+	in.Decision.ExpiresAt = nil
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictRejected || v.Reasons[0] != "AUTHORIZATION_INVALID" {
+		t.Fatalf("ALLOW without expiry = %s %v", v.Verdict, v.Reasons)
+	}
+}
+
+type fakeEvidence struct {
+	exists map[domain.EvidenceID]bool
+	err    error
+}
+
+func (f fakeEvidence) HasEvidence(ctx context.Context, id domain.EvidenceID) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.exists[id], nil
+}
+
+func TestEvidenceExistenceIsChecked(t *testing.T) {
+	in := validInput()
+	in.Evidence = fakeEvidence{exists: map[domain.EvidenceID]bool{
+		"ev-finding": true, "ev-repro": true, "ev-impact": true,
+	}}
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictVerified {
+		t.Fatalf("present evidence = %s %v", v.Verdict, v.Reasons)
+	}
+
+	in = validInput()
+	in.Evidence = fakeEvidence{exists: map[domain.EvidenceID]bool{
+		"ev-finding": true, "ev-repro": true,
+	}}
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictNeedsEvidence ||
+		v.Reasons[0] != "EVIDENCE_NOT_FOUND:ev-impact" {
+		t.Fatalf("missing evidence = %s %v", v.Verdict, v.Reasons)
+	}
 }
 
 func TestDataAndDuplicateGates(t *testing.T) {
@@ -188,8 +227,15 @@ func TestAIGate(t *testing.T) {
 	}
 
 	in.HumanVerificationRef = "manually reproduced and screenshotted"
-	if v := verifyInput(t, in); v.Verdict != domain.VerdictVerified {
+	v := verifyInput(t, in)
+	if v.Verdict != domain.VerdictVerified {
 		t.Fatalf("AI with human ref = %s %v", v.Verdict, v.Reasons)
+	}
+	if !v.AIAssisted || !v.HumanVerified || v.HumanVerificationRef == "" {
+		t.Fatalf("AI trace not persisted: %+v", v)
+	}
+	if !v.DuplicateChecked {
+		t.Fatal("duplicate check trace not persisted")
 	}
 }
 
@@ -236,12 +282,22 @@ func TestVerificationValidateRejectsUnbackedVerified(t *testing.T) {
 	v := domain.Verification{
 		ID: "v1", FindingID: "f1", Verdict: domain.VerdictVerified,
 		Reproduced: true, InScope: true, ImpactVerified: true, DataMinimized: false,
-		VerifiedBy: "rule", VerifiedAt: testNow, Evidence: []domain.EvidenceID{"ev1"},
+		DuplicateChecked: true, VerifiedBy: "rule", VerifiedAt: testNow,
+		Evidence: []domain.EvidenceID{"ev1"},
 	}
 	if err := v.Validate(); err == nil {
 		t.Fatal("VERIFIED without data_minimized must be rejected")
 	}
 	v.DataMinimized = true
+	if err := v.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	v.AIAssisted = true
+	if err := v.Validate(); err == nil {
+		t.Fatal("AI-assisted VERIFIED without a human trace must be rejected")
+	}
+	v.HumanVerified = true
+	v.HumanVerificationRef = "reviewed manually"
 	if err := v.Validate(); err != nil {
 		t.Fatal(err)
 	}

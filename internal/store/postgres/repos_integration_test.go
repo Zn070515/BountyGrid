@@ -369,6 +369,10 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err := r.PutFinding(ctx, finding); err != nil {
 		t.Fatal(err)
 	}
+	gotFinding, err := r.GetFinding(ctx, findingID)
+	if err != nil || gotFinding.ProgramID != progID {
+		t.Fatalf("finding roundtrip = %+v %v", gotFinding, err)
+	}
 	verification := domain.Verification{
 		ID: "it-ver-" + suffix, FindingID: findingID, Verdict: domain.VerdictNeedsEvidence,
 		Reproduced: true, InScope: true, ImpactVerified: false, DataMinimized: true,
@@ -381,6 +385,17 @@ func TestRepoRoundTrip(t *testing.T) {
 	gotVerification, err := r.GetVerification(ctx, verification.ID)
 	if err != nil || gotVerification.FindingID != findingID || gotVerification.Verdict != verification.Verdict {
 		t.Fatalf("verification roundtrip = %+v %v", gotVerification, err)
+	}
+	// Re-persisting the same verification ID must update, not silently keep the
+	// old verdict.
+	verification.Verdict = domain.VerdictRejected
+	verification.Reasons = []string{"DATA_NOT_MINIMIZED"}
+	if err := r.PutVerification(ctx, verification); err != nil {
+		t.Fatal(err)
+	}
+	gotVerification, err = r.GetVerification(ctx, verification.ID)
+	if err != nil || gotVerification.Verdict != domain.VerdictRejected {
+		t.Fatalf("verification update = %+v %v", gotVerification, err)
 	}
 	report := domain.ReportDraft{ID: reportID, FindingID: findingID, ProgramID: progID, Status: "DRAFT", CreatedAt: now}
 	if err := r.PutReportDraft(ctx, report); err != nil {
