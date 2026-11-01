@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +18,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Zn070515/BountyGrid/internal/audit"
+	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 )
 
 // Protocol is the proxy protocol a policy decision is evaluated against.
@@ -609,4 +616,109 @@ func resolveApprovedProxyIP(ctx context.Context, host string) (netip.Addr, error
 		return netip.Addr{}, fmt.Errorf("egress: resolve approved proxy %s: no addresses", host)
 	}
 	return addrs[0].Unmap(), nil
+}
+
+// RulePolicy adapts a declarative rule set to the proxy's NetworkPolicy. It is
+// the bridge between `internal/policy/rules` and the per-request proxy
+// boundary: a rule allow is still only a network grant, not an ActionDecision.
+type RulePolicy struct {
+	Rules   *rules.RuleSet
+	Action  domain.Action
+	Program domain.ProgramID
+}
+
+func (p RulePolicy) Decide(_ context.Context, req Request) (PolicyDecision, string) {
+	if p.Rules == nil {
+		return Deny, "no rule set configured"
+	}
+	action := p.Action
+	if action == "" {
+		action = domain.ActionActiveHTTP
+	}
+	asset := req.Host
+	if req.Path != "" {
+		asset = req.Host + req.Path
+	}
+	result, err := p.Rules.Evaluate(rules.Request{
+		Action: action, Program: p.Program, Asset: asset, Method: req.Method,
+	})
+	if err != nil {
+		return Deny, "invalid rule request: " + err.Error()
+	}
+	reason := rulePolicyReason(result)
+	switch result.Decision {
+	case rules.DecisionAllow:
+		return Allow, reason
+	case rules.DecisionForbidden:
+		return Deny, reason
+	case rules.DecisionRequireHuman:
+		return Ask, reason
+	default:
+		return Deny, "no matching rule"
+	}
+}
+
+func rulePolicyReason(result rules.Result) string {
+	if len(result.Matched) == 0 {
+		return "no matching rule"
+	}
+	parts := make([]string, 0, len(result.Matched))
+	for _, m := range result.Matched {
+		part := m.ID + ":" + string(m.Decision)
+		if m.Justification != "" {
+			part += ":" + m.Justification
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// AuditSink adapts network policy decisions to the existing audit.Event sink.
+// The raw path is hashed because it can contain callback tokens or long digit
+// runs that the audit secret scanner would reject.
+type AuditSink struct {
+	Auditor Auditor
+}
+
+func (s AuditSink) RecordNetworkDecision(ctx context.Context, e NetworkDecisionAudit) error {
+	if s.Auditor == nil {
+		return errors.New("harness: network audit sink has no auditor")
+	}
+	at := e.Timestamp
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	pathHash := ""
+	if e.Path != "" {
+		sum := sha256.Sum256([]byte(e.Path))
+		pathHash = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	payload, err := json.Marshal(struct {
+		Protocol      Protocol       `json:"protocol"`
+		Host          string         `json:"host"`
+		Port          int            `json:"port"`
+		Method        string         `json:"method,omitempty"`
+		PathHash      string         `json:"path_hash,omitempty"`
+		Decision      PolicyDecision `json:"decision"`
+		Reason        string         `json:"reason,omitempty"`
+		Client        string         `json:"client,omitempty"`
+		PolicyVersion string         `json:"policy_version,omitempty"`
+	}{
+		Protocol: e.Protocol, Host: e.Host, Port: e.Port, Method: e.Method,
+		PathHash: pathHash, Decision: e.Decision, Reason: e.Reason,
+		Client: e.Client, PolicyVersion: e.PolicyVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("harness: marshal network audit: %w", err)
+	}
+	_, err = s.Auditor.Append(ctx, audit.Event{
+		Type: "network.policy_decision", EntityType: "network",
+		EntityID:  e.Host + ":" + strconv.Itoa(e.Port),
+		ActorKind: string(domain.ActorHarness), ActorID: "proxy",
+		Payload: payload, RecordedAt: at,
+	})
+	if err != nil {
+		return fmt.Errorf("harness: append network audit: %w", err)
+	}
+	return nil
 }
