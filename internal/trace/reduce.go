@@ -42,6 +42,9 @@ func Reduce(events []Event) (*Trace, error) {
 	nodes := make(map[string]*Node, len(ordered))
 	byKind := make(map[Kind]int, len(ordered))
 	for _, e := range ordered {
+		if err := e.Validate(); err != nil {
+			return nil, err
+		}
 		if e.TraceID != traceID {
 			return nil, fmt.Errorf("trace: event %q has trace_id %q, want %q", e.ID, e.TraceID, traceID)
 		}
