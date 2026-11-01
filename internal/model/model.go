@@ -72,13 +72,18 @@ func (d DataClass) rank() int {
 	case DataSensitive:
 		return 2
 	default:
-		return 2 // unknown is treated as the most sensitive
+		return 3 // invalid is stricter than SENSITIVE
 	}
 }
 
 // MaxDataClass returns the more sensitive of two classes. Classification is
-// monotonic: a caller (or a model) may raise the class, never lower it.
+// monotonic: a caller (or a model) may raise the class, never lower it. An
+// invalid class is not a valid "more sensitive" answer, so it collapses to
+// SENSITIVE instead of leaking an unknown string into routing.
 func MaxDataClass(a, b DataClass) DataClass {
+	if !a.Valid() || !b.Valid() {
+		return DataSensitive
+	}
 	if a.rank() >= b.rank() {
 		return a
 	}
@@ -88,10 +93,16 @@ func MaxDataClass(a, b DataClass) DataClass {
 // EffectiveDataClass is the maximum of the requested class and every provenance
 // class. Provenance must be supplied by the caller from evidence/task
 // classification; the router refuses to let a request label sensitive content as
-// PUBLIC.
+// PUBLIC. Any malformed class fails closed to SENSITIVE.
 func (r ModelRequest) EffectiveDataClass() DataClass {
 	out := r.DataClass
+	if !out.Valid() {
+		return DataSensitive
+	}
 	for _, d := range r.Provenance {
+		if !d.Valid() {
+			return DataSensitive
+		}
 		out = MaxDataClass(out, d)
 	}
 	return out
@@ -142,6 +153,11 @@ func (r ModelRequest) Validate() error {
 	}
 	if !r.DataClass.Valid() {
 		return fmt.Errorf("%w: invalid data class %q", ErrInvalidRequest, r.DataClass)
+	}
+	for _, d := range r.Provenance {
+		if !d.Valid() {
+			return fmt.Errorf("%w: invalid provenance data class %q", ErrInvalidRequest, d)
+		}
 	}
 	if len(r.Input) == 0 {
 		return fmt.Errorf("%w: input is empty", ErrInvalidRequest)

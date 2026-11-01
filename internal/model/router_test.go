@@ -298,3 +298,27 @@ func TestCallIDIdempotency(t *testing.T) {
 		t.Fatalf("provider called %d times", p.Calls)
 	}
 }
+
+func TestInvalidProvenanceFailsClosed(t *testing.T) {
+	req := testRequest(PurposeAnalyze, DataPublic, 10, 0)
+	req.Provenance = []DataClass{"BOGUS"}
+	if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Validate err = %v, want ErrInvalidRequest", err)
+	}
+	if got := req.EffectiveDataClass(); got != DataSensitive {
+		t.Fatalf("effective class = %q, want SENSITIVE", got)
+	}
+	r, _ := newTestRouter(t, testProvider("remote", false, 5, 100, 1, "x"))
+	if _, err := r.Route(context.Background(), req); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Route err = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestMaxDataClassCollapsesInvalidToSensitive(t *testing.T) {
+	if got := MaxDataClass(DataPublic, DataClass("BOGUS")); got != DataSensitive {
+		t.Fatalf("MaxDataClass = %q", got)
+	}
+	if got := MaxDataClass(DataClass("BOGUS"), DataClass("BOGUS")); got != DataSensitive {
+		t.Fatalf("MaxDataClass invalid/invalid = %q", got)
+	}
+}
