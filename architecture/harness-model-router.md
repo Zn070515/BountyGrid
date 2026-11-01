@@ -117,13 +117,18 @@ toolCall -> ActionRequest -> Policy.Decide -> ALLOW? -> execute
 
 ```go
 type ModelRequest struct {
-    TaskID     domain.TaskID
-    Purpose    string // PLAN | ANALYZE | CODE | REPORT | EMBED
-    Input      []Message
-    Tools      []ToolSpec
-    MaxTokens  int
-    Budget     domain.Money
-    DataClass  DataClass // PUBLIC | INTERNAL | SENSITIVE
+    TaskID      domain.TaskID
+    StepID      string // worker step; feeds StableCallID
+    Purpose     string // PLAN | ANALYZE | CODE | REPORT | EMBED
+    Input       []Message
+    Tools       []ToolSpec
+    MaxTokens   int
+    Budget      domain.Money
+    DataClass   DataClass // PUBLIC | INTERNAL | SENSITIVE
+    ModelEgress domain.ModelEgressPolicy // LOCAL_ONLY | REMOTE_REDACTED_ONLY | REMOTE_ALLOWED | UNKNOWN
+    Redacted    bool     // caller attestation for REMOTE_REDACTED_ONLY
+    Escalation  EscalationReason // empty | STALLED | LOW_CONFIDENCE | HIGH_VALUE_TASK | VERIFICATION_CONFLICT
+    CallID      string   // idempotency key; required in worker mode
 }
 
 type ModelResponse struct {
@@ -143,17 +148,30 @@ type Router interface {
 
 ### 3.2 路由策略
 
-| 任务 | 默认路由 | 理由 |
+路由是 **local-first**，与 purpose 无关：
+
+```text
+确定性规则/工具  ->  本地小模型  ->  更强的本地模型  ->  远程强模型
+```
+
+只有显式 `EscalationReason` 才允许把远程强模型提到本地模型之前；`Escalation` 为空时，即使 egress 允许远程，也先用本地。
+
+| 层级 | 选择条件 | 排序 |
 |------|----------|------|
-| 规划/长上下文分析 | 云端强模型 | 复杂推理 |
-| 代码/正则/结构化抽取 | 本地模型或小模型 | 成本低、数据不出境 |
-| 报告润色 | 本地/云端按数据等级 | 敏感数据优先本地 |
-| Embedding | 本地 | 批量成本 |
+| 确定性层 | 规则、schema、evidence grounding、policy | 不调用模型 |
+| 本地小模型 | `ProviderInfo.IsLocal()` | `Strength` 升序（小模型优先） |
+| 更强本地 | 同上 | `Strength` 升序 |
+| 远程强模型 | egress 允许且数据等级允许 | `Strength` 降序（强模型优先），永远排在本地之后 |
+| 升级路由 | `Escalation != ""` | 远程强模型在前，其次本地强模型在前 |
 
 规则：
 
-- `DataClass=SENSITIVE` 默认只走本地；除非人工批准且平台规则允许。
-- 单任务 token/成本预算硬限制。
+- `Program.ModelEgressPolicy` 是程序级 egress 上限，不是 Provider 能力：
+  - `LOCAL_ONLY` / `UNKNOWN`（以及零值）只允许 `IsLocal()`；
+  - `REMOTE_REDACTED_ONLY` 仅当 `Redacted=true` 且有效数据等级不是 `SENSITIVE` 时允许远程，本地始终允许；
+  - `REMOTE_ALLOWED` 按数据等级规则（`SENSITIVE` 仍只走本地）。
+- `DataClass=SENSITIVE` 永不离开本进程，即使 `REMOTE_ALLOWED` 也一样。
+- 单任务 token/成本预算硬限制；fallback 链累计预算，失败尝试的估算也计入。
 - 模型输出不直接产生 Action；必须经过 Harness 的 ActionRequest。
 - 模型不能持有平台 Cookie/Token；浏览器会话只在 Adapter/Browser Sidecar。
 
@@ -220,12 +238,14 @@ type Router interface {
 
 - `internal/model`：`Purpose`（PLAN/ANALYZE/CODE/REPORT/EMBED）、`DataClass`（PUBLIC/INTERNAL/SENSITIVE）、`ProviderInfo`、`Provider`、`Router`。
 - 数据分级：`EffectiveDataClass = max(DataClass, Provenance...)`，分类只升不降；`SENSITIVE` 只允许 `IsLocal()` 的 Provider。`Local` 由 transport 身份决定（loopback/unix/npipe/stdio/static 或 in-process），`Router.New` 拒绝“声明 local 但 endpoint 是远程 URL”的 Provider；无本地 Provider → `ErrNoProvider`，绝不降级到云端。
-- 路由：PLAN/ANALYZE 优先强远程模型，CODE/EMBED/REPORT 优先本地；`MaxOutputTokens`、`MaxContextTokens`（PromptTokens+MaxTokens）、`RequiredCapabilities`（TOOL_CALLING/VISION/STRUCTURED_OUTPUT）不满足的 Provider 不参与。
+- 程序级 egress：`domain.Program.ModelEgressPolicy`（`LOCAL_ONLY` / `REMOTE_REDACTED_ONLY` / `REMOTE_ALLOWED` / `UNKNOWN`，零值等同 `UNKNOWN`）。`UNKNOWN` 按 `LOCAL_ONLY` 执行，旧 Program 记录不会意外获得远程权限。`REMOTE_REDACTED_ONLY` 需要请求携带 `Redacted=true` 且有效数据等级不是 `SENSITIVE`；`REMOTE_ALLOWED` 仍受 `SENSITIVE` 本地限制。
+- 路由：默认 local-first，与 purpose 无关——本地小模型（`Strength` 升序）→ 更强本地 → 远程强模型（`Strength` 降序）。只有显式 `EscalationReason`（`STALLED` / `LOW_CONFIDENCE` / `HIGH_VALUE_TASK` / `VERIFICATION_CONFLICT`）才把远程强模型排到本地之前；升级不能绕过 egress 或 `SENSITIVE` 限制。`MaxOutputTokens`、`MaxContextTokens`（PromptTokens+MaxTokens）、`RequiredCapabilities`（TOOL_CALLING/VISION/STRUCTURED_OUTPUT）不满足的 Provider 不参与。
 - 预算：整条 fallback 链累计预算，失败的 Provider 也计入估算；调用后按实际 usage 复核，累计超预算则返回 `ErrBudgetExceeded`。所有价格以“分/百万 token、CNY”表示。
-- 调用持久化：`CallStore` 在调用前预占 `model_calls`（`CallID` 幂等；重复的显式 CallID 返回 `ErrDuplicateCall`），调用后写 provider/model/hash/usage/cost/error。自动生成的 CallID 带序列号，避免同 tick 冲突。审计与 call receipt 分离：审计失败会随响应返回错误，但 call 记录保留。
-- 审计：每次尝试写 `model.call`，payload 只有 `task_id/purpose/data_class/provider/model/prompt_hash/response_hash/usage/cost/duration_ms/error`，不含 prompt/response 原文。
-- 失败降级：Provider 报错时记录失败并按路由顺序尝试下一个；全部失败返回最后一个错误。
-- `bountygrid model -purpose ... -data-class ... -max-tokens ... -budget ...` 只打印路由计划（`Candidates` + 估算成本），不调用模型、不发网络请求。
+- 调用持久化：逻辑调用与 provider 尝试分离。`CallStore` 在调用前预占 `model_calls`（`CallID` 幂等；重复的显式 CallID 返回 `ErrDuplicateCall`），每次 provider 调用追加一条 `model_call_attempts`，最后用 `FinalStatus`、`TotalCost`、`HasAmbiguousAttempt` 完成逻辑调用。`TotalCost` 覆盖已完成尝试的实际成本与 ambiguous 尝试的估算（`FAILED_BEFORE_SEND` 不计费）。详见 `architecture/model-audit.md`。
+- 稳定 CallID：worker 请求带 `StepID`，用 `StableCallID(taskID, stepID, purpose, promptHash)` 生成确定性 ID；`Options.RequireStableCallID` 在 worker 模式下拒绝空 `CallID`。交互/adhoc 仍使用带序列号的自动 ID。
+- 审计：每次尝试写 `model.call`，payload 只有 `attempt_id/call_id/step_id/task_id/purpose/data_class/provider/model/status/estimated_cost/actual_cost/prompt_hash/response_hash/usage/duration_ms/error`，不含 prompt/response 原文。
+- 失败降级：Provider 报错时记录尝试并按路由顺序尝试下一个；全部失败返回最后一个错误，逻辑调用保留 `AMBIGUOUS` 或 `FAILED_BEFORE_SEND`。
+- `bountygrid model -purpose ... -data-class ... -model-egress ... [-redacted] [-escalation ...] -max-tokens ... -budget ...` 只打印路由计划（`Candidates` + 估算成本），不调用模型、不发网络请求。默认 `UNKNOWN` 只显示本地候选。
 - 未实现：真实本地/云端 Provider 适配器（需要 env 配置与密钥管理）、Model Router 与 ResearchTask 的自动领取。`StaticProvider` 仅用于测试/本地 dry-run；PostgreSQL `model_calls` 存储已实现，但 CLI 尚未接入真实调用链。
 
 ## 6. 审计事件

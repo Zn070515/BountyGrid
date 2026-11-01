@@ -29,6 +29,9 @@ var (
 	// AMBIGUOUS. The provider may already have been invoked and charged, so a
 	// retry is refused until a human reconciles the call.
 	ErrCallAmbiguous = errors.New("model: call is ambiguous; the provider may have been charged and manual reconciliation is required")
+	// ErrStableCallIDRequired means worker mode was configured to require an
+	// explicit, deterministic CallID and the request did not carry one.
+	ErrStableCallIDRequired = errors.New("model: worker mode requires a stable call ID")
 )
 
 type Purpose string
@@ -44,6 +47,28 @@ const (
 func (p Purpose) Valid() bool {
 	switch p {
 	case PurposePlan, PurposeAnalyze, PurposeCode, PurposeReport, PurposeEmbed:
+		return true
+	default:
+		return false
+	}
+}
+
+// EscalationReason is the only mechanism that lets local-first routing prefer a
+// stronger remote provider. An empty reason means no escalation: the router
+// stays within the local tiers.
+type EscalationReason string
+
+const (
+	EscalationNone                 EscalationReason = ""
+	EscalationStalled              EscalationReason = "STALLED"
+	EscalationLowConfidence        EscalationReason = "LOW_CONFIDENCE"
+	EscalationHighValueTask        EscalationReason = "HIGH_VALUE_TASK"
+	EscalationVerificationConflict EscalationReason = "VERIFICATION_CONFLICT"
+)
+
+func (e EscalationReason) Valid() bool {
+	switch e {
+	case EscalationNone, EscalationStalled, EscalationLowConfidence, EscalationHighValueTask, EscalationVerificationConflict:
 		return true
 	default:
 		return false
@@ -132,9 +157,11 @@ type Usage struct {
 }
 
 // ModelRequest is one routed model call. TaskID is optional; when present it
-// links the call to a ResearchTask. MaxTokens is the output-token ceiling.
+// links the call to a ResearchTask. StepID names the task step and, together
+// with the prompt hash, produces a stable call ID for worker retries.
 type ModelRequest struct {
 	TaskID    domain.TaskID `json:"task_id,omitempty"`
+	StepID    string        `json:"step_id,omitempty"`
 	Purpose   Purpose       `json:"purpose"`
 	DataClass DataClass     `json:"data_class"`
 	// Provenance records the data classes of the inputs (evidence, task, source
@@ -144,8 +171,18 @@ type ModelRequest struct {
 	Input      []Message    `json:"input"`
 	MaxTokens  int          `json:"max_tokens"`
 	Budget     domain.Money `json:"budget"`
+	// ModelEgress is the program-level egress ceiling. The zero value and
+	// UNKNOWN behave as LOCAL_ONLY.
+	ModelEgress domain.ModelEgressPolicy `json:"model_egress,omitempty"`
+	// Redacted attests that the request content has been redacted. It is
+	// required (and only meaningful) for REMOTE_REDACTED_ONLY egress.
+	Redacted bool `json:"redacted,omitempty"`
+	// Escalation is empty for the default local-first route. A set reason may
+	// prefer a stronger remote provider when the egress policy permits it.
+	Escalation EscalationReason `json:"escalation,omitempty"`
 	// CallID is an optional idempotency key. When set, a retry with the same ID
-	// is rejected instead of paying for a second model call.
+	// is rejected instead of paying for a second model call. Worker mode
+	// requires it; use StableCallID.
 	CallID string `json:"call_id,omitempty"`
 	// RequiredCapabilities filters out providers lacking a needed feature.
 	RequiredCapabilities []Capability `json:"required_capabilities,omitempty"`
@@ -162,6 +199,12 @@ func (r ModelRequest) Validate() error {
 		if !d.Valid() {
 			return fmt.Errorf("%w: invalid provenance data class %q", ErrInvalidRequest, d)
 		}
+	}
+	if !r.ModelEgress.Valid() {
+		return fmt.Errorf("%w: invalid model egress policy %q", ErrInvalidRequest, r.ModelEgress)
+	}
+	if !r.Escalation.Valid() {
+		return fmt.Errorf("%w: invalid escalation reason %q", ErrInvalidRequest, r.Escalation)
 	}
 	if len(r.Input) == 0 {
 		return fmt.Errorf("%w: input is empty", ErrInvalidRequest)
@@ -338,6 +381,19 @@ func PromptHash(req ModelRequest) string {
 		_, _ = h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// StableCallID derives the idempotency key for a worker step. The same task,
+// step, purpose and prompt always produce the same ID, so a retried worker
+// resumes the existing logical call instead of paying for a second one. An
+// interactive/adhoc caller may keep using auto-generated IDs.
+func StableCallID(taskID domain.TaskID, stepID string, purpose Purpose, promptHash string) string {
+	h := sha256.New()
+	for _, part := range []string{string(taskID), stepID, string(purpose), promptHash} {
+		_, _ = h.Write([]byte(part))
+		_, _ = h.Write([]byte{0})
+	}
+	return "call/stable/" + hex.EncodeToString(h.Sum(nil))
 }
 
 func ResponseHash(content string) string {

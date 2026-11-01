@@ -291,6 +291,9 @@ func (p Program) Validate() error {
 	if !p.Status.Confidence.Valid() {
 		return fmt.Errorf("program %s: status confidence %v out of range", p.ID, p.Status.Confidence)
 	}
+	if !p.ModelEgressPolicy.Valid() {
+		return fmt.Errorf("program %s: invalid model egress policy %q", p.ID, p.ModelEgressPolicy)
+	}
 	if err := p.Constraints.Validate(); err != nil {
 		return fmt.Errorf("program %s: %w", p.ID, err)
 	}
