@@ -46,7 +46,9 @@ func TestSensitiveDataNeverRoutesToRemote(t *testing.T) {
 	remote := testProvider("remote", false, 9, 16000, 1, "remote")
 	local := testProvider("local", true, 2, 8000, 1, "local")
 	r, _ := newTestRouter(t, remote, local)
-	resp, err := r.Route(context.Background(), testRequest(PurposeAnalyze, DataSensitive, 1000, 100))
+	req := testRequest(PurposeAnalyze, DataSensitive, 1000, 100)
+	req.ModelEgress = domain.ModelEgressRemoteAllowed
+	resp, err := r.Route(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +60,9 @@ func TestSensitiveDataNeverRoutesToRemote(t *testing.T) {
 func TestSensitiveWithoutLocalProviderFailsClosed(t *testing.T) {
 	remote := testProvider("remote", false, 9, 16000, 1, "remote")
 	r, _ := newTestRouter(t, remote)
-	if _, err := r.Route(context.Background(), testRequest(PurposeAnalyze, DataSensitive, 1000, 100)); !errors.Is(err, ErrNoProvider) {
+	req := testRequest(PurposeAnalyze, DataSensitive, 1000, 100)
+	req.ModelEgress = domain.ModelEgressRemoteAllowed
+	if _, err := r.Route(context.Background(), req); !errors.Is(err, ErrNoProvider) {
 		t.Fatalf("err = %v, want ErrNoProvider", err)
 	}
 	if remote.Calls != 0 {
@@ -66,25 +70,145 @@ func TestSensitiveWithoutLocalProviderFailsClosed(t *testing.T) {
 	}
 }
 
-func TestPurposePreference(t *testing.T) {
+func TestDefaultRouteIsLocalFirst(t *testing.T) {
 	remote := testProvider("remote", false, 9, 16000, 1, "remote")
-	local := testProvider("local", true, 3, 8000, 1, "local")
-	r, _ := newTestRouter(t, local, remote)
+	small := testProvider("local-small", true, 1, 8000, 1, "small")
+	large := testProvider("local-large", true, 5, 16000, 1, "large")
+	r, _ := newTestRouter(t, remote, large, small)
 
-	resp, err := r.Route(context.Background(), testRequest(PurposePlan, DataPublic, 1000, 100))
-	if err != nil {
-		t.Fatal(err)
+	for _, purpose := range []Purpose{PurposePlan, PurposeAnalyze, PurposeCode, PurposeReport, PurposeEmbed} {
+		req := testRequest(purpose, DataPublic, 1000, 100)
+		req.ModelEgress = domain.ModelEgressRemoteAllowed
+		resp, err := r.Route(context.Background(), req)
+		if err != nil {
+			t.Fatalf("%s: %v", purpose, err)
+		}
+		// No escalation: the smallest local model is the default for every
+		// purpose, even PLAN/ANALYZE.
+		if resp.Provider != "local-small" {
+			t.Fatalf("%s provider = %s, want local-small", purpose, resp.Provider)
+		}
 	}
-	if resp.Provider != "remote" {
-		t.Fatalf("PLAN provider = %s, want remote", resp.Provider)
+	if remote.Calls != 0 {
+		t.Fatalf("remote called %d times without an escalation", remote.Calls)
 	}
+}
 
-	resp, err = r.Route(context.Background(), testRequest(PurposeCode, DataPublic, 1000, 100))
+func TestEscalationPrefersStrongerRemote(t *testing.T) {
+	remote := testProvider("remote", false, 9, 16000, 1, "remote")
+	small := testProvider("local-small", true, 1, 8000, 1, "small")
+	large := testProvider("local-large", true, 5, 16000, 1, "large")
+
+	for _, reason := range []EscalationReason{
+		EscalationStalled, EscalationLowConfidence, EscalationHighValueTask, EscalationVerificationConflict,
+	} {
+		r, _ := newTestRouter(t, small, large, remote)
+		req := testRequest(PurposeAnalyze, DataPublic, 1000, 100)
+		req.ModelEgress = domain.ModelEgressRemoteAllowed
+		req.Escalation = reason
+		resp, err := r.Route(context.Background(), req)
+		if err != nil {
+			t.Fatalf("%s: %v", reason, err)
+		}
+		if resp.Provider != "remote" {
+			t.Fatalf("%s provider = %s, want remote", reason, resp.Provider)
+		}
+	}
+}
+
+func TestEscalationCannotBypassEgressPolicy(t *testing.T) {
+	remote := testProvider("remote", false, 9, 16000, 1, "remote")
+	local := testProvider("local", true, 1, 8000, 1, "local")
+
+	for _, policy := range []domain.ModelEgressPolicy{
+		domain.ModelEgressLocalOnly, domain.ModelEgressUnknown, "",
+	} {
+		r, _ := newTestRouter(t, remote, local)
+		req := testRequest(PurposeAnalyze, DataPublic, 1000, 100)
+		req.ModelEgress = policy
+		req.Escalation = EscalationStalled
+		resp, err := r.Route(context.Background(), req)
+		if err != nil {
+			t.Fatalf("policy %q: %v", policy, err)
+		}
+		if resp.Provider != "local" {
+			t.Fatalf("policy %q provider = %s, want local", policy, resp.Provider)
+		}
+		if remote.Calls != 0 {
+			t.Fatalf("policy %q called remote %d times", policy, remote.Calls)
+		}
+	}
+}
+
+func TestRemoteRedactedOnlyRequiresRedaction(t *testing.T) {
+	remote := testProvider("remote", false, 9, 16000, 1, "remote")
+	local := testProvider("local", true, 1, 8000, 1, "local")
+	r, _ := newTestRouter(t, remote, local)
+
+	// Escalation proves the policy, not the local-first default, is what keeps
+	// the remote provider out.
+	req := testRequest(PurposeAnalyze, DataInternal, 1000, 100)
+	req.ModelEgress = domain.ModelEgressRemoteRedactedOnly
+	req.Escalation = EscalationStalled
+	resp, err := r.Route(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.Provider != "local" {
-		t.Fatalf("CODE provider = %s, want local", resp.Provider)
+		t.Fatalf("unredacted provider = %s, want local", resp.Provider)
+	}
+
+	req.Redacted = true
+	resp, err = r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Provider != "remote" {
+		t.Fatalf("redacted provider = %s, want remote", resp.Provider)
+	}
+
+	req.DataClass = DataSensitive
+	resp, err = r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Provider != "local" {
+		t.Fatalf("redacted SENSITIVE provider = %s, want local", resp.Provider)
+	}
+}
+
+func TestModelEgressCandidates(t *testing.T) {
+	remote := testProvider("remote", false, 9, 16000, 1, "remote")
+	local := testProvider("local", true, 1, 8000, 1, "local")
+	r, _ := newTestRouter(t, remote, local)
+
+	cases := []struct {
+		name   string
+		policy domain.ModelEgressPolicy
+		class  DataClass
+		redact bool
+		want   []string
+	}{
+		{"unknown defaults local", domain.ModelEgressUnknown, DataPublic, false, []string{"local"}},
+		{"empty defaults local", "", DataPublic, false, []string{"local"}},
+		{"local only", domain.ModelEgressLocalOnly, DataPublic, false, []string{"local"}},
+		{"redacted only without flag", domain.ModelEgressRemoteRedactedOnly, DataPublic, false, []string{"local"}},
+		{"redacted only with flag", domain.ModelEgressRemoteRedactedOnly, DataPublic, true, []string{"local", "remote"}},
+		{"redacted only sensitive", domain.ModelEgressRemoteRedactedOnly, DataSensitive, true, []string{"local"}},
+		{"remote allowed", domain.ModelEgressRemoteAllowed, DataInternal, false, []string{"local", "remote"}},
+		{"remote allowed sensitive", domain.ModelEgressRemoteAllowed, DataSensitive, false, []string{"local"}},
+	}
+	for _, tc := range cases {
+		req := testRequest(PurposeAnalyze, tc.class, 1000, 100)
+		req.ModelEgress = tc.policy
+		req.Redacted = tc.redact
+		var got []string
+		for _, c := range r.Candidates(req) {
+			got = append(got, c.Name)
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("%s: candidates = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -222,6 +346,7 @@ func TestProvenanceRaisesDataClass(t *testing.T) {
 	local := testProvider("local", true, 1, 100, 1, "local")
 	r, _ := newTestRouter(t, remote, local)
 	req := testRequest(PurposeAnalyze, DataPublic, 10, 0)
+	req.ModelEgress = domain.ModelEgressRemoteAllowed
 	req.Provenance = []DataClass{DataSensitive}
 	resp, err := r.Route(context.Background(), req)
 	if err != nil {
@@ -251,6 +376,57 @@ func TestLoopbackEndpointIsLocal(t *testing.T) {
 	}
 	if resp.Provider != "loopback" {
 		t.Fatalf("loopback provider was not treated as local: %s", resp.Provider)
+	}
+}
+
+func TestStableCallID(t *testing.T) {
+	req := testRequest(PurposeAnalyze, DataInternal, 100, 0)
+	req.TaskID = "task/p1/run-1"
+	req.StepID = "step-2"
+	prompt := PromptHash(req)
+
+	id := StableCallID(req.TaskID, req.StepID, req.Purpose, prompt)
+	if id == "" || !strings.HasPrefix(id, "call/stable/") {
+		t.Fatalf("id = %q", id)
+	}
+	if again := StableCallID(req.TaskID, req.StepID, req.Purpose, prompt); again != id {
+		t.Fatalf("stable id changed: %s != %s", again, id)
+	}
+	for _, changed := range []string{
+		StableCallID("task/p1/run-2", req.StepID, req.Purpose, prompt),
+		StableCallID(req.TaskID, "step-3", req.Purpose, prompt),
+		StableCallID(req.TaskID, req.StepID, PurposeCode, prompt),
+		StableCallID(req.TaskID, req.StepID, req.Purpose, "other-hash"),
+	} {
+		if changed == id {
+			t.Fatalf("StableCallID did not vary with its inputs")
+		}
+	}
+}
+
+func TestWorkerModeRequiresStableCallID(t *testing.T) {
+	p := testProvider("p", true, 1, 100, 0, "ok")
+	r, err := New(Options{
+		Providers: []Provider{p}, RequireStableCallID: true,
+		Now: func() time.Time { return testNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest(PurposeCode, DataPublic, 10, 0)
+	if _, err := r.Route(context.Background(), req); !errors.Is(err, ErrStableCallIDRequired) {
+		t.Fatalf("err = %v, want ErrStableCallIDRequired", err)
+	}
+	if p.Calls != 0 {
+		t.Fatalf("provider called %d times without a stable call ID", p.Calls)
+	}
+	req.StepID = "step-1"
+	req.CallID = StableCallID(req.TaskID, req.StepID, req.Purpose, PromptHash(req))
+	if _, err := r.Route(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if p.Calls != 1 {
+		t.Fatalf("provider called %d times, want 1", p.Calls)
 	}
 }
 
@@ -350,8 +526,8 @@ type failingCompleteStore struct {
 	failStatus CallStatus
 }
 
-func (s *failingCompleteStore) Complete(ctx context.Context, id string, rec CallRecord) error {
-	if rec.Status == s.failStatus {
+func (s *failingCompleteStore) Complete(ctx context.Context, id string, rec ModelCall) error {
+	if rec.FinalStatus == s.failStatus {
 		return errors.New("call store unavailable")
 	}
 	return s.MemoryCallStore.Complete(ctx, id, rec)
@@ -366,7 +542,7 @@ func callStatus(t *testing.T, store CallStore, id string) CallStatus {
 	if !ok {
 		t.Fatalf("call %s not found", id)
 	}
-	return rec.Status
+	return rec.FinalStatus
 }
 
 func TestCallStatusSuccessIsCompleted(t *testing.T) {
@@ -507,10 +683,101 @@ func TestCallStatusCompleteWriteFailureSurfacesWithResponse(t *testing.T) {
 	}
 }
 
+func TestAmbiguousThenSuccessSplitsLogicalCallAndAttempts(t *testing.T) {
+	store := NewMemoryCallStore()
+	ambiguous := testProvider("a-ambiguous", true, 1, 1000, 1_000_000, "a")
+	ambiguous.Err = errors.New("read timeout after send")
+	good := testProvider("b-good", true, 2, 1000, 1_000_000, "ok")
+	r, err := New(Options{
+		Providers: []Provider{ambiguous, good}, CallStore: store,
+		Now: func() time.Time { return testNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest(PurposeAnalyze, DataInternal, 100, 0)
+	req.CallID = "call-ambiguous-then-ok"
+	resp, err := r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Provider != "b-good" || resp.Content != "ok" {
+		t.Fatalf("resp = %+v", resp)
+	}
+
+	call, found, err := store.Get(context.Background(), req.CallID)
+	if err != nil || !found {
+		t.Fatalf("logical call found=%v err=%v", found, err)
+	}
+	if call.FinalStatus != CallCompleted {
+		t.Fatalf("final status = %q, want COMPLETED", call.FinalStatus)
+	}
+	if !call.HasAmbiguousAttempt {
+		t.Fatal("logical call did not flag the earlier ambiguous attempt")
+	}
+	wantCost := EstimateCost(ambiguous.Info(), req).Amount + ActualCost(good.Info(), resp.Usage).Amount
+	if call.TotalCost.Amount != wantCost {
+		t.Fatalf("total cost = %d, want %d (ambiguous estimate + completed actual)", call.TotalCost.Amount, wantCost)
+	}
+
+	attempts := store.Attempts(req.CallID)
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(attempts))
+	}
+	if attempts[0].Status != CallAmbiguous || attempts[0].ActualCost.Amount != 0 ||
+		attempts[0].EstimatedCost.Amount != EstimateCost(ambiguous.Info(), req).Amount {
+		t.Fatalf("first attempt = %+v", attempts[0])
+	}
+	if attempts[1].Status != CallCompleted || attempts[1].ActualCost.Amount != ActualCost(good.Info(), resp.Usage).Amount {
+		t.Fatalf("second attempt = %+v", attempts[1])
+	}
+	if attempts[0].AttemptID == attempts[1].AttemptID {
+		t.Fatal("attempt IDs must be unique")
+	}
+	if got := len(r.CallLog().List()); got != 2 {
+		t.Fatalf("call log = %d, want 2", got)
+	}
+}
+
+func TestFailedBeforeSendAttemptCostsNothing(t *testing.T) {
+	store := NewMemoryCallStore()
+	notSent := testProvider("a-not-sent", true, 1, 1000, 1_000_000, "a")
+	notSent.Err = fmt.Errorf("dial failed: %w", domain.ErrNotSent)
+	good := testProvider("b-good", true, 2, 1000, 1_000_000, "ok")
+	r, err := New(Options{
+		Providers: []Provider{notSent, good}, CallStore: store,
+		Now: func() time.Time { return testNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest(PurposeAnalyze, DataInternal, 100, 0)
+	req.CallID = "call-not-sent-then-ok"
+	resp, err := r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, _, err := store.Get(context.Background(), req.CallID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.HasAmbiguousAttempt {
+		t.Fatal("FAILED_BEFORE_SEND attempt must not mark the call ambiguous")
+	}
+	want := ActualCost(good.Info(), resp.Usage).Amount
+	if call.TotalCost.Amount != want {
+		t.Fatalf("total cost = %d, want only the completed actual cost %d", call.TotalCost.Amount, want)
+	}
+	attempts := store.Attempts(req.CallID)
+	if len(attempts) != 2 || attempts[0].Status != CallFailedBeforeSend || attempts[0].ActualCost.Amount != 0 {
+		t.Fatalf("attempts = %+v", attempts)
+	}
+}
+
 func TestMemoryCallStoreReclaimOnlyFailedBeforeSend(t *testing.T) {
 	store := NewMemoryCallStore()
 	ctx := context.Background()
-	if _, err := store.Reserve(ctx, "a", CallRecord{ID: "a", Status: CallStarted}); err != nil {
+	if _, err := store.Reserve(ctx, "a", ModelCall{ID: "a", FinalStatus: CallStarted}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Reclaim(ctx, "a"); err == nil {
@@ -519,7 +786,7 @@ func TestMemoryCallStoreReclaimOnlyFailedBeforeSend(t *testing.T) {
 	if _, ok, _ := store.Get(ctx, "a"); !ok {
 		t.Fatal("STARTED call was deleted by a refused reclaim")
 	}
-	if _, err := store.Reserve(ctx, "b", CallRecord{ID: "b", Status: CallFailedBeforeSend}); err != nil {
+	if _, err := store.Reserve(ctx, "b", ModelCall{ID: "b", FinalStatus: CallFailedBeforeSend}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Reclaim(ctx, "b"); err != nil {

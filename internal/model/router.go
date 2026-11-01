@@ -47,47 +47,65 @@ func (s CallStatus) Valid() bool {
 	}
 }
 
-// CallRecord is one model invocation. It stores hashes, never prompt or
-// response content.
-type CallRecord struct {
-	ID           string
-	TaskID       domain.TaskID
-	Purpose      Purpose
-	DataClass    DataClass
-	Provider     string
-	Model        string
-	PromptHash   string
-	ResponseHash string
-	Usage        Usage
-	Cost         domain.Money
-	Status       CallStatus
-	StartedAt    time.Time
-	EndedAt      time.Time
-	Error        string
+// ModelCall is the logical call. One logical call may span several provider
+// attempts (fallback, ambiguous retry after reconciliation, and so on). The
+// logical record carries the final outcome and the total cost, including
+// estimates for ambiguous attempts that may already have been charged.
+type ModelCall struct {
+	ID                  string
+	TaskID              domain.TaskID
+	StepID              string
+	Purpose             Purpose
+	DataClass           DataClass
+	FinalStatus         CallStatus
+	TotalCost           domain.Money
+	HasAmbiguousAttempt bool
+	StartedAt           time.Time
+	EndedAt             time.Time
+	Error               string
+}
+
+// ModelCallAttempt is one provider invocation. It stores hashes, never prompt
+// or response content. Status is the attempt outcome: COMPLETED, AMBIGUOUS or
+// FAILED_BEFORE_SEND.
+type ModelCallAttempt struct {
+	AttemptID     string
+	CallID        string
+	Provider      string
+	Model         string
+	Status        CallStatus
+	EstimatedCost domain.Money
+	ActualCost    domain.Money
+	Usage         Usage
+	PromptHash    string
+	ResponseHash  string
+	StartedAt     time.Time
+	EndedAt       time.Time
+	Error         string
 }
 
 type CallLog interface {
-	Add(CallRecord)
-	List() []CallRecord
+	Add(ModelCallAttempt)
+	List() []ModelCallAttempt
 }
 
 type MemoryCallLog struct {
 	mu      sync.Mutex
-	records []CallRecord
+	records []ModelCallAttempt
 }
 
 func NewMemoryCallLog() *MemoryCallLog { return &MemoryCallLog{} }
 
-func (l *MemoryCallLog) Add(r CallRecord) {
+func (l *MemoryCallLog) Add(r ModelCallAttempt) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.records = append(l.records, r)
 }
 
-func (l *MemoryCallLog) List() []CallRecord {
+func (l *MemoryCallLog) List() []ModelCallAttempt {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	out := make([]CallRecord, len(l.records))
+	out := make([]ModelCallAttempt, len(l.records))
 	copy(out, l.records)
 	return out
 }
@@ -96,29 +114,38 @@ type Auditor interface {
 	Append(ctx context.Context, e audit.Event) (int64, error)
 }
 
-// CallStore durably reserves a logical call before a provider is invoked and
-// records its outcome. A retry with the same CallID sees the reservation and
-// must not pay for a second model invocation.
+// CallStore durably reserves a logical call before a provider is invoked,
+// records its outcome, and appends one attempt row per provider invocation. A
+// retry with the same CallID sees the reservation and must not pay for a second
+// model invocation.
 type CallStore interface {
-	Reserve(ctx context.Context, id string, rec CallRecord) (bool, error)
-	Complete(ctx context.Context, id string, rec CallRecord) error
-	Get(ctx context.Context, id string) (CallRecord, bool, error)
+	Reserve(ctx context.Context, id string, rec ModelCall) (bool, error)
+	Complete(ctx context.Context, id string, rec ModelCall) error
+	Get(ctx context.Context, id string) (ModelCall, bool, error)
 	// Reclaim deletes a FAILED_BEFORE_SEND reservation so the same CallID can
 	// be reserved and retried. It must refuse any other status: those calls may
 	// already have reached (and been charged by) the provider.
 	Reclaim(ctx context.Context, id string) error
+	// RecordAttempt appends one provider attempt to the durable ledger. It is
+	// separate from Complete so the attempts survive even when the logical
+	// call's final status is written later.
+	RecordAttempt(ctx context.Context, attempt ModelCallAttempt) error
 }
 
 type MemoryCallStore struct {
-	mu      sync.Mutex
-	records map[string]CallRecord
+	mu       sync.Mutex
+	records  map[string]ModelCall
+	attempts map[string][]ModelCallAttempt
 }
 
 func NewMemoryCallStore() *MemoryCallStore {
-	return &MemoryCallStore{records: make(map[string]CallRecord)}
+	return &MemoryCallStore{
+		records:  make(map[string]ModelCall),
+		attempts: make(map[string][]ModelCallAttempt),
+	}
 }
 
-func (s *MemoryCallStore) Reserve(ctx context.Context, id string, rec CallRecord) (bool, error) {
+func (s *MemoryCallStore) Reserve(ctx context.Context, id string, rec ModelCall) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.records[id]; ok {
@@ -128,14 +155,14 @@ func (s *MemoryCallStore) Reserve(ctx context.Context, id string, rec CallRecord
 	return true, nil
 }
 
-func (s *MemoryCallStore) Complete(ctx context.Context, id string, rec CallRecord) error {
+func (s *MemoryCallStore) Complete(ctx context.Context, id string, rec ModelCall) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records[id] = rec
 	return nil
 }
 
-func (s *MemoryCallStore) Get(ctx context.Context, id string) (CallRecord, bool, error) {
+func (s *MemoryCallStore) Get(ctx context.Context, id string) (ModelCall, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.records[id]
@@ -149,11 +176,29 @@ func (s *MemoryCallStore) Reclaim(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("model: reclaim call %s: not found", id)
 	}
-	if rec.Status != CallFailedBeforeSend {
-		return fmt.Errorf("model: reclaim call %s: status %q is not FAILED_BEFORE_SEND", id, rec.Status)
+	if rec.FinalStatus != CallFailedBeforeSend {
+		return fmt.Errorf("model: reclaim call %s: status %q is not FAILED_BEFORE_SEND", id, rec.FinalStatus)
 	}
 	delete(s.records, id)
+	delete(s.attempts, id)
 	return nil
+}
+
+func (s *MemoryCallStore) RecordAttempt(ctx context.Context, attempt ModelCallAttempt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts[attempt.CallID] = append(s.attempts[attempt.CallID], attempt)
+	return nil
+}
+
+// Attempts returns a copy of the attempts recorded for a logical call. It is a
+// test/inspection helper; the durable interface is RecordAttempt.
+func (s *MemoryCallStore) Attempts(callID string) []ModelCallAttempt {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ModelCallAttempt, len(s.attempts[callID]))
+	copy(out, s.attempts[callID])
+	return out
 }
 
 type Options struct {
@@ -162,14 +207,20 @@ type Options struct {
 	CallLog   CallLog
 	CallStore CallStore
 	Now       func() time.Time
+	// RequireStableCallID rejects a request without an explicit CallID. Worker
+	// mode sets this so a crashed/retried worker resumes the same logical call
+	// instead of paying for a new one. Interactive/adhoc callers leave it off
+	// and keep auto-generated IDs.
+	RequireStableCallID bool
 }
 
 type Router struct {
-	providers []Provider
-	auditor   Auditor
-	log       CallLog
-	calls     CallStore
-	now       func() time.Time
+	providers           []Provider
+	auditor             Auditor
+	log                 CallLog
+	calls               CallStore
+	now                 func() time.Time
+	requireStableCallID bool
 }
 
 func New(opts Options) (*Router, error) {
@@ -206,7 +257,10 @@ func New(opts Options) (*Router, error) {
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Router{providers: opts.Providers, auditor: opts.Auditor, log: opts.CallLog, calls: opts.CallStore, now: opts.Now}, nil
+	return &Router{
+		providers: opts.Providers, auditor: opts.Auditor, log: opts.CallLog,
+		calls: opts.CallStore, now: opts.Now, requireStableCallID: opts.RequireStableCallID,
+	}, nil
 }
 
 func (r *Router) CallLog() CallLog { return r.log }
@@ -233,7 +287,11 @@ func (r *Router) Candidates(req ModelRequest) []ProviderInfo {
 
 func eligible(req ModelRequest, info ProviderInfo) bool {
 	class := req.EffectiveDataClass()
+	// SENSITIVE data never leaves the process, regardless of program policy.
 	if class == DataSensitive && !info.IsLocal() {
+		return false
+	}
+	if !egressAllowed(req, info, class) {
 		return false
 	}
 	if !info.SupportsDataClass(class) || !info.SupportsPurpose(req.Purpose) {
@@ -255,29 +313,48 @@ func eligible(req ModelRequest, info ProviderInfo) bool {
 	return true
 }
 
-// routeScore is lower-is-better. Planning/analysis prefers strong remote
-// models; code/embedding/report work prefers local models. Sensitive data has
-// already excluded remote providers.
-func routeScore(req ModelRequest, info ProviderInfo) int {
-	switch req.Purpose {
-	case PurposePlan, PurposeAnalyze:
+// egressAllowed applies the program-level model egress ceiling. The zero value
+// and UNKNOWN are LOCAL_ONLY. REMOTE_REDACTED_ONLY permits remote providers
+// only when the caller attests redaction and the effective data class is not
+// SENSITIVE; local providers are always allowed.
+func egressAllowed(req ModelRequest, info ProviderInfo, class DataClass) bool {
+	switch req.ModelEgress.Effective() {
+	case domain.ModelEgressLocalOnly:
+		return info.IsLocal()
+	case domain.ModelEgressRemoteRedactedOnly:
 		if info.IsLocal() {
-			return 10
+			return true
 		}
-		return 10 - info.Strength
-	case PurposeCode, PurposeEmbed:
-		if info.IsLocal() {
-			return 0
-		}
-		return 10
-	case PurposeReport:
-		if info.IsLocal() {
-			return 0
-		}
-		return 5
+		return req.Redacted && class != DataSensitive
+	case domain.ModelEgressRemoteAllowed:
+		return true
 	default:
-		return 5
+		// Invalid values fail closed to LOCAL_ONLY.
+		return info.IsLocal()
 	}
+}
+
+// routeScore is lower-is-better and deterministic. The tiers are:
+//
+//	no escalation: local small -> stronger local -> remote strong
+//	escalation:    remote strong -> stronger local -> smaller local
+//
+// Only an explicit EscalationReason may move a remote provider ahead of local
+// ones, and the egress policy has already removed forbidden candidates.
+func routeScore(req ModelRequest, info ProviderInfo) int {
+	const tier = 1_000_000
+	local := info.IsLocal()
+	remoteRank := tier - info.Strength // strongest remote first
+	if req.Escalation != EscalationNone && req.Escalation.Valid() {
+		if !local {
+			return remoteRank
+		}
+		return tier + tier - info.Strength // stronger local first, below remote
+	}
+	if local {
+		return info.Strength // small local first
+	}
+	return remoteRank
 }
 
 // Route selects a provider, enforces data class, output tokens and budget,
@@ -295,6 +372,10 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 	if err := req.Validate(); err != nil {
 		return ModelResponse{}, err
 	}
+	if r.requireStableCallID && strings.TrimSpace(req.CallID) == "" {
+		return ModelResponse{}, fmt.Errorf("%w: set ModelRequest.CallID = StableCallID(task, step, purpose, promptHash)",
+			ErrStableCallIDRequired)
+	}
 	candidates := r.Candidates(req)
 	if len(candidates) == 0 {
 		return ModelResponse{}, fmt.Errorf("%w: data_class=%s purpose=%s max_tokens=%d",
@@ -307,17 +388,18 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 	if callID == "" {
 		callID = callIDFor(req, r.now())
 	}
-	if err := r.reserveCall(ctx, callID, req); err != nil {
+	callStarted := r.now()
+	if err := r.reserveCall(ctx, callID, req, callStarted); err != nil {
 		return ModelResponse{}, err
 	}
 
-	recordFor := func(status CallStatus) CallRecord {
-		return CallRecord{
-			ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
-			DataClass: req.EffectiveDataClass(), Status: status,
+	base := func() ModelCall {
+		return ModelCall{
+			ID: callID, TaskID: req.TaskID, StepID: req.StepID, Purpose: req.Purpose,
+			DataClass: req.EffectiveDataClass(), StartedAt: callStarted,
 		}
 	}
-	finish := func(rec CallRecord) error {
+	finish := func(rec ModelCall) error {
 		if r.calls == nil {
 			return nil
 		}
@@ -336,17 +418,23 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 	budgeted := 0
 	var spent int64
 	var lastErr error
-	var lastAttempt CallRecord
 	sawAmbiguous := false
-	// terminal keeps the last provider attempt's details (provider, model,
-	// timing, hashes) while applying the final conservative status.
-	terminal := func(status CallStatus, errKind string) CallRecord {
-		rec := lastAttempt
-		if rec.ID == "" {
-			rec = recordFor(status)
+	// totalCost is the logical call cost: actual cost for completed attempts
+	// plus the estimate for ambiguous attempts that may already have been
+	// charged. FAILED_BEFORE_SEND attempts contributed nothing.
+	totalCost := domain.Money{Currency: "CNY"}
+	addCost := func(m domain.Money) {
+		if totalCost.Currency == "" {
+			totalCost.Currency = m.Currency
 		}
-		rec.ID = callID
-		rec.Status = status
+		totalCost.Amount += m.Amount
+	}
+	terminal := func(status CallStatus, errKind string) ModelCall {
+		rec := base()
+		rec.FinalStatus = status
+		rec.TotalCost = totalCost
+		rec.HasAmbiguousAttempt = sawAmbiguous
+		rec.EndedAt = r.now()
 		rec.Error = errKind
 		return rec
 	}
@@ -377,14 +465,13 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		}
 
 		started := r.now()
-		startedRec := recordFor(CallStarted)
-		startedRec.Provider = info.Name
-		startedRec.Model = info.Model
-		startedRec.PromptHash = PromptHash(req)
-		startedRec.StartedAt = started
 		// Persist STARTED before the provider sees the request. If this write
 		// fails the provider is never invoked, so a crash cannot leave a call
 		// that was paid for but recorded as merely RESERVED.
+		startedRec := base()
+		startedRec.FinalStatus = CallStarted
+		startedRec.TotalCost = totalCost
+		startedRec.HasAmbiguousAttempt = sawAmbiguous
 		if ferr := finish(startedRec); ferr != nil {
 			return ModelResponse{}, fmt.Errorf("model: persist started call: %w", ferr)
 		}
@@ -401,21 +488,20 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 				status = CallFailedBeforeSend
 			} else {
 				sawAmbiguous = true
+				addCost(estimate)
 			}
-			failed := recordFor(status)
-			failed.Provider = info.Name
-			failed.Model = info.Model
-			failed.PromptHash = PromptHash(req)
-			failed.StartedAt = started
-			failed.EndedAt = ended
-			failed.Error = "PROVIDER_ERROR"
-			lastAttempt = failed
-			if rerr := r.record(ctx, req, info, started, ended, estimate, resp, "PROVIDER_ERROR"); rerr != nil {
-				failed.Error = "AUDIT_FAILED"
+			attempt := ModelCallAttempt{
+				AttemptID: attemptIDFor(callID, started), CallID: callID,
+				Provider: info.Name, Model: info.Model, Status: status,
+				EstimatedCost: estimate, PromptHash: PromptHash(req),
+				StartedAt: started, EndedAt: ended, Error: "PROVIDER_ERROR",
+			}
+			if rerr := r.recordAttempt(ctx, req, attempt); rerr != nil {
+				rec := terminal(status, "AUDIT_FAILED")
 				return ModelResponse{}, joinFinish(
-					errors.Join(err, fmt.Errorf("model: audit failed call: %w", rerr)), finish(failed))
+					errors.Join(err, fmt.Errorf("model: audit failed call: %w", rerr)), finish(rec))
 			}
-			if ferr := finish(failed); ferr != nil {
+			if ferr := finish(terminal(status, "PROVIDER_ERROR")); ferr != nil {
 				return ModelResponse{}, errors.Join(err,
 					fmt.Errorf("model: persist call status: %w", ferr))
 			}
@@ -423,24 +509,24 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		}
 		cost := ActualCost(info, resp.Usage)
 		spent += cost.Amount
+		addCost(cost)
+		attempt := ModelCallAttempt{
+			AttemptID: attemptIDFor(callID, started), CallID: callID,
+			Provider: info.Name, Model: info.Model, Status: CallCompleted,
+			EstimatedCost: estimate, ActualCost: cost, Usage: resp.Usage,
+			PromptHash: PromptHash(req), ResponseHash: ResponseHash(resp.Content),
+			StartedAt: started, EndedAt: ended,
+		}
 		if req.Budget.Amount > 0 && spent > req.Budget.Amount {
 			berr := fmt.Errorf("%w: accumulated cost %d exceeds budget %d",
 				ErrBudgetExceeded, spent, req.Budget.Amount)
-			rec := recordFor(CallCompleted)
-			rec.Provider = info.Name
-			rec.Model = info.Model
-			rec.PromptHash = PromptHash(req)
-			rec.ResponseHash = ResponseHash(resp.Content)
-			rec.Usage = resp.Usage
-			rec.Cost = cost
-			rec.StartedAt = started
-			rec.EndedAt = ended
-			rec.Error = "BUDGET_EXCEEDED"
-			if rerr := r.record(ctx, req, info, started, ended, cost, resp, "BUDGET_EXCEEDED"); rerr != nil {
-				rec.Error = "AUDIT_FAILED"
+			attempt.Error = "BUDGET_EXCEEDED"
+			if rerr := r.recordAttempt(ctx, req, attempt); rerr != nil {
+				rec := terminal(CallCompleted, "AUDIT_FAILED")
 				return ModelResponse{}, joinFinish(
 					errors.Join(berr, fmt.Errorf("model: audit call: %w", rerr)), finish(rec))
 			}
+			rec := terminal(CallCompleted, "BUDGET_EXCEEDED")
 			if ferr := finish(rec); ferr != nil {
 				return ModelResponse{}, errors.Join(berr,
 					fmt.Errorf("model: persist call status: %w", ferr))
@@ -453,21 +539,13 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		}
 		resp.Cost = cost
 		resp.Latency = ended.Sub(started)
-		rec := recordFor(CallCompleted)
-		rec.Provider = info.Name
-		rec.Model = info.Model
-		rec.PromptHash = PromptHash(req)
-		rec.ResponseHash = ResponseHash(resp.Content)
-		rec.Usage = resp.Usage
-		rec.Cost = cost
-		rec.StartedAt = started
-		rec.EndedAt = ended
-		if rerr := r.record(ctx, req, info, started, ended, cost, resp, ""); rerr != nil {
+		if rerr := r.recordAttempt(ctx, req, attempt); rerr != nil {
 			// The call happened and its content is still useful, but the audit
 			// trail is incomplete. Return both rather than pretending success.
-			rec.Error = "AUDIT_FAILED"
+			rec := terminal(CallCompleted, "AUDIT_FAILED")
 			return resp, joinFinish(fmt.Errorf("model: audit call: %w", rerr), finish(rec))
 		}
+		rec := terminal(CallCompleted, "")
 		// The provider call completed. If this write fails the content is still
 		// returned, but the caller is told the call receipt is incomplete; the
 		// error is never silently discarded.
@@ -494,8 +572,7 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		return ModelResponse{}, joinFinish(fmt.Errorf("model: all providers failed: %w", lastErr),
 			finish(terminal(status, "PROVIDER_ERROR")))
 	}
-	rec := recordFor(CallFailedBeforeSend)
-	rec.Error = "NO_PROVIDER"
+	rec := terminal(CallFailedBeforeSend, "NO_PROVIDER")
 	return ModelResponse{}, joinFinish(ErrNoProvider, finish(rec))
 }
 
@@ -504,15 +581,15 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 // because the provider proved it was never invoked. RESERVED, STARTED and
 // AMBIGUOUS are refused: the provider may have been charged, and only a human
 // can reconcile that.
-func (r *Router) reserveCall(ctx context.Context, callID string, req ModelRequest) error {
+func (r *Router) reserveCall(ctx context.Context, callID string, req ModelRequest, started time.Time) error {
 	if r.calls == nil {
 		return nil
 	}
 	reserve := func() (bool, error) {
-		return r.calls.Reserve(ctx, callID, CallRecord{
-			ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
-			DataClass: req.EffectiveDataClass(), Status: CallReserved,
-			PromptHash: PromptHash(req),
+		return r.calls.Reserve(ctx, callID, ModelCall{
+			ID: callID, TaskID: req.TaskID, StepID: req.StepID, Purpose: req.Purpose,
+			DataClass: req.EffectiveDataClass(), FinalStatus: CallReserved,
+			StartedAt: started,
 		})
 	}
 	reserved, err := reserve()
@@ -529,7 +606,7 @@ func (r *Router) reserveCall(ctx context.Context, callID string, req ModelReques
 	if !found {
 		return fmt.Errorf("%w: %s (reservation exists but record is missing)", ErrCallAmbiguous, callID)
 	}
-	switch existing.Status {
+	switch existing.FinalStatus {
 	case CallCompleted:
 		return fmt.Errorf("%w: %s", ErrDuplicateCall, callID)
 	case CallFailedBeforeSend:
@@ -545,7 +622,7 @@ func (r *Router) reserveCall(ctx context.Context, callID string, req ModelReques
 		}
 		return nil
 	default:
-		return fmt.Errorf("%w: %s (status %s)", ErrCallAmbiguous, callID, existing.Status)
+		return fmt.Errorf("%w: %s (status %s)", ErrCallAmbiguous, callID, existing.FinalStatus)
 	}
 }
 
@@ -558,51 +635,54 @@ func (r *Router) provider(name string) Provider {
 	return nil
 }
 
-func (r *Router) record(ctx context.Context, req ModelRequest, info ProviderInfo, started, ended time.Time, cost domain.Money, resp ModelResponse, errKind string) error {
-	rec := CallRecord{
-		ID:           callIDFor(req, started),
-		TaskID:       req.TaskID,
-		Purpose:      req.Purpose,
-		DataClass:    req.DataClass,
-		Provider:     info.Name,
-		Model:        info.Model,
-		PromptHash:   PromptHash(req),
-		ResponseHash: ResponseHash(resp.Content),
-		Usage:        resp.Usage,
-		Cost:         cost,
-		StartedAt:    started,
-		EndedAt:      ended,
-		Error:        errKind,
+// recordAttempt writes the attempt to the durable ledger, the in-memory log and
+// the audit trail. The ledger write happens first: an audit-only record would
+// lose the cost of an ambiguous attempt across a restart.
+func (r *Router) recordAttempt(ctx context.Context, req ModelRequest, attempt ModelCallAttempt) error {
+	// The audit trail must not be lost because the caller's context was
+	// cancelled after the provider responded.
+	ctx = context.WithoutCancel(ctx)
+	if r.calls != nil {
+		if err := r.calls.RecordAttempt(ctx, attempt); err != nil {
+			return fmt.Errorf("model: record attempt: %w", err)
+		}
 	}
-	r.log.Add(rec)
+	r.log.Add(attempt)
 	if r.auditor == nil {
 		return nil
 	}
 	payload, err := json.Marshal(struct {
-		TaskID       string       `json:"task_id,omitempty"`
-		Purpose      string       `json:"purpose"`
-		DataClass    string       `json:"data_class"`
-		Provider     string       `json:"provider"`
-		Model        string       `json:"model"`
-		PromptHash   string       `json:"prompt_hash"`
-		ResponseHash string       `json:"response_hash"`
-		Usage        Usage        `json:"usage"`
-		Cost         domain.Money `json:"cost"`
-		DurationMS   int64        `json:"duration_ms"`
-		Error        string       `json:"error,omitempty"`
+		AttemptID     string       `json:"attempt_id"`
+		CallID        string       `json:"call_id"`
+		StepID        string       `json:"step_id,omitempty"`
+		TaskID        string       `json:"task_id,omitempty"`
+		Purpose       string       `json:"purpose"`
+		DataClass     string       `json:"data_class"`
+		Provider      string       `json:"provider"`
+		Model         string       `json:"model"`
+		Status        string       `json:"status"`
+		EstimatedCost domain.Money `json:"estimated_cost"`
+		ActualCost    domain.Money `json:"actual_cost"`
+		PromptHash    string       `json:"prompt_hash"`
+		ResponseHash  string       `json:"response_hash"`
+		Usage         Usage        `json:"usage"`
+		DurationMS    int64        `json:"duration_ms"`
+		Error         string       `json:"error,omitempty"`
 	}{
-		TaskID: string(req.TaskID), Purpose: string(req.Purpose), DataClass: string(req.DataClass),
-		Provider: info.Name, Model: info.Model, PromptHash: rec.PromptHash,
-		ResponseHash: rec.ResponseHash, Usage: rec.Usage, Cost: rec.Cost,
-		DurationMS: ended.Sub(started).Milliseconds(), Error: errKind,
+		AttemptID: attempt.AttemptID, CallID: attempt.CallID, StepID: req.StepID,
+		TaskID: string(req.TaskID), Purpose: string(req.Purpose), DataClass: string(req.EffectiveDataClass()),
+		Provider: attempt.Provider, Model: attempt.Model, Status: string(attempt.Status),
+		EstimatedCost: attempt.EstimatedCost, ActualCost: attempt.ActualCost,
+		PromptHash: attempt.PromptHash, ResponseHash: attempt.ResponseHash, Usage: attempt.Usage,
+		DurationMS: attempt.EndedAt.Sub(attempt.StartedAt).Milliseconds(), Error: attempt.Error,
 	})
 	if err != nil {
 		return err
 	}
 	if _, err := r.auditor.Append(ctx, audit.Event{
 		Type: "model.call", EntityType: "task", EntityID: string(req.TaskID),
-		ActorKind: string(domain.ActorModel), ActorID: info.Name,
-		Payload: payload, RecordedAt: ended,
+		ActorKind: string(domain.ActorModel), ActorID: attempt.Provider,
+		Payload: payload, RecordedAt: attempt.EndedAt,
 	}); err != nil {
 		return fmt.Errorf("model: append audit: %w", err)
 	}
@@ -610,6 +690,7 @@ func (r *Router) record(ctx context.Context, req ModelRequest, info ProviderInfo
 }
 
 var callSeq atomic.Uint64
+var attemptSeq atomic.Uint64
 
 func callIDFor(req ModelRequest, at time.Time) string {
 	task := string(req.TaskID)
@@ -619,4 +700,8 @@ func callIDFor(req ModelRequest, at time.Time) string {
 	// The sequence keeps two auto-generated calls in the same clock tick from
 	// colliding. Explicit ModelRequest.CallID is still the idempotency key.
 	return fmt.Sprintf("call/%s/%s/%d", task, at.UTC().Format("20060102T150405.000000000"), callSeq.Add(1))
+}
+
+func attemptIDFor(callID string, at time.Time) string {
+	return fmt.Sprintf("attempt/%s/%s/%d", callID, at.UTC().Format("20060102T150405.000000000"), attemptSeq.Add(1))
 }

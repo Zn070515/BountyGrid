@@ -311,6 +311,34 @@ func TestLedgerRejectsNegativeAmount(t *testing.T) {
 	}
 }
 
+func TestProgramModelEgressPolicy(t *testing.T) {
+	p := validProgram()
+	if err := p.Validate(); err != nil {
+		t.Fatalf("zero-value egress policy should be valid: %v", err)
+	}
+	if got := p.ModelEgressPolicy.Effective(); got != ModelEgressLocalOnly {
+		t.Fatalf("zero-value effective policy = %q, want LOCAL_ONLY", got)
+	}
+	if got := ModelEgressUnknown.Effective(); got != ModelEgressLocalOnly {
+		t.Fatalf("UNKNOWN effective policy = %q, want LOCAL_ONLY", got)
+	}
+	if got := ModelEgressRemoteAllowed.Effective(); got != ModelEgressRemoteAllowed {
+		t.Fatalf("explicit policy changed: %q", got)
+	}
+	p.ModelEgressPolicy = ModelEgressPolicy("BOGUS")
+	if err := p.Validate(); err == nil {
+		t.Fatal("invalid model egress policy should be rejected")
+	}
+	for _, policy := range []ModelEgressPolicy{
+		ModelEgressLocalOnly, ModelEgressRemoteRedactedOnly, ModelEgressRemoteAllowed, ModelEgressUnknown,
+	} {
+		p.ModelEgressPolicy = policy
+		if err := p.Validate(); err != nil {
+			t.Fatalf("policy %q rejected: %v", policy, err)
+		}
+	}
+}
+
 func TestFactRequiresEvidence(t *testing.T) {
 	acc := AccountID("acc1")
 	f := ObservedFact{

@@ -14,20 +14,26 @@ import (
 )
 
 type modelOptions struct {
-	Purpose   string
-	DataClass string
-	MaxTokens int
-	Budget    int64
-	Task      string
+	Purpose     string
+	DataClass   string
+	MaxTokens   int
+	Budget      int64
+	Task        string
+	ModelEgress string
+	Redacted    bool
+	Escalation  string
 }
 
 type modelPlan struct {
-	Purpose    string        `json:"purpose"`
-	DataClass  string        `json:"data_class"`
-	MaxTokens  int           `json:"max_tokens"`
-	Budget     domain.Money  `json:"budget"`
-	Candidates []modelChoice `json:"candidates"`
-	Note       string        `json:"note,omitempty"`
+	Purpose     string        `json:"purpose"`
+	DataClass   string        `json:"data_class"`
+	ModelEgress string        `json:"model_egress"`
+	Redacted    bool          `json:"redacted"`
+	Escalation  string        `json:"escalation,omitempty"`
+	MaxTokens   int           `json:"max_tokens"`
+	Budget      domain.Money  `json:"budget"`
+	Candidates  []modelChoice `json:"candidates"`
+	Note        string        `json:"note,omitempty"`
 }
 
 type modelChoice struct {
@@ -48,6 +54,11 @@ func parseModelOptions(args []string) (modelOptions, error) {
 	fs.IntVar(&o.MaxTokens, "max-tokens", 2000, "output token ceiling")
 	fs.Int64Var(&o.Budget, "budget", 100, "per-call budget in fen (0 = unpriced)")
 	fs.StringVar(&o.Task, "task", "", "optional ResearchTask ID")
+	fs.StringVar(&o.ModelEgress, "model-egress", "UNKNOWN",
+		"program egress policy: LOCAL_ONLY|REMOTE_REDACTED_ONLY|REMOTE_ALLOWED|UNKNOWN")
+	fs.BoolVar(&o.Redacted, "redacted", false, "attest the input is redacted (needed for REMOTE_REDACTED_ONLY)")
+	fs.StringVar(&o.Escalation, "escalation", "",
+		"optional escalation: STALLED|LOW_CONFIDENCE|HIGH_VALUE_TASK|VERIFICATION_CONFLICT")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -77,11 +88,14 @@ func runModel(ctx context.Context, args []string) error {
 
 func buildModelPlan(opts modelOptions) (modelPlan, error) {
 	req := model.ModelRequest{
-		TaskID:    domain.TaskID(opts.Task),
-		Purpose:   model.Purpose(strings.ToUpper(strings.TrimSpace(opts.Purpose))),
-		DataClass: model.DataClass(strings.ToUpper(strings.TrimSpace(opts.DataClass))),
-		MaxTokens: opts.MaxTokens,
-		Budget:    domain.Money{Amount: opts.Budget, Currency: "CNY"},
+		TaskID:      domain.TaskID(opts.Task),
+		Purpose:     model.Purpose(strings.ToUpper(strings.TrimSpace(opts.Purpose))),
+		DataClass:   model.DataClass(strings.ToUpper(strings.TrimSpace(opts.DataClass))),
+		ModelEgress: domain.ModelEgressPolicy(strings.ToUpper(strings.TrimSpace(opts.ModelEgress))),
+		Redacted:    opts.Redacted,
+		Escalation:  model.EscalationReason(strings.ToUpper(strings.TrimSpace(opts.Escalation))),
+		MaxTokens:   opts.MaxTokens,
+		Budget:      domain.Money{Amount: opts.Budget, Currency: "CNY"},
 	}
 	if !req.Purpose.Valid() {
 		return modelPlan{}, fmt.Errorf("model: invalid purpose %q", opts.Purpose)
@@ -89,13 +103,21 @@ func buildModelPlan(opts modelOptions) (modelPlan, error) {
 	if !req.DataClass.Valid() {
 		return modelPlan{}, fmt.Errorf("model: invalid data class %q", opts.DataClass)
 	}
+	if !req.ModelEgress.Valid() {
+		return modelPlan{}, fmt.Errorf("model: invalid model egress policy %q", opts.ModelEgress)
+	}
+	if !req.Escalation.Valid() {
+		return modelPlan{}, fmt.Errorf("model: invalid escalation reason %q", opts.Escalation)
+	}
 	r, err := model.New(model.Options{Providers: demoProviders()})
 	if err != nil {
 		return modelPlan{}, err
 	}
 	out := modelPlan{
 		Purpose: string(req.Purpose), DataClass: string(req.DataClass),
-		MaxTokens: req.MaxTokens, Budget: req.Budget,
+		ModelEgress: string(req.ModelEgress.Effective()), Redacted: req.Redacted,
+		Escalation: string(req.Escalation),
+		MaxTokens:  req.MaxTokens, Budget: req.Budget,
 	}
 	for _, info := range r.Candidates(req) {
 		estimate := model.EstimateCost(info, req)
