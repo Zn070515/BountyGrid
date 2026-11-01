@@ -559,6 +559,33 @@ func (u Unknown) Validate() error {
 	return nil
 }
 
+// AttemptStatus is the lifecycle of one executed step. STARTED is written
+// before the tool runs; if the process dies before it is finalized, the next
+// run treats it as INTERRUPTED because the side effect may already have
+// happened.
+type AttemptStatus string
+
+const (
+	AttemptStarted     AttemptStatus = "STARTED"
+	AttemptCompleted   AttemptStatus = "COMPLETED"
+	AttemptFailed      AttemptStatus = "FAILED"
+	AttemptInterrupted AttemptStatus = "INTERRUPTED"
+)
+
+func (s AttemptStatus) Valid() bool {
+	switch s {
+	case AttemptStarted, AttemptCompleted, AttemptFailed, AttemptInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Terminal reports whether the attempt no longer represents in-flight work.
+func (s AttemptStatus) Terminal() bool {
+	return s == AttemptCompleted || s == AttemptFailed || s == AttemptInterrupted
+}
+
 // Attempt is one executed (or refused) proposal. The failure signature is kept
 // instead of raw arguments so retries and reporting cannot echo secrets.
 type Attempt struct {
@@ -571,8 +598,10 @@ type Attempt struct {
 	ObservationID string
 	Evidence      []domain.EvidenceID
 	Failure       *FailureSignature
-	StartedAt     time.Time
-	FinishedAt    time.Time
+	// Status is empty for legacy records, which are treated as COMPLETED.
+	Status     AttemptStatus
+	StartedAt  time.Time
+	FinishedAt time.Time
 }
 
 func (a Attempt) Validate() error {
@@ -585,11 +614,24 @@ func (a Attempt) Validate() error {
 	if strings.TrimSpace(a.ToolName) == "" {
 		return fmt.Errorf("%w: attempt %s tool is empty", ErrInvalidClaim, a.ID)
 	}
-	if a.StartedAt.IsZero() || a.FinishedAt.IsZero() {
-		return fmt.Errorf("%w: attempt %s timestamps are zero", ErrInvalidClaim, a.ID)
+	if a.Status != "" && !a.Status.Valid() {
+		return fmt.Errorf("%w: attempt %s has invalid status %q", ErrInvalidClaim, a.ID, a.Status)
 	}
-	if a.FinishedAt.Before(a.StartedAt) {
-		return fmt.Errorf("%w: attempt %s finished_at before started_at", ErrInvalidClaim, a.ID)
+	if a.StartedAt.IsZero() {
+		return fmt.Errorf("%w: attempt %s started_at is zero", ErrInvalidClaim, a.ID)
+	}
+	if a.Status == AttemptStarted {
+		// In-flight attempts may have no finish time yet.
+		if !a.FinishedAt.IsZero() && a.FinishedAt.Before(a.StartedAt) {
+			return fmt.Errorf("%w: attempt %s finished_at before started_at", ErrInvalidClaim, a.ID)
+		}
+	} else {
+		if a.FinishedAt.IsZero() {
+			return fmt.Errorf("%w: attempt %s finished_at is zero", ErrInvalidClaim, a.ID)
+		}
+		if a.FinishedAt.Before(a.StartedAt) {
+			return fmt.Errorf("%w: attempt %s finished_at before started_at", ErrInvalidClaim, a.ID)
+		}
 	}
 	if err := validateEvidence(a.Evidence); err != nil {
 		return err
@@ -879,7 +921,9 @@ func (s *ResearchSession) AddUnknown(u Unknown) error {
 	return nil
 }
 
-// AddAttempt appends an executed/refused proposal record.
+// AddAttempt appends an executed/refused proposal record. A zero Status is a
+// legacy record and is treated as COMPLETED; the loop writes STARTED
+// explicitly before invoking a tool.
 func (s *ResearchSession) AddAttempt(a Attempt) error {
 	if s == nil {
 		return fmt.Errorf("%w: session is nil", ErrInvalidClaim)
@@ -887,12 +931,93 @@ func (s *ResearchSession) AddAttempt(a Attempt) error {
 	if strings.TrimSpace(a.ID) == "" {
 		a.ID = StableID("attempt", fmt.Sprint(a.Step), a.ToolName, a.ArgsHash, utc(a.StartedAt).Format(time.RFC3339Nano))
 	}
+	if a.Status == "" {
+		a.Status = AttemptCompleted
+	}
 	if err := a.Validate(); err != nil {
 		return err
 	}
 	s.Attempts = append(s.Attempts, a)
-	s.touch(a.FinishedAt)
+	if a.Status == AttemptStarted {
+		s.touch(a.StartedAt)
+	} else {
+		s.touch(a.FinishedAt)
+	}
 	return nil
+}
+
+// ReplaceAttempt finalizes a previously appended STARTED attempt. The identity
+// fields (ID, Step, ToolName, Action, ArgsHash, StartedAt) cannot be rewritten;
+// only the outcome may be filled in.
+func (s *ResearchSession) ReplaceAttempt(a Attempt) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrInvalidClaim)
+	}
+	if a.Status == "" {
+		a.Status = AttemptCompleted
+	}
+	for i := range s.Attempts {
+		cur := s.Attempts[i]
+		if cur.ID != a.ID {
+			continue
+		}
+		if cur.Step != a.Step || cur.ToolName != a.ToolName || cur.Action != a.Action || cur.ArgsHash != a.ArgsHash {
+			return fmt.Errorf("%w: attempt %s identity cannot change", ErrInvalidClaim, a.ID)
+		}
+		if a.StartedAt.IsZero() {
+			a.StartedAt = cur.StartedAt
+		}
+		if err := a.Validate(); err != nil {
+			return err
+		}
+		s.Attempts[i] = a
+		s.touch(a.FinishedAt)
+		return nil
+	}
+	return fmt.Errorf("%w: attempt %s not found", ErrInvalidClaim, a.ID)
+}
+
+// HasInterruptedAttempt reports whether a previous run started the same
+// tool+argument combination without recording its outcome. Replaying it could
+// repeat a side effect, so the loop refuses to re-execute it automatically.
+func (s *ResearchSession) HasInterruptedAttempt(tool, argsHash string) bool {
+	if s == nil {
+		return false
+	}
+	for _, a := range s.Attempts {
+		if a.Status == AttemptInterrupted && a.ToolName == tool && a.ArgsHash == argsHash {
+			return true
+		}
+	}
+	return false
+}
+
+// interruptInFlight marks every STARTED attempt as INTERRUPTED. It returns true
+// when something changed, so a caller can persist the transition.
+func (s *ResearchSession) interruptInFlight(at time.Time) bool {
+	if s == nil {
+		return false
+	}
+	at = utc(at)
+	changed := false
+	for i := range s.Attempts {
+		if s.Attempts[i].Status != AttemptStarted {
+			continue
+		}
+		a := s.Attempts[i]
+		a.Status = AttemptInterrupted
+		if a.FinishedAt.IsZero() {
+			if at.IsZero() {
+				a.FinishedAt = a.StartedAt
+			} else {
+				a.FinishedAt = at
+			}
+		}
+		s.Attempts[i] = a
+		s.touch(a.FinishedAt)
+		changed = true
+	}
+	return changed
 }
 
 // AddCandidateFinding appends a candidate. It remains a candidate until the
@@ -928,6 +1053,9 @@ func (s *ResearchSession) Resume(at time.Time) error {
 	default:
 		return fmt.Errorf("%w: state is %s", ErrInvalidResume, s.State)
 	}
+	// A new run cannot still have an execution in flight. Mark it interrupted
+	// so the outcome is treated as unknown and the same call is not replayed.
+	s.interruptInFlight(at)
 	s.State = StateRunning
 	s.touch(at)
 	return s.Validate()

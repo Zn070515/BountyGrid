@@ -362,3 +362,21 @@ func TestUntrustedContentIsDataMarked(t *testing.T) {
 		t.Fatalf("closing marker was not neutralized:\n%s", ctx.Text)
 	}
 }
+
+func TestCompileMarksInterruptedAttempts(t *testing.T) {
+	s := contextSession(t)
+	s.Attempts = append(s.Attempts, Attempt{
+		ID: "attempt-crashed", Step: 3, ToolName: "web_fetch",
+		Action: domain.ActionReadScope, ArgsHash: "sha256:crashed",
+		Status: AttemptInterrupted, StartedAt: testNow, FinishedAt: testNow,
+	})
+	ctx, err := NewDefaultContextCompiler().Compile(t.Context(), s, contextAuthorization(), contextEvidence(),
+		ContextBudget{MaxChars: 4000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ctx.Text, "INTERRUPTED tool=web_fetch") ||
+		!strings.Contains(ctx.Text, "outcome_unknown do_not_repeat") {
+		t.Fatalf("interrupted attempt missing from context:\n%s", ctx.Text)
+	}
+}
