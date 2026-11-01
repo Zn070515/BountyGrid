@@ -410,7 +410,9 @@ func TestProxyConnectAllowTunnels(t *testing.T) {
 	echoAddr := startEchoServer(t)
 	policy := &staticNetworkPolicy{decision: Allow}
 	audit := &recordingNetworkAudit{}
-	_, proxySrv := newTestProxy(t, ProxyConfig{Policy: policy, Audit: audit, AllowLoopback: true})
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy: policy, Audit: audit, AllowLoopback: true, AllowOpaqueConnect: true,
+	})
 
 	conn, br, resp := dialConnect(t, proxySrv.Listener.Addr().String(), echoAddr)
 	defer func() { _ = conn.Close() }()
@@ -443,8 +445,10 @@ func TestProxyConnectAllowTunnels(t *testing.T) {
 func TestProxyConnectForwardsPipelinedBytes(t *testing.T) {
 	echoAddr := startEchoServer(t)
 	_, proxySrv := newTestProxy(t, ProxyConfig{
-		Policy:        &staticNetworkPolicy{decision: Allow},
-		AllowLoopback: true,
+		Policy:                 &staticNetworkPolicy{decision: Allow},
+		AllowLoopback:          true,
+		AllowUnauditedForTests: true,
+		AllowOpaqueConnect:     true,
 	})
 
 	// Send the first tunnel bytes in the same write as the CONNECT request; the
@@ -469,7 +473,9 @@ func TestProxyConnectForwardsPipelinedBytes(t *testing.T) {
 func TestProxyConnectDeny(t *testing.T) {
 	policy := &staticNetworkPolicy{decision: Deny, reason: "host is not approved"}
 	audit := &recordingNetworkAudit{}
-	_, proxySrv := newTestProxy(t, ProxyConfig{Policy: policy, Audit: audit, AllowLoopback: true})
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy: policy, Audit: audit, AllowLoopback: true, AllowOpaqueConnect: true,
+	})
 
 	conn, _, resp := dialConnect(t, proxySrv.Listener.Addr().String(), "example.com:443")
 	defer func() { _ = conn.Close() }()
@@ -490,9 +496,10 @@ func TestProxyConnectLoopbackRequiresExplicitAllowance(t *testing.T) {
 	echoAddr := startEchoServer(t)
 	audit := &recordingNetworkAudit{}
 	_, proxySrv := newTestProxy(t, ProxyConfig{
-		Policy:        &staticNetworkPolicy{decision: Allow},
-		Audit:         audit,
-		AllowLoopback: false,
+		Policy:             &staticNetworkPolicy{decision: Allow},
+		Audit:              audit,
+		AllowLoopback:      false,
+		AllowOpaqueConnect: true,
 	})
 
 	conn, _, resp := dialConnect(t, proxySrv.Listener.Addr().String(), echoAddr)
@@ -637,11 +644,183 @@ func TestRulePolicyMapsNetworkDecisions(t *testing.T) {
 			t.Fatalf("%s = %s %q, want %s", c.decision, got, reason, c.want)
 		}
 	}
-	if got, _ := rulePolicyFixture(t, "allow", "test").Decide(context.Background(), Request{Host: "other.example.com", Method: "GET"}); got != Deny {
-		t.Fatalf("no-match = %s, want Deny", got)
+	unmatched := Request{Host: "other.example.com", Method: "GET"}
+	// As a guardrail, an unmatched request passes through so GrantPolicy remains
+	// the authorization source.
+	if got, _ := rulePolicyFixture(t, "allow", "test").Decide(context.Background(), unmatched); got != Allow {
+		t.Fatalf("no-match guardrail = %s, want Allow", got)
+	}
+	strict := rulePolicyFixture(t, "allow", "test")
+	strict.DenyUnmatched = true
+	if got, _ := strict.Decide(context.Background(), unmatched); got != Deny {
+		t.Fatalf("no-match with DenyUnmatched = %s, want Deny", got)
 	}
 	if got, _ := (RulePolicy{}).Decide(context.Background(), req); got != Deny {
 		t.Fatalf("nil rules = %s, want Deny", got)
+	}
+}
+
+func grantPolicyFixture(expiresAt time.Time) *ExecutionGrant {
+	return &ExecutionGrant{
+		AccountID: "acc1",
+		ProgramID: "vulbox/444",
+		// ProtocolHTTP maps to the http scheme; HTTPS traffic reaches a forward
+		// proxy as CONNECT and is host-checked only.
+		AssetTarget:    "http://api.example.com/v1",
+		ExpiresAt:      expiresAt,
+		AllowedMethods: map[string]struct{}{http.MethodGet: {}, http.MethodPost: {}},
+	}
+}
+
+func TestGrantPolicyAllowsGrantedTargetAndMethod(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	p := GrantPolicy{Grant: grantPolicyFixture(now.Add(time.Hour)), Now: func() time.Time { return now }}
+	decision, reason := p.Decide(context.Background(), Request{
+		Protocol: ProtocolHTTP, Host: "api.example.com", Port: 443, Method: http.MethodGet, Path: "/v1/users",
+	})
+	if decision != Allow || reason == "" {
+		t.Fatalf("granted request = %s %q, want Allow", decision, reason)
+	}
+}
+
+func TestGrantPolicyDeniesWrongMethod(t *testing.T) {
+	now := time.Now()
+	p := GrantPolicy{Grant: grantPolicyFixture(now.Add(time.Hour)), Now: func() time.Time { return now }}
+	got, _ := p.Decide(context.Background(), Request{
+		Protocol: ProtocolHTTP, Host: "api.example.com", Port: 443, Method: http.MethodDelete, Path: "/v1/users",
+	})
+	if got != Deny {
+		t.Fatalf("wrong method = %s, want Deny", got)
+	}
+}
+
+func TestGrantPolicyDeniesWrongHost(t *testing.T) {
+	now := time.Now()
+	p := GrantPolicy{Grant: grantPolicyFixture(now.Add(time.Hour)), Now: func() time.Time { return now }}
+	got, _ := p.Decide(context.Background(), Request{
+		Protocol: ProtocolHTTP, Host: "evil.example.com", Port: 443, Method: http.MethodGet, Path: "/v1",
+	})
+	if got != Deny {
+		t.Fatalf("wrong host = %s, want Deny", got)
+	}
+}
+
+func TestGrantPolicyDeniesExpiredAndNilGrant(t *testing.T) {
+	now := time.Now()
+	expired := GrantPolicy{Grant: grantPolicyFixture(now.Add(-time.Minute)), Now: func() time.Time { return now }}
+	if got, _ := expired.Decide(context.Background(), Request{Protocol: ProtocolHTTP, Host: "api.example.com", Port: 443, Method: http.MethodGet}); got != Deny {
+		t.Fatalf("expired grant = %s, want Deny", got)
+	}
+	if got, _ := (GrantPolicy{}).Decide(context.Background(), Request{Host: "api.example.com"}); got != Deny {
+		t.Fatalf("nil grant = %s, want Deny", got)
+	}
+	// A grant without an expiry is rejected rather than treated as unlimited.
+	noExpiry := grantPolicyFixture(time.Time{})
+	if got, _ := (GrantPolicy{Grant: noExpiry, Now: func() time.Time { return now }}).Decide(
+		context.Background(), Request{Protocol: ProtocolHTTP, Host: "api.example.com", Port: 443, Method: http.MethodGet}); got != Deny {
+		t.Fatalf("zero-expiry grant = %s, want Deny", got)
+	}
+}
+
+func TestGrantPolicyDelegatesToGuardrail(t *testing.T) {
+	now := time.Now()
+	req := Request{Protocol: ProtocolHTTP, Host: "api.example.com", Port: 443, Method: http.MethodGet, Path: "/v1"}
+	forbidden := RulePolicy{Rules: rulePolicyFixture(t, "forbidden", "blocked by operator").Rules, Action: domain.ActionActiveHTTP}
+	p := GrantPolicy{Grant: grantPolicyFixture(now.Add(time.Hour)), Next: forbidden, Now: func() time.Time { return now }}
+	if got, _ := p.Decide(context.Background(), req); got != Deny {
+		t.Fatalf("grant + forbidden rule = %s, want Deny", got)
+	}
+	requireHuman := RulePolicy{Rules: rulePolicyFixture(t, "require_human", "needs review").Rules, Action: domain.ActionActiveHTTP}
+	p.Next = requireHuman
+	if got, _ := p.Decide(context.Background(), req); got != Ask {
+		t.Fatalf("grant + require_human rule = %s, want Ask", got)
+	}
+}
+
+func TestProxyRequiresAudit(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy:        &staticNetworkPolicy{decision: Allow},
+		AllowLoopback: true,
+	})
+	client := testProxyClient(t, proxySrv)
+
+	resp, err := client.Get(upstream.URL + "/unaudited")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 without an audit sink", resp.StatusCode)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls.Load())
+	}
+
+	// Serve must refuse to start a proxy that could forward unaudited Allow
+	// traffic. A nil policy is rejected as well.
+	misconfigured := NewProxy(ProxyConfig{Policy: &staticNetworkPolicy{decision: Allow}})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	if err := misconfigured.Serve(ln); err == nil {
+		t.Fatal("Serve must fail without an audit sink")
+	}
+	if err := NewProxy(ProxyConfig{Audit: &recordingNetworkAudit{}}).Validate(); err == nil {
+		t.Fatal("Validate must fail without a policy")
+	}
+}
+
+func TestProxyAllowsUnauditedOnlyWhenExplicit(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy:                 &staticNetworkPolicy{decision: Allow},
+		AllowLoopback:          true,
+		AllowUnauditedForTests: true,
+	})
+	if err := NewProxy(ProxyConfig{
+		Policy:                 &staticNetworkPolicy{decision: Allow},
+		AllowUnauditedForTests: true,
+	}).Validate(); err != nil {
+		t.Fatalf("explicit test escape hatch was rejected: %v", err)
+	}
+	client := testProxyClient(t, proxySrv)
+	resp, err := client.Get(upstream.URL + "/explicit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != "hello" {
+		t.Fatalf("response = %d %q, want 200 hello", resp.StatusCode, body)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestProxyOpaqueConnectDisabledByDefault(t *testing.T) {
+	echoAddr := startEchoServer(t)
+	audit := &recordingNetworkAudit{}
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy:        &staticNetworkPolicy{decision: Allow},
+		Audit:         audit,
+		AllowLoopback: true,
+	})
+	conn, _, resp := dialConnect(t, proxySrv.Listener.Addr().String(), echoAddr)
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CONNECT status = %d, want 403 (opaque CONNECT disabled)", resp.StatusCode)
+	}
+	events := audit.recorded()
+	if len(events) != 1 || events[0].Decision != Deny ||
+		!strings.Contains(events[0].Reason, "opaque CONNECT") {
+		t.Fatalf("audit = %+v", events)
 	}
 }
 

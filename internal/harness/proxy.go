@@ -98,6 +98,17 @@ type ProxyConfig struct {
 	// AllowLoopback exists for tests using httptest/loopback servers. It also
 	// governs CONNECT target dialing and must never be enabled in production.
 	AllowLoopback bool
+	// AllowUnauditedForTests permits an Allow decision to be forwarded without a
+	// NetworkAuditSink. It exists only so a test can exercise forwarding in
+	// isolation; production must leave it false. Without an audit sink (and
+	// without this escape hatch) the proxy refuses to serve and denies every
+	// request.
+	AllowUnauditedForTests bool
+	// AllowOpaqueConnect permits host-level CONNECT tunnels. The default is
+	// false because a tunnel hides method/path from the policy and audit layer;
+	// phase one uses controlled Egress (absolute-form HTTP) instead. Enable it
+	// only together with a reviewed network-namespace/firewall boundary.
+	AllowOpaqueConnect bool
 	// PolicyVersion is an optional fingerprint of the loaded policy data,
 	// recorded with every audit event.
 	PolicyVersion string
@@ -107,12 +118,15 @@ type ProxyConfig struct {
 // request, audits the decision, and only then forwards or tunnels. It never
 // consults http.ProxyFromEnvironment.
 type Proxy struct {
-	policy        NetworkPolicy
-	audit         NetworkAuditSink
-	transport     http.RoundTripper
-	maxBody       int64
-	allowLoopback bool
-	policyVersion string
+	policy          NetworkPolicy
+	audit           NetworkAuditSink
+	transport       http.RoundTripper
+	maxBody         int64
+	allowLoopback   bool
+	allowUnaudited  bool
+	allowOpaqueConn bool
+	policyVersion   string
+	configErr       error
 
 	mu       sync.Mutex
 	server   *http.Server
@@ -142,21 +156,46 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 			ExpectContinueTimeout: 2 * time.Second,
 		}
 	}
-	return &Proxy{
-		policy:        cfg.Policy,
-		audit:         cfg.Audit,
-		transport:     transport,
-		maxBody:       maxBody,
-		allowLoopback: cfg.AllowLoopback,
-		policyVersion: cfg.PolicyVersion,
+	p := &Proxy{
+		policy:          cfg.Policy,
+		audit:           cfg.Audit,
+		transport:       transport,
+		maxBody:         maxBody,
+		allowLoopback:   cfg.AllowLoopback,
+		allowUnaudited:  cfg.AllowUnauditedForTests,
+		allowOpaqueConn: cfg.AllowOpaqueConnect,
+		policyVersion:   cfg.PolicyVersion,
 	}
+	p.configErr = p.validate()
+	return p
 }
+
+// validate returns the fail-closed configuration error. Both Serve and the
+// request handler consult it; the handler-level check also covers callers that
+// wire Handler directly into an http.Server.
+func (p *Proxy) validate() error {
+	if p.policy == nil {
+		return errors.New("proxy: a NetworkPolicy is required")
+	}
+	if p.audit == nil && !p.allowUnaudited {
+		return errors.New("proxy: a NetworkAuditSink is required (AllowUnauditedForTests is test-only)")
+	}
+	return nil
+}
+
+// Validate reports whether the proxy may serve. It is exported so an operator
+// can reject a misconfigured proxy before binding a listener.
+func (p *Proxy) Validate() error { return p.configErr }
 
 // Handler returns the proxy as an http.Handler, suitable for httptest.
 func (p *Proxy) Handler() http.Handler { return http.HandlerFunc(p.serveHTTP) }
 
-// ListenAndServe listens on addr and serves until Close is called.
+// ListenAndServe listens on addr and serves until Close is called. A
+// misconfigured proxy fails before binding a listener.
 func (p *Proxy) ListenAndServe(addr string) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -164,8 +203,12 @@ func (p *Proxy) ListenAndServe(addr string) error {
 	return p.Serve(ln)
 }
 
-// Serve serves the proxy on an existing listener until Close is called.
+// Serve serves the proxy on an existing listener until Close is called. A
+// misconfigured proxy returns an error instead of accepting traffic.
 func (p *Proxy) Serve(ln net.Listener) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
 	srv := &http.Server{
 		Handler:           p.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -203,6 +246,12 @@ func (p *Proxy) Addr() string {
 }
 
 func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	// A proxy wired directly through Handler must fail closed too. Production
+	// must never forward an Allow decision without a policy or an audit trail.
+	if p.configErr != nil {
+		http.Error(w, "proxy: misconfigured: "+p.configErr.Error(), http.StatusForbidden)
+		return
+	}
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 		return
@@ -295,6 +344,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Host:     host,
 		Port:     port,
 		Client:   clientID(r),
+	}
+	// CONNECT is host/port level only: a tunnel hides method and path from the
+	// policy and audit layer. Opaque tunnels are opt-in so phase one traffic
+	// goes through the controlled HTTP Egress instead.
+	if !p.allowOpaqueConn {
+		const reason = "opaque CONNECT is disabled; use controlled http(s) egress"
+		// Denials are still recorded when an audit sink exists; the request never
+		// reaches the target either way.
+		_ = p.record(r.Context(), req, Deny, reason)
+		http.Error(w, "proxy: "+reason, http.StatusForbidden)
+		return
 	}
 	decision, reason := p.decide(r.Context(), req)
 	auditErr := p.record(r.Context(), req, decision, reason)
@@ -618,13 +678,120 @@ func resolveApprovedProxyIP(ctx context.Context, host string) (netip.Addr, error
 	return addrs[0].Unmap(), nil
 }
 
+// GrantPolicy binds the proxy to one approved ExecutionGrant. It is the
+// production boundary: a request is allowed only when the grant is present,
+// unexpired, and explicitly covers the method and target. An optional Next
+// policy (for example RulePolicy) can only tighten the result further; it can
+// never turn a grant denial into an Allow.
+//
+// RulePolicy by itself is a guardrail, not an authorization source. Production
+// wiring must wrap it as GrantPolicy{Next: &RulePolicy{...}} so an operator
+// rule cannot grant network access on its own.
+type GrantPolicy struct {
+	Grant *ExecutionGrant
+	// Next is an optional additional guardrail. When nil, a request covered by
+	// the grant is allowed.
+	Next NetworkPolicy
+	// Now is injectable for tests. Nil uses time.Now.
+	Now func() time.Time
+}
+
+func (p GrantPolicy) Decide(ctx context.Context, req Request) (PolicyDecision, string) {
+	g := p.Grant
+	if g == nil {
+		return Deny, "no execution grant configured"
+	}
+	now := time.Now()
+	if p.Now != nil {
+		now = p.Now()
+	}
+	if g.ExpiresAt.IsZero() {
+		return Deny, "execution grant has no expiry"
+	}
+	if !g.ExpiresAt.After(now) {
+		return Deny, "execution grant has expired"
+	}
+
+	// CONNECT carries no method; only the host/port target is checked. HTTP
+	// requests must use an approved method.
+	if req.Protocol != ProtocolHTTPSConnect {
+		method := strings.ToUpper(strings.TrimSpace(req.Method))
+		if method == "" {
+			method = http.MethodGet
+		}
+		if _, forbidden := g.ForbiddenMethods[method]; forbidden {
+			return Deny, "method " + method + " is forbidden by the execution grant"
+		}
+		if len(g.AllowedMethods) > 0 {
+			if _, ok := g.AllowedMethods[method]; !ok {
+				return Deny, "method " + method + " is not approved by the execution grant"
+			}
+		} else if method != http.MethodGet && method != http.MethodHead {
+			return Deny, "only GET/HEAD are approved by the execution grant"
+		}
+	}
+
+	u, err := grantRequestURL(req)
+	if err != nil {
+		return Deny, "invalid grant request: " + err.Error()
+	}
+	if err := g.allowsTarget(u); err != nil {
+		return Deny, err.Error()
+	}
+
+	if p.Next == nil {
+		return Allow, "execution grant allows the request"
+	}
+	decision, reason := p.Next.Decide(ctx, req)
+	switch decision {
+	case Allow, Deny, Ask:
+		return decision, reason
+	default:
+		return Deny, "unknown network policy decision"
+	}
+}
+
+// grantRequestURL rebuilds the request target a grant check needs. CONNECT is a
+// host-level https target with path "/" and no method; HTTP uses its escaped
+// path. Parsing the assembled string preserves the escaped form so the path
+// canonicalizer sees the same bytes the policy did.
+func grantRequestURL(req Request) (*url.URL, error) {
+	scheme := "http"
+	path := req.Path
+	if req.Protocol == ProtocolHTTPSConnect {
+		scheme = "https"
+		path = "/"
+	}
+	if path == "" {
+		path = "/"
+	}
+	port := req.Port
+	if port == 0 {
+		if scheme == "http" {
+			port = 80
+		} else {
+			port = 443
+		}
+	}
+	host := strings.Trim(strings.TrimSpace(req.Host), "[]")
+	if host == "" {
+		return nil, errors.New("request has no host")
+	}
+	return url.Parse(scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port)) + path)
+}
+
 // RulePolicy adapts a declarative rule set to the proxy's NetworkPolicy. It is
-// the bridge between `internal/policy/rules` and the per-request proxy
-// boundary: a rule allow is still only a network grant, not an ActionDecision.
+// a guardrail, not an authorization source: rule allow means "this rule does
+// not object", not "the request is approved". Production must bind it under a
+// GrantPolicy so an operator rule cannot grant network access by itself.
 type RulePolicy struct {
 	Rules   *rules.RuleSet
 	Action  domain.Action
 	Program domain.ProgramID
+	// DenyUnmatched makes an unmatched request a Deny. The default (false) is
+	// pass-through so the policy can sit under GrantPolicy as a guardrail; set it
+	// to true when RulePolicy is the only policy.
+	DenyUnmatched bool
 }
 
 func (p RulePolicy) Decide(_ context.Context, req Request) (PolicyDecision, string) {
@@ -653,8 +820,13 @@ func (p RulePolicy) Decide(_ context.Context, req Request) (PolicyDecision, stri
 		return Deny, reason
 	case rules.DecisionRequireHuman:
 		return Ask, reason
+	case rules.DecisionNone:
+		if p.DenyUnmatched {
+			return Deny, "no matching rule"
+		}
+		return Allow, "no matching rule (guardrail pass-through)"
 	default:
-		return Deny, "no matching rule"
+		return Deny, "unknown rule decision"
 	}
 }
 
