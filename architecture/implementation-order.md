@@ -26,7 +26,7 @@
 | Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执已实现；Model Router 路由/数据分级/预算/审计已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
 | Phase 6：Verification / Report / Submission / Ledger | Verification 规则引擎已实现；ReportDraft/Submission/Ledger 未进入 |
 
-> **真实状态：Phase 0 complete; Phase 1–5 partially implemented; active execution remains disabled.**
+> **真实状态：Phase 0 complete; Phase 1–6 partially implemented; active execution remains disabled.**
 >
 > 当前实现顺序与 canonical 阶段存在交叉：Phase 2/3 的内核先于 Phase 1 Reader 完整落地，这是为了先把安全不变量固定下来；不改变 Phase 1 的定义，也不把 Reader 推迟成“Phase 2”。
 

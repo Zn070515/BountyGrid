@@ -48,18 +48,25 @@ func (v VerificationVerdict) Valid() bool {
 }
 
 type Verification struct {
-	ID             string
-	FindingID      FindingID
-	Reproduced     bool
-	InScope        bool
-	ImpactVerified bool
-	DataMinimized  bool
-	DuplicateRisk  float64
-	Verdict        VerificationVerdict
-	VerifiedBy     string
-	Reasons        []string
-	Evidence       []EvidenceID
-	VerifiedAt     time.Time
+	ID               string
+	FindingID        FindingID
+	Reproduced       bool
+	InScope          bool
+	ImpactVerified   bool
+	DataMinimized    bool
+	DuplicateChecked bool
+	DuplicateRisk    float64
+	PubliclyKnown    bool
+	// AIAssisted and the human-verification trace are persisted so a later
+	// audit can prove an AI-assisted finding was reviewed by a human.
+	AIAssisted           bool
+	HumanVerified        bool
+	HumanVerificationRef string
+	Verdict              VerificationVerdict
+	VerifiedBy           string
+	Reasons              []string
+	Evidence             []EvidenceID
+	VerifiedAt           time.Time
 }
 
 type ReportDraft struct {

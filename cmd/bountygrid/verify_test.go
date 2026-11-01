@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,6 +15,8 @@ import (
 type fakeVerifyStore struct {
 	program     domain.Program
 	decision    domain.ActionDecision
+	finding     domain.Finding
+	evidence    map[domain.EvidenceID]domain.Evidence
 	verifs      []domain.Verification
 	programErr  error
 	decisionErr error
@@ -35,6 +39,19 @@ func (s *fakeVerifyStore) GetDecision(ctx context.Context, id domain.DecisionID)
 		return domain.ActionDecision{}, postgres.ErrNotFound
 	}
 	return s.decision, nil
+}
+func (s *fakeVerifyStore) GetFinding(ctx context.Context, id domain.FindingID) (domain.Finding, error) {
+	if s.finding.ID != id {
+		return domain.Finding{}, postgres.ErrNotFound
+	}
+	return s.finding, nil
+}
+func (s *fakeVerifyStore) GetEvidence(ctx context.Context, id domain.EvidenceID) (domain.Evidence, error) {
+	e, ok := s.evidence[id]
+	if !ok {
+		return domain.Evidence{}, postgres.ErrNotFound
+	}
+	return e, nil
 }
 func (s *fakeVerifyStore) PutVerification(ctx context.Context, v domain.Verification) error {
 	s.verifs = append(s.verifs, v)
@@ -59,9 +76,11 @@ func verifyProgram() domain.Program {
 
 func verifyDecision() domain.ActionDecision {
 	a := domain.AssetID("a1")
+	expires := testNow.Add(5 * time.Minute)
 	return domain.ActionDecision{
 		ID: "d1", RequestID: "r1", ProgramID: "p1", Action: domain.ActionActiveHTTP,
 		Decision: domain.DecisionAllow, PolicyVersion: "test", DecidedAt: testNow,
+		ExpiresAt: &expires,
 		Request: domain.ActionRequest{
 			ID: "r1", Actor: domain.ActorRef{Kind: domain.ActorHarness, ID: "h1"},
 			AccountID: "acc1", ProgramID: "p1", AssetID: &a, Action: domain.ActionActiveHTTP, RequestedAt: testNow,
@@ -69,26 +88,45 @@ func verifyDecision() domain.ActionDecision {
 	}
 }
 
+func validVerifyFinding() domain.Finding {
+	a := domain.AssetID("a1")
+	return domain.Finding{
+		ID: "f1", TaskID: "t1", ProgramID: "p1", AssetID: &a,
+		Title: "SQL injection", VulnType: "SQLI", Severity: "HIGH",
+		Evidence: []domain.EvidenceID{"ev-finding"}, Status: "CANDIDATE", CreatedAt: testNow,
+	}
+}
+
 func validVerifyFile() verifyFile {
 	a := domain.AssetID("a1")
 	yes := true
-	now := testNow
+	f := validVerifyFinding()
 	return verifyFile{
-		Finding: domain.Finding{
-			ID: "f1", TaskID: "t1", ProgramID: "p1", AssetID: &a,
-			Title: "SQL injection", VulnType: "SQLI", Severity: "HIGH",
-			Evidence: []domain.EvidenceID{"ev-finding"}, Status: "CANDIDATE", CreatedAt: testNow,
+		Finding: verifyFinding{
+			ID: f.ID, TaskID: f.TaskID, ProgramID: f.ProgramID, AssetID: &a,
+			Title: f.Title, VulnType: f.VulnType, Severity: f.Severity,
+			Evidence: f.Evidence, Status: f.Status, CreatedAt: f.CreatedAt,
 		},
 		ProgramID: "p1", DecisionID: "d1",
 		Reproduced: true, ReproductionEvidence: []domain.EvidenceID{"ev-repro"},
 		ImpactVerified: true, ImpactEvidence: []domain.EvidenceID{"ev-impact"},
 		DataMinimized: &yes, DuplicateChecked: true, DuplicateRisk: 0.1,
-		Now: &now,
+	}
+}
+
+func verifyEvidence() map[domain.EvidenceID]domain.Evidence {
+	return map[domain.EvidenceID]domain.Evidence{
+		"ev-finding": {ID: "ev-finding"},
+		"ev-repro":   {ID: "ev-repro"},
+		"ev-impact":  {ID: "ev-impact"},
 	}
 }
 
 func TestExecuteVerifyVerifiedAndPersisted(t *testing.T) {
-	store := &fakeVerifyStore{program: verifyProgram(), decision: verifyDecision()}
+	store := &fakeVerifyStore{
+		program: verifyProgram(), decision: verifyDecision(),
+		finding: validVerifyFinding(), evidence: verifyEvidence(),
+	}
 	out, err := executeVerify(context.Background(), store, validVerifyFile(), true, testNow)
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +136,34 @@ func TestExecuteVerifyVerifiedAndPersisted(t *testing.T) {
 	}
 	if len(store.verifs) != 1 || store.verifs[0].Verdict != domain.VerdictVerified {
 		t.Fatalf("persisted = %+v", store.verifs)
+	}
+}
+
+func TestExecuteVerifyMissingEvidence(t *testing.T) {
+	store := &fakeVerifyStore{
+		program: verifyProgram(), decision: verifyDecision(),
+		finding: validVerifyFinding(),
+		evidence: map[domain.EvidenceID]domain.Evidence{
+			"ev-finding": {ID: "ev-finding"}, "ev-repro": {ID: "ev-repro"},
+		},
+	}
+	out, err := executeVerify(context.Background(), store, validVerifyFile(), false, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Verdict != domain.VerdictNeedsEvidence ||
+		out.Reasons[0] != "EVIDENCE_NOT_FOUND:ev-impact" {
+		t.Fatalf("missing evidence = %s %v", out.Verdict, out.Reasons)
+	}
+}
+
+func TestExecuteVerifyPersistRequiresStoredFinding(t *testing.T) {
+	store := &fakeVerifyStore{
+		program: verifyProgram(), decision: verifyDecision(),
+		evidence: verifyEvidence(),
+	}
+	if _, err := executeVerify(context.Background(), store, validVerifyFile(), true, testNow); !errors.Is(err, postgres.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound for an unstored finding", err)
 	}
 }
 
@@ -118,6 +184,33 @@ func TestExecuteVerifyMissingProgram(t *testing.T) {
 	store := &fakeVerifyStore{}
 	if _, err := executeVerify(context.Background(), store, validVerifyFile(), false, testNow); !errors.Is(err, postgres.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestLoadVerifyFileSnakeCaseFinding(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "verify.json")
+	body := `{
+		"program_id": "p1",
+		"finding": {
+			"id": "f1", "task_id": "t1", "program_id": "p1", "asset_id": "a1",
+			"title": "SQL injection", "vuln_type": "SQLI", "severity": "HIGH",
+			"evidence": ["ev1"], "status": "CANDIDATE",
+			"created_at": "2026-11-01T12:00:00Z"
+		}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in, err := loadVerifyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Finding.ID != "f1" || in.Finding.TaskID != "t1" || in.Finding.ProgramID != "p1" {
+		t.Fatalf("finding decoded incorrectly: %+v", in.Finding)
+	}
+	if in.Finding.AssetID == nil || *in.Finding.AssetID != "a1" || in.Finding.VulnType != "SQLI" {
+		t.Fatalf("finding decoded incorrectly: %+v", in.Finding)
 	}
 }
 

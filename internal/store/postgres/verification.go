@@ -23,7 +23,14 @@ func (r *Repo) PutVerification(ctx context.Context, v domain.Verification) error
 			(id, finding_id, verdict, reproduced, in_scope, impact_verified,
 			 data_minimized, duplicate_risk, verified_by, verified_at, data)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-		ON CONFLICT (id) DO NOTHING`,
+		ON CONFLICT (id) DO UPDATE SET
+			finding_id=EXCLUDED.finding_id, verdict=EXCLUDED.verdict,
+			reproduced=EXCLUDED.reproduced, in_scope=EXCLUDED.in_scope,
+			impact_verified=EXCLUDED.impact_verified,
+			data_minimized=EXCLUDED.data_minimized,
+			duplicate_risk=EXCLUDED.duplicate_risk,
+			verified_by=EXCLUDED.verified_by, verified_at=EXCLUDED.verified_at,
+			data=EXCLUDED.data`,
 		v.ID, v.FindingID, v.Verdict, v.Reproduced, v.InScope, v.ImpactVerified,
 		v.DataMinimized, v.DuplicateRisk, v.VerifiedBy, v.VerifiedAt, data,
 	)

@@ -24,7 +24,7 @@ type verifyOptions struct {
 // are loaded from PostgreSQL by ID so the verifier always evaluates the stored
 // authoritative objects, not a caller-supplied copy.
 type verifyFile struct {
-	Finding              domain.Finding      `json:"finding"`
+	Finding              verifyFinding       `json:"finding"`
 	ProgramID            domain.ProgramID    `json:"program_id"`
 	DecisionID           domain.DecisionID   `json:"decision_id,omitempty"`
 	Reproduced           bool                `json:"reproduced"`
@@ -39,13 +39,53 @@ type verifyFile struct {
 	HumanVerified        bool                `json:"human_verified"`
 	HumanVerificationRef string              `json:"human_verification_ref"`
 	VerifiedBy           string              `json:"verified_by"`
-	Now                  *time.Time          `json:"now,omitempty"`
+}
+
+// verifyFinding is the JSON shape for a Finding. domain.Finding has no JSON
+// tags, so embedding it directly would silently decode snake_case keys to zero
+// values.
+type verifyFinding struct {
+	ID        domain.FindingID    `json:"id"`
+	TaskID    domain.TaskID       `json:"task_id"`
+	ProgramID domain.ProgramID    `json:"program_id"`
+	AssetID   *domain.AssetID     `json:"asset_id,omitempty"`
+	Title     string              `json:"title"`
+	VulnType  string              `json:"vuln_type"`
+	Severity  string              `json:"severity"`
+	Evidence  []domain.EvidenceID `json:"evidence"`
+	Status    string              `json:"status"`
+	CreatedAt time.Time           `json:"created_at"`
+}
+
+func (f verifyFinding) toDomain() domain.Finding {
+	return domain.Finding{
+		ID: f.ID, TaskID: f.TaskID, ProgramID: f.ProgramID, AssetID: f.AssetID,
+		Title: f.Title, VulnType: f.VulnType, Severity: f.Severity,
+		Evidence: f.Evidence, Status: f.Status, CreatedAt: f.CreatedAt,
+	}
 }
 
 type verifyStore interface {
 	GetProgram(ctx context.Context, id domain.ProgramID) (domain.Program, error)
 	GetDecision(ctx context.Context, id domain.DecisionID) (domain.ActionDecision, error)
+	GetFinding(ctx context.Context, id domain.FindingID) (domain.Finding, error)
+	GetEvidence(ctx context.Context, id domain.EvidenceID) (domain.Evidence, error)
 	PutVerification(ctx context.Context, v domain.Verification) error
+}
+
+type repoEvidenceChecker struct {
+	store verifyStore
+}
+
+func (c repoEvidenceChecker) HasEvidence(ctx context.Context, id domain.EvidenceID) (bool, error) {
+	_, err := c.store.GetEvidence(ctx, id)
+	if errors.Is(err, postgres.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 type verifyOutput struct {
@@ -109,9 +149,10 @@ func loadVerifyFile(path string) (verifyFile, error) {
 }
 
 func executeVerify(ctx context.Context, store verifyStore, in verifyFile, persist bool, now time.Time) (verifyOutput, error) {
+	finding := in.Finding.toDomain()
 	programID := in.ProgramID
 	if programID == "" {
-		programID = in.Finding.ProgramID
+		programID = finding.ProgramID
 	}
 	if programID == "" {
 		return verifyOutput{}, errors.New("verify: program_id is required")
@@ -119,6 +160,15 @@ func executeVerify(ctx context.Context, store verifyStore, in verifyFile, persis
 	program, err := store.GetProgram(ctx, programID)
 	if err != nil {
 		return verifyOutput{}, fmt.Errorf("verify: load program %s: %w", programID, err)
+	}
+	// Persisting a verification requires the subject Finding to exist. Use the
+	// stored finding as authoritative rather than the file body.
+	if persist {
+		stored, err := store.GetFinding(ctx, finding.ID)
+		if err != nil {
+			return verifyOutput{}, fmt.Errorf("verify: load finding %s: %w", finding.ID, err)
+		}
+		finding = stored
 	}
 	var decision *domain.ActionDecision
 	if in.DecisionID != "" {
@@ -128,11 +178,9 @@ func executeVerify(ctx context.Context, store verifyStore, in verifyFile, persis
 		}
 		decision = &d
 	}
-	if in.Now != nil {
-		now = in.Now.UTC()
-	}
 	v, err := verify.NewRuleVerifier(verify.Options{Now: func() time.Time { return now }}).Verify(ctx, verify.Input{
-		Finding: in.Finding, Program: program, Decision: decision,
+		Finding: finding, Program: program, Decision: decision,
+		Evidence:   repoEvidenceChecker{store: store},
 		Reproduced: in.Reproduced, ReproductionEvidence: in.ReproductionEvidence,
 		ImpactVerified: in.ImpactVerified, ImpactEvidence: in.ImpactEvidence,
 		DataMinimized:    in.DataMinimized,
