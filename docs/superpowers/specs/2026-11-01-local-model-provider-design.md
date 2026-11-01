@@ -134,7 +134,7 @@ The router treats a plain error as `AMBIGUOUS` and only
 
 | Condition | Result |
 |---|---|
-| Configuration, URL construction or request-body marshalling error before any request | `domain.ErrNotSent` |
+| URL construction or request-body marshalling error before any request | `domain.ErrNotSent` |
 | DNS/dial/TCP connect failure (`net.OpError`, `Op == "dial"`), connection refused | `domain.ErrNotSent` |
 | TLS handshake failure before the request is written | `domain.ErrNotSent` |
 | Context deadline exceeded after the request was written | plain error (`AMBIGUOUS`) |
@@ -205,6 +205,9 @@ Validation:
 - `-api-key-env` naming an unset/empty variable is an error.
 - `-timeout` bounds both the HTTP client and a `context.WithTimeout` around the
   call.
+- With `-call`, an explicit `-model-egress` is rejected: the ceiling comes from
+  the stored Program (or `LOCAL_ONLY` when no Program is given).
+  `-redacted` and `-escalation` become operator attestations in call mode.
 - Without `-call`, all new flags are rejected so the plan output cannot silently
   pretend to make a call.
 
@@ -282,7 +285,8 @@ The existing Postgres integration tests already cover `ModelCallStore`. Add one
 `*_integration_test.go` test that runs a `model -call -persist` flow against an
 httptest server and asserts one `model_calls` row and one
 `model_call_attempts` row. It follows the existing integration pattern: skipped
-when `DATABASE_URL` is unset, and uses the shared integration helper.
+when `TEST_DATABASE_URL` is unset, and the test sets `DATABASE_URL` from it
+before calling the CLI path.
 
 ## 9. Documentation
 
