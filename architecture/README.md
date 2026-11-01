@@ -153,8 +153,13 @@ internal/httpapi/                # REST/SSE（如需要）
 | `adapters.md` | Transport、Adapter 接口、三平台映射、轮询 |
 | `policy-engine.md` | AccountCapability、EligibilityState、动作矩阵、审批 |
 | `authz.md` | Scope/新鲜度/revision helper、Evidence-bound 平台授权 |
+| `capability.md` | CapabilityBroker、持久日配额、Grant 租约/任期/撤销 |
+| `reliability.md` | 小模型 ResearchSession、ContextCompiler、短程 planner、loop/stall detector |
 | `opportunity-scheduler.md` | CompetitionSnapshot、期望收益/成本、调度 |
-| `harness-model-router.md` | 执行边界、ActionRequest、模型路由 |
+| `harness-model-router.md` | 执行边界、ActionRequest、模型路由、Program model egress |
+| `model-audit.md` | ModelCall/ModelCallAttempt、cost roll-up、stable CallID |
+| `proxy.md` | per-request proxy、GrantPolicy、AuditSink、CONNECT |
+| `trace.md` | append-only trace、raw store、reducer、SafeSink |
 | `research-lifecycle.md` | Finding、Verification、Submission、Revenue Ledger |
 | `implementation-order.md` | 依赖顺序实现计划（非 MVP 切分） |
 

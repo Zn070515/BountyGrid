@@ -129,10 +129,11 @@ Detailed behavior lives in [`architecture/`](architecture/README.md); this secti
 
 - **Readers** (`internal/adapter`): read-only Vulbox/Xianzhi/Butian; `sync` persists Evidence → Facts → Program/Account. `-persist` is idempotent; raw pages stay in `.evidence/`.
 - **Kernel** (`derive`): Facts → `PROGRAM_STATE`/`SCOPE_VISIBILITY`/`REGISTRATION_STATE`; superseded Facts expire dependent states; `-workers` is bounded and deterministic.
-- **Policy/Gateway** (`decide`): action-level decisions; authoritative asset from Scope; independent freshness; `-authorize` re-evaluates before consuming a single-use approval. Declarative rules are a guardrail, not a way to raise platform permission; see [`rules/README.md`](rules/README.md).
+- **Policy/Gateway** (`decide`): action-level decisions; authoritative asset from Scope; independent freshness; `-authorize` re-evaluates before consuming a single-use approval. Scope/freshness/revision checks are shared in `internal/authz`; operator rules are guardrails, and platform authority only comes from an Evidence-bound platform policy, never a JSON file; see [`architecture/authz.md`](architecture/authz.md).
 - **Opportunity/Scheduler** (`schedule`): expected return per cost, competition decay, DB cooldown, no dispatch of PAUSED/ENDED; the human queue is not execution.
-- **Harness** (`harness`): the tool declares `RequiredAction`; `ALLOW` + `Authorize` before execution; the proxy is grant-bound and audited in production; see [`architecture/proxy.md`](architecture/proxy.md).
-- **Model** (`model`): data class/provenance, locality, context/capability, cumulative budget, and the `model_calls` state machine; no real provider; see [`architecture/harness-model-router.md`](architecture/harness-model-router.md).
+- **Harness** (`harness`): the tool declares `RequiredAction`; `ALLOW` + `Authorize` before execution; `internal/capability` provides the shared RPS/concurrency/daily broker, durable `network_usage`, short grant leases and revocation epochs; the production proxy is a validated `GrantPolicy` with an audit sink; see [`architecture/proxy.md`](architecture/proxy.md), [`architecture/capability.md`](architecture/capability.md).
+- **Model** (`model`): data class/provenance, program `ModelEgressPolicy`, local-first escalation, context/capability, cumulative budget, and logical `ModelCall` + `ModelCallAttempt` state; no real provider; see [`architecture/harness-model-router.md`](architecture/harness-model-router.md), [`architecture/model-audit.md`](architecture/model-audit.md).
+- **Reliability** (`internal/reliability`): small-model state (facts/unknowns/hypotheses/attempts), `ContextCompiler`, short-horizon planner, loop/stall detector and synthesized `FailureReport`; it proposes and filters, while Policy/Verifier remain authoritative; see [`architecture/reliability.md`](architecture/reliability.md).
 - **Verification/Report** (`verify`, `report`): `VERIFIED` requires scope, reproduction/impact evidence, minimization, duplicate check, a `COMPLETED` receipt, and a durable human review; a report is assembled, never submitted.
 - **Submission** (`submit`): dry-run only; the approval is bound to the report content hash; one real submission per report; `AMBIGUOUS` never auto-retries.
 - **Ledger** (`ledger`): append-only CNY cash, external refs/reversals/reconcile; Feedback feeds Opportunity.
@@ -166,8 +167,12 @@ go run ./cmd/bountygrid ledger -summary -platform vulbox
 | [`architecture/evidence-facts.md`](architecture/evidence-facts.md) | Evidence → Fact → State → Decision、TTL、置信度 |
 | [`architecture/adapters.md`](architecture/adapters.md) | 三平台 Adapter、Transport、轮询、失败模式 |
 | [`architecture/policy-engine.md`](architecture/policy-engine.md) | AccountCapability + EligibilityState + 动作矩阵 + 声明式规则 |
+| [`architecture/authz.md`](architecture/authz.md) | 公共授权链、scope/freshness/revision helper、Evidence-bound 平台授权 |
+| [`architecture/capability.md`](architecture/capability.md) | CapabilityBroker、持久日配额、Grant 租约/任期/撤销 |
+| [`architecture/reliability.md`](architecture/reliability.md) | 小模型 Reliability Layer：session/context/planner/detector |
+| [`architecture/model-audit.md`](architecture/model-audit.md) | ModelCall/ModelCallAttempt、egress policy、stable CallID |
 | [`architecture/trace.md`](architecture/trace.md) | append-only trace bundle、raw payloads、reducer、CLI |
-| [`architecture/proxy.md`](architecture/proxy.md) | 逐请求网络代理、RulePolicy、AuditSink、CONNECT 与 ApprovedProxy |
+| [`architecture/proxy.md`](architecture/proxy.md) | 逐请求网络代理、GrantPolicy、AuditSink、CONNECT 与 ApprovedProxy |
 | [`architecture/opportunity-scheduler.md`](architecture/opportunity-scheduler.md) | CompetitionSnapshot、期望收益/成本、调度 |
 | [`architecture/harness-model-router.md`](architecture/harness-model-router.md) | 执行边界、工具注册、模型路由 |
 | [`architecture/research-lifecycle.md`](architecture/research-lifecycle.md) | Finding/Verification/Report/Submission/Ledger |
@@ -210,9 +215,12 @@ internal/evidence/           不可变 Evidence Store（接口 + 内存实现）
 internal/audit/              审计事件（不可变、可过滤）
 internal/facts/              抽取器接口、FactSet、内存 Store、补天 GROW 抽取器
 internal/state/              程序状态/报名窗口/Scope/账号能力派生
+internal/authz/              公共授权链：scope/新鲜度/revision 校验、Evidence-bound 平台授权
+internal/capability/         共享 CapabilityBroker、持久日配额、Grant 租约/任期/撤销
 internal/policy/             Eligibility 合并 + 动作矩阵 + 人工审批
 internal/policy/rules/       声明式 host/method/path 规则、match/not_match 自测、最严决策合并
 internal/harness/            Workspace(os.Root)、Egress(grant)、local forward proxy、执行回执
+internal/reliability/        小模型 Reliability Layer：session/context/planner/loop detector
 internal/trace/              append-only JSONL 事件、content-addressed raw payloads、因果 reducer
 internal/sidecar/            agent-browser 只读客户端（open/wait/eval/get/state save/close）
 internal/adapter/            Reader 接口 + Vulbox Reader（公开列表/账号；详情待接入）

@@ -21,9 +21,9 @@
 | Phase 0：domain + evidence + PostgreSQL schema/repositories/rollback + CLI | 完成 |
 | Phase 1：Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 基本完成：三平台主路径已实测并落库；部分 scope/detail 与数据语义仍在收口 |
 | Phase 2：Facts + State | 已实现并硬化；State TTL 受输入 Fact 年龄限制 |
-| Phase 3：Policy Engine / Gateway | 已实现并硬化：authoritative Asset、ExecutionEnvironment、Authorize 重评估、审批在执行前消费；新增 `internal/policy/rules` 声明式 host/method/path 规则（match/not_match 自测、最严合并、规则集指纹绑定授权） |
+| Phase 3：Policy Engine / Gateway | 已实现并硬化：authoritative Asset、ExecutionEnvironment、Authorize 重评估、审批在执行前消费；`internal/authz` 提供公共 scope/freshness/revision 校验；声明式 operator 规则只能收紧，平台授权必须由 Evidence-backed `internal/authz.PlatformPolicy` 产生并在决策时复验 |
 | Phase 4：Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、唯一 QUEUED 任务、CompetitionSnapshot TTL/decay |
-| Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执/逐请求 Egress grant/SSRF 防护/本地 forward proxy（GrantPolicy+审计必需+CONNECT opt-in+共享 RPS/并发/日限）已实现；Model Router 路由/派生数据分级/transport 本地性/context+capability/累计预算/model_calls 状态机（RESERVED/STARTED/COMPLETED/AMBIGUOUS/FAILED_BEFORE_SEND）已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
+| Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执/逐请求 Egress grant/SSRF 防护/本地 forward proxy（GrantPolicy+审计+GrantValidator 必需+CONNECT opt-in）已实现；`internal/capability` 提供 Egress/Proxy 共享 RPS/并发/持久日配额、60s grant lease 与 revocation epoch；Model Router 增加 Program `ModelEgressPolicy`、local-first escalation、`ModelCall`/`ModelCallAttempt` 分离与稳定 CallID（无真实 Provider）；`internal/reliability` 提供小模型 ContextCompiler/短程 planner/loop-stall detector；无 ACTIVE_HTTP 工具 |
 | Phase 6：Verification / Report / Submission / Ledger | Verification（receipt provenance + durable human review）、ReportDraft（严格附件）、Submission dry-run（intent 状态机/AMBIGUOUS）、CNY 现金 Ledger 已实现；Ledger Feedback 已回灌 Opportunity；真实平台 SubmitAdapter 未实现 |
 
 > **真实状态：Phase 0 complete; Phase 1–8 control plane implemented; active execution remains disabled.**
