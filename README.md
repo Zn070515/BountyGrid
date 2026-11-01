@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Go-1.27.3-00ADD8?logo=go&logoColor=white" alt="Go 1.27.3">
   <img src="https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
   <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/Phase-0%20%2B%20kernel%20hardening-blue" alt="Phase 0 + kernel hardening">
+  <img src="https://img.shields.io/badge/Phase-0--5%20partial%20%C2%B7%20execution%20disabled-blue" alt="Phase 0–5 partial; active execution disabled">
 </p>
 
 <p>
@@ -36,7 +36,7 @@ BountyGrid 是面向国内漏洞赏金平台（阿里云先知 / ASRC、漏洞�
 |---|---|---|---|
 | [`platform-audit/`](platform-audit/) | 事实线 | 三平台账号状态、项目体系、Scope、规则、AI 政策、收款、自动化边界 | 审计完成；[`CORRECTIONS.md`](platform-audit/CORRECTIONS.md) 记录 GROW 日期等纠正 |
 | [`architecture/`](architecture/) | 设计线 | Domain Model、Evidence/Fact/State、Adapter、Policy Engine、Opportunity、Harness、Submission、Ledger | 完整定稿；按依赖实现 |
-| [`internal/`](internal/) | 实现线 | Go 类型/不变量、Evidence Store、PostgreSQL 迁移/仓储、Audit/Facts/State/Policy | Phase 0 完成；核心内核硬化完成；Phase 1 Readers 未开始 |
+| [`internal/`](internal/) | 实现线 | Go 类型/不变量、Evidence Store、PostgreSQL 迁移/仓储、Audit/Facts/State/Policy、Readers、Opportunity/Scheduler、Harness | Phase 0 完成；Phase 1–5 部分完成；**主动执行仍禁用** |
 
 **不混用三条线。** 平台事实变化先改 `platform-audit/` 与 Evidence；领域语义变化先改 `architecture/` 与不变量；实现只消费前两者的结论，不把观察值直接写成业务规则。
 
@@ -111,20 +111,23 @@ bash probes/butian/grow-dates.sh
 
 ## 实现进度 · Implementation
 
+> **真实状态：Phase 0 complete; Phase 1–5 partially implemented; active execution remains disabled.** 三平台 Reader 主路径已通并落库；Policy/Gateway/Opportunity/Scheduler/Harness 已有实现并在控制层收口。Verification/Submission/Ledger 仍以领域类型为主。
+
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | Phase 0 | `internal/domain`、`internal/evidence`、`internal/store/postgres`（含仓储/rollback）、`cmd/bountygrid` | 完成 |
 | 核心内核硬化 | `internal/audit`、`internal/facts`（含补天 GROW 抽取器）、`internal/state`、`internal/policy` | 完成（对应 canonical Phase 2/3 的提前实现） |
-| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 三平台均已实测并落库（178 项目）；Vulbox 1 QUEUED research；Xianzhi 3 / Butian 34 human（报名/合规/实战认证门槛）；Butian 公益SRC（200 页分页）与 GROW 校园计划已接入（未落库） |
-| Phase 2/3 | Facts/State/Policy | 已提前硬化；Reader 接入后回填真实 Fact |
-| Phase 4 | Opportunity / Scheduler | Phase 1 Reader 接入之后 |
-| Phase 5+ | Harness / Model Router / Verification / Submission / Ledger | 规划中 |
+| Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 基本完成：三平台主路径已实测并落库；部分 scope/detail 与数据语义仍在收口 |
+| Phase 2/3 | Facts/State/Policy | 已实现并硬化；Fact 年龄限制 State TTL，运行环境约束进入 Policy |
+| Phase 4 | Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、CompetitionSnapshot TTL/decay |
+| Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 未实现，**无 ACTIVE_HTTP 工具** |
+| Phase 6+ | Verification / Submission / Ledger | 领域类型为主，尚未进入 |
 
 ### Phase 1 progress · Browser Sidecar + Vulbox Reader
 
 已落地（只读，不点击提交/报名/NDA）：
 
-- `internal/sidecar`：`agent-browser` 只读客户端，只暴露 `open/wait/eval/get/screenshot/state save/close`；按命令限速，不提供 click/fill。
+- `internal/sidecar`：`agent-browser` 传输层，暴露 `open/wait/reload/eval/get/screenshot/state save/close`；按命令限速，不提供 click/fill。它不是安全沙箱：`Eval` 可执行任意 JS，Reader 只把它用于只读观察与分页/弹窗控制；Harness/Model 不得直接持有 Client。
 - `internal/adapter/vulbox`：`AuthStatus`、`SyncAccount`（需登录）、`SyncPrograms`（公开项目列表，走页面自身的只读 GET）、`SyncProgram/SyncScope/SyncPolicy`（企业SRC子域，实测联想 444）；非企业SRC详情页仍 fail-closed 返回 `ErrUnsupported`。
 - `cmd/bountygrid sync`：`-programs`（默认）、`-public-welfare`/`-grow`（仅 butian）、`-account`、`-program <id>`、`-pages`、`-page-size`、`-session`（默认 `vbprobe`）、`-raw-dir`；输出 JSON 摘要，不打印页面原文。
 - 原始证据脱敏后写入 `.evidence/`（gitignored），数据库/仓库不保存页面原文。
@@ -285,7 +288,7 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - Scope 拆成 `Visibility`（披露）与 `Access`（当前账号访问）；报名后可为 `GATED_BY_SIGNUP + GRANTED`
 - Policy 增加 `Asset` 校验：缺失、跨 Program、Scope 外、Conditional 分别处理
 - Policy 消费 `AutomationPolicy`：`FORBIDDEN` 不可被人工审批覆盖；`ALLOW` 可覆盖默认条件矩阵
-- `HumanApproval` 绑定 `request_id/action/program/asset/resource/parameters_hash/expires/single_use`，并由 PostgreSQL `consumed_approvals` 持久化一次性消费
+- `HumanApproval` 绑定 `request_id/action/program/asset/resource/parameters_hash/expires/single_use`，并由 PostgreSQL `consumed_approvals` 持久化一次性消费（2026-11-01 起消费点移到 `Gateway.Authorize` 的重评估之后）
 - `PRACTICAL_CERTIFICATION` 改为 Program-scoped，不再阻断普通/公益提交
 - State 保留输入 Fact/Evidence provenance，并提供 supersede invalidation tracker
 - GROW 日期按 `Asia/Shanghai`、date-only、inclusive end 处理
@@ -306,6 +309,21 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - `DerivationTracker` 重新记录同一 State 时迁移依赖，避免旧 Fact 误失效当前 State
 - Domain 不变量收紧：Fact/State 必须有 ID；`ALLOW` 必须带 `ExpiresAt`；human-only 审批必须 single-use；Program-scoped gate 不再使账号级 `CanSubmit` 失效
 
+### Control-plane hardening (2026-11-01)
+
+- **Asset 真相源**：调用方只能给 `AssetID`；Gateway 从 `Program.Scope.ResolveAsset` 解析 canonical Asset，未存储的 ID 直接 `DENY ASSET_UNKNOWN`。
+- **Constraints 执行化**：`ExecutionEnvironment` 进入 Policy，校验时间窗、RPS、并发、VPN、出口 IP、研究员 Header、测试账号与 HTTP 方法；缺运行时证明 → `REQUIRE_MORE_EVIDENCE`，观察到的违规 → `DENY`。
+- **Sandbox/Egress 强制**：网络工具只拿到 `harness.Egress`，每次请求与重定向都走 `Sandbox.CheckURL`；空 allowlist 的网络工具直接拒绝。
+- **Authorize 重新评估**：Decision 持久化原始 Request；`Authorize` 重新加载 Account/Program、重新解析 Asset 并重跑 Policy，Scope/资格/自动化策略变化后旧 ALLOW 不再可执行。
+- **审批消费时点**：`Policy.Decide` 只校验不消费；`Gateway.Authorize` 在重新评估通过后原子消费 single-use approval。
+- **幂等执行回执**：`NetworkEgress`/`WritesFiles`/`Destructive` 工具必须有 `IdempotencyKey`；`execution_receipts` 在工具执行前预占 key，重试回放已记录结果，审计失败可在不重复执行的情况下补齐。
+- **Decision + Audit 事务**：PostgreSQL `RecordDecisionWithAudit` 在同一个事务写入决策与 `action.decision` 事件。
+- **Fact 年龄限制 State**：`DerivedState.ValidUntil` 取 `now+TTL` 与最旧输入 Fact 的 `observed_at+30d` 的较早者；过期 Fact 不能生成新 State。
+- **CompetitionSnapshot TTL/decay**：`valid_until` 30 天硬上限；7 天后置信度线性衰减；`top1 <= top3 <= top10` 成为导入不变量。
+- **append-only 历史**：ResearchTask/机会评分使用每轮唯一 ID；同一 Program 最多一个 `QUEUED` 任务，被新任务 supersede；Scheduler 从数据库读取 cooldown。
+- **Butian 语义层次**：公益SRC 只发 `butian.pub.listed`，RUNNING 是派生状态；专属SRC/GROW 的报名与实战认证 Gate 不再写死 `UNSATISFIED`，由 Policy 结合账号状态解析。
+- **文档对齐**：CLAUDE/README/implementation-order 的阶段状态改为“Phase 0 complete; Phase 1–5 partially implemented; active execution disabled”。
+
 ## 文档入口 · Docs
 
 | 文档 | 它约束什么 |
@@ -325,6 +343,7 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 | [`docs/advices/2026-10-31-phase-0-1-hardening.md`](docs/advices/2026-10-31-phase-0-1-hardening.md) | 对复核意见的逐项修复记录 |
 | [`docs/advices/2026-10-31-phase-0-1-second-review.md`](docs/advices/2026-10-31-phase-0-1-second-review.md) | 第二次复核结论、已修问题与遗留项 |
 | [`docs/advices/2026-11-01-phase-1-5-high-review.md`](docs/advices/2026-11-01-phase-1-5-high-review.md) | Phase 1–5 high review 的 11 项修复与验证 |
+| [`docs/advices/2026-11-01-control-plane-hardening.md`](docs/advices/2026-11-01-control-plane-hardening.md) | 控制层收口：authoritative Asset、运行时约束、Egress、Authorize 重评估、执行回执、状态/竞争 TTL、Butian 语义 |
 | [`CLAUDE.md`](CLAUDE.md) | 编码代理的运行约定与仓库红线 |
 
 ## 工程原则 · Engineering rules

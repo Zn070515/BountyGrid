@@ -422,3 +422,12 @@ single_use（human-only 动作必须 true）
 15. `ContentsKnown=true` 且 `Include` 为空 → 任意资产 EXCLUDED；`*.example.com` 不匹配 apex。
 16. `Program.Status.Confidence < 0.8` → 执行类 REQUIRE_MORE_EVIDENCE；查看类不受影响。
 17. 同一 Evidence 重跑抽取幂等；同 Fact ID 不同内容 → 拒绝。
+
+## 12. Control-plane hardening（2026-11-01）
+
+- **Authoritative Asset**：调用方只能提交 `AssetID`。Action Gateway 从 `Program.Scope.ResolveAsset` 取 canonical Asset；未存储的 ID → `DENY ASSET_UNKNOWN`，不再接受调用方提供的 Asset 对象。
+- **Authorize 重新评估**：`ActionDecision` 持久化 `Request/ResourceID/UsageToday/BudgetSpent/Environment`。`Authorize` 重新加载 Account/Program、重新解析 Asset、重跑 Policy；任一门槛变化 → 执行前失败。旧格式（无 Request）Decision 只保留窄校验。
+- **审批消费时点**：`Policy.Decide` 校验但不消费 single-use approval；`Gateway.Authorize` 在重新评估通过后调用 `ApprovalLedger.Consume`。审批过期/已消费 → 不执行。
+- **Runtime constraints**：执行类动作检查 `AllowedTimeWindows`、`MaxRPS`、`MaxConcurrency`、`VPNRequired`、`DedicatedIPRequired`、`ResearcherHeaderRequired`、`TestAccountRequired`、`TestAccountReportingRequired`、`AllowedMethods/ForbiddenMethods`。缺 `ExecutionEnvironment` 证明 → `REQUIRE_MORE_EVIDENCE`；明确违反 → `DENY`。
+- **账号能力映射**：`PROGRAM_SIGNUP` 要求 `CanJoinPrograms` 且 Program `RUNNING`；`PAYOUT` 要求 `CanPayout`；`REPORT_SUBMIT` 要求 `CanSubmit`。
+- **Gate 运行时解析**：Program gate 只记录要求；`EvaluateEligibility` 用 `Account.PracticalCertification/JoinedProgramIDs/ComplianceExamCompleted/...` 覆盖 satisfaction。Reader 不得把 `PRACTICAL_CERTIFICATION` 或 `PROGRAM_SIGNUP` 冻结成 `UNSATISFIED`。
