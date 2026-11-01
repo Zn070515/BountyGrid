@@ -44,6 +44,14 @@ type ModelCall struct {
     或没有候选 provider。
   - `RESERVED` / `STARTED` 只出现在调用进行中；崩溃后停留在 `STARTED`
     的记录按 ambiguous 处理，必须人工对账。
+  - **整条 fallback 链期间逻辑调用保持 `STARTED`**：某次 provider 返回
+    `ErrNotSent` 只写 `FAILED_BEFORE_SEND` 的 attempt，不提前把逻辑调用
+    置为可回收状态；只有链结束才写终态（有成功 → `COMPLETED`，任一
+    attempt 可能已发送 → `AMBIGUOUS`，全部证明未发送 → `FAILED_BEFORE_SEND`）。
+    这样并发重试无法在链中途 `Reclaim` 同一个 CallID。
+  - 状态迁移是 CAS：`CallStore.Complete` 只允许 `RESERVED/STARTED → STARTED/终态`，
+    已终态的行不能被迟到 writer 覆盖（`ErrInvalidCallTransition`）。PostgreSQL
+    实现用 `WHERE status IN ('RESERVED','STARTED')` + 回读判定。
 - `TotalCost`：已完成尝试的**实际**成本 + ambiguous 尝试的**估算**成本。
   `FAILED_BEFORE_SEND` 尝试不计费。该值用于预算复核与人工对账，不是收入。
 - `HasAmbiguousAttempt`：只要任一次尝试为 `AMBIGUOUS` 就为 true，即使逻辑
@@ -102,7 +110,27 @@ req.CallID = model.StableCallID(req.TaskID, req.StepID, req.Purpose, model.Promp
 `Router.Options.RequireStableCallID=true` 会拒绝空 `CallID`，防止 worker 误用
 自动 ID。交互/adhoc 调用可以继续使用自动 ID（带时间戳与序列号）。
 
-## 5. 数据库
+## 5. 路由策略与 Provider 信任边界
+
+`ModelRequest.ModelEgress`、`Redacted`、`Escalation` 只是 CLI/测试提示，
+**不是授权**。Router 通过 `Options.PolicyResolver` 获取权威 `ModelPolicy`：
+
+- `PolicyResolver` 必须从持久化的 `Program.ModelEgressPolicy` 推导
+  `Egress`，从实际脱敏流程推导 `Redacted`，从可信的控制层 escalation 决策
+  推导 `Escalation`。resolver 返回错误时 Route 直接失败，不调用 provider；
+  `Candidates` 返回空计划。
+- 未配置 resolver 时 fail closed 为 `LOCAL_ONLY`、无 escalation、未脱敏。
+- `ProviderTrust` 分三类：`IN_PROCESS`（本进程/loopback/unix/static）、
+  `LOCAL_NETWORK`（内网另一台机器，endpoint 必须是 IP 字面量且落在
+  `Options.TrustedNetworks` CIDR 内）、`THIRD_PARTY`（云/远程 API）。
+- `SENSITIVE` 只允许 `IN_PROCESS`；`LOCAL_NETWORK` 是另一台主机，可能记录或
+  转发 prompt，视为离开进程。
+- `THIRD_PARTY` 只有在 resolver 给出非空 `Escalation` 时才进入候选；
+  没有 escalation 时，本地 provider 全部失败也不会隐式 fallback 到远程。
+- 空 `Endpoint` + `Local=true` 以及 loopback/unix 端点按 `IN_PROCESS` 处理，
+  兼容旧 catalog；显式 `Trust` 优先。
+
+## 6. 数据库
 
 `model_calls`（逻辑）：
 
@@ -133,7 +161,7 @@ req.CallID = model.StableCallID(req.TaskID, req.StepID, req.Purpose, model.Promp
 `FAILED_BEFORE_SEND`。逻辑表的状态约束保持
 `RESERVED/STARTED/COMPLETED/AMBIGUOUS/FAILED_BEFORE_SEND`。
 
-## 6. 对账与限制
+## 7. 对账与限制
 
 - `FAILED_BEFORE_SEND` 的逻辑调用可以被 `Reclaim`；级联删除其尝试后，同一
   `CallID` 可以重新预占。

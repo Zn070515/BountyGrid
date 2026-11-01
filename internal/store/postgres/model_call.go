@@ -63,18 +63,24 @@ func (r *Repo) CompleteModelCall(ctx context.Context, id string, rec model.Model
 		// started, leaving it permanently non-reclaimable and retry-blocked.
 		status = model.CallCompleted
 	}
+	if !status.Valid() {
+		return fmt.Errorf("%w: call %s: unknown status %q", model.ErrInvalidCallTransition, id, status)
+	}
 	rec.FinalStatus = status
 	data, err := mustJSON(rec)
 	if err != nil {
 		return err
 	}
+	// CAS: only a non-terminal call may advance. STARTED -> STARTED is allowed
+	// for the next attempt of a fallback chain, but a terminal row must never be
+	// overwritten by a stale writer that finished after another attempt.
 	tag, err := r.Pool.Exec(ctx, `
 		UPDATE model_calls SET
 			step_id=$2, purpose=$3, data_class=$4, error=$5,
 			started_at=$6, ended_at=$7, status=$8,
 			total_cost_cents=$9, cost_cents=$9, currency=$10,
 			has_ambiguous_attempt=$11, updated_at=now(), data=$12::jsonb
-		WHERE id=$1`,
+		WHERE id=$1 AND status IN ('RESERVED','STARTED')`,
 		id, rec.StepID, rec.Purpose, rec.DataClass, rec.Error,
 		nullTime(rec.StartedAt), nullTime(rec.EndedAt), status,
 		rec.TotalCost.Amount, nullString(rec.TotalCost.Currency),
@@ -83,7 +89,21 @@ func (r *Repo) CompleteModelCall(ctx context.Context, id string, rec model.Model
 		return fmt.Errorf("postgres: complete model call: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("postgres: model call %s not found", id)
+		var current model.CallStatus
+		qerr := r.Pool.QueryRow(ctx, `SELECT status FROM model_calls WHERE id=$1`, id).Scan(&current)
+		switch {
+		case errors.Is(qerr, pgx.ErrNoRows):
+			return fmt.Errorf("postgres: model call %s not found", id)
+		case qerr != nil:
+			return fmt.Errorf("postgres: inspect model call %s: %w", id, qerr)
+		case !current.CanTransition(status):
+			return fmt.Errorf("%w: call %s: %s -> %s",
+				model.ErrInvalidCallTransition, id, current, status)
+		default:
+			// The row changed between the UPDATE and this read. Treat it as a
+			// stale/racing writer rather than retrying the transition.
+			return fmt.Errorf("%w: call %s: status changed concurrently", model.ErrInvalidCallTransition, id)
+		}
 	}
 	return nil
 }

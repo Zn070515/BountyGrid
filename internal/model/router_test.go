@@ -32,10 +32,23 @@ func testRequest(p Purpose, d DataClass, maxTokens int, budget int64) ModelReque
 	}
 }
 
+// testPolicyResolver is a test adapter that echoes the request hints. It is not
+// a production authority: these tests exercise routing, not policy storage.
+func testPolicyResolver() PolicyResolver {
+	return PolicyResolverFunc(func(ctx context.Context, req ModelRequest) (ModelPolicy, error) {
+		return ModelPolicy{
+			Egress: req.ModelEgress, Redacted: req.Redacted, Escalation: req.Escalation,
+		}, nil
+	})
+}
+
 func newTestRouter(t *testing.T, providers ...Provider) (*Router, *audit.MemoryStore) {
 	t.Helper()
 	aud := audit.NewMemoryStore()
-	r, err := New(Options{Providers: providers, Auditor: aud, Now: func() time.Time { return testNow }})
+	r, err := New(Options{
+		Providers: providers, Auditor: aud, PolicyResolver: testPolicyResolver(),
+		Now: func() time.Time { return testNow },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,25 +196,28 @@ func TestModelEgressCandidates(t *testing.T) {
 	r, _ := newTestRouter(t, remote, local)
 
 	cases := []struct {
-		name   string
-		policy domain.ModelEgressPolicy
-		class  DataClass
-		redact bool
-		want   []string
+		name       string
+		policy     domain.ModelEgressPolicy
+		class      DataClass
+		redact     bool
+		escalation EscalationReason
+		want       []string
 	}{
-		{"unknown defaults local", domain.ModelEgressUnknown, DataPublic, false, []string{"local"}},
-		{"empty defaults local", "", DataPublic, false, []string{"local"}},
-		{"local only", domain.ModelEgressLocalOnly, DataPublic, false, []string{"local"}},
-		{"redacted only without flag", domain.ModelEgressRemoteRedactedOnly, DataPublic, false, []string{"local"}},
-		{"redacted only with flag", domain.ModelEgressRemoteRedactedOnly, DataPublic, true, []string{"local", "remote"}},
-		{"redacted only sensitive", domain.ModelEgressRemoteRedactedOnly, DataSensitive, true, []string{"local"}},
-		{"remote allowed", domain.ModelEgressRemoteAllowed, DataInternal, false, []string{"local", "remote"}},
-		{"remote allowed sensitive", domain.ModelEgressRemoteAllowed, DataSensitive, false, []string{"local"}},
+		{"unknown defaults local", domain.ModelEgressUnknown, DataPublic, false, "", []string{"local"}},
+		{"empty defaults local", "", DataPublic, false, "", []string{"local"}},
+		{"local only", domain.ModelEgressLocalOnly, DataPublic, false, "", []string{"local"}},
+		{"remote allowed without escalation", domain.ModelEgressRemoteAllowed, DataInternal, false, "", []string{"local"}},
+		{"redacted only without flag", domain.ModelEgressRemoteRedactedOnly, DataPublic, false, EscalationStalled, []string{"local"}},
+		{"redacted only with flag", domain.ModelEgressRemoteRedactedOnly, DataPublic, true, EscalationStalled, []string{"remote", "local"}},
+		{"redacted only sensitive", domain.ModelEgressRemoteRedactedOnly, DataSensitive, true, EscalationStalled, []string{"local"}},
+		{"remote allowed escalated", domain.ModelEgressRemoteAllowed, DataInternal, false, EscalationStalled, []string{"remote", "local"}},
+		{"remote allowed sensitive", domain.ModelEgressRemoteAllowed, DataSensitive, false, EscalationStalled, []string{"local"}},
 	}
 	for _, tc := range cases {
 		req := testRequest(PurposeAnalyze, tc.class, 1000, 100)
 		req.ModelEgress = tc.policy
 		req.Redacted = tc.redact
+		req.Escalation = tc.escalation
 		var got []string
 		for _, c := range r.Candidates(req) {
 			got = append(got, c.Name)

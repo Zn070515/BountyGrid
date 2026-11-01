@@ -32,6 +32,10 @@ var (
 	// ErrStableCallIDRequired means worker mode was configured to require an
 	// explicit, deterministic CallID and the request did not carry one.
 	ErrStableCallIDRequired = errors.New("model: worker mode requires a stable call ID")
+	// ErrInvalidCallTransition means a late/stale writer tried to overwrite a
+	// terminal logical call (COMPLETED/AMBIGUOUS/FAILED_BEFORE_SEND), or to move
+	// a call backwards. The recorded status is authoritative.
+	ErrInvalidCallTransition = errors.New("model: invalid call status transition")
 )
 
 type Purpose string
@@ -156,12 +160,47 @@ type Usage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
+// ModelPolicy is the authoritative routing policy for one request. It is
+// returned by a PolicyResolver backed by the Program/evidence store. The
+// ModelRequest.ModelEgress, Redacted and Escalation fields are hints for CLIs
+// and tests; the Router must never treat them as authority.
+type ModelPolicy struct {
+	// Egress is the program-level ceiling. Zero value/UNKNOWN means LOCAL_ONLY.
+	Egress domain.ModelEgressPolicy
+	// Redacted attests that this prompt/task was redacted for the request.
+	Redacted bool
+	// Escalation is the externally authorized escalation decision. Empty means
+	// no escalation: third-party providers are not eligible at all.
+	Escalation EscalationReason
+}
+
+// PolicyResolver returns the authoritative policy for a request. Implementations
+// must derive Egress from the stored Program.ModelEgressPolicy, Redacted from a
+// redaction attestation for this prompt/task, and Escalation from a trusted
+// external escalation decision. If no resolver is configured the Router fails
+// closed to LOCAL_ONLY with no escalation and no redaction.
+type PolicyResolver interface {
+	ResolveModelPolicy(ctx context.Context, req ModelRequest) (ModelPolicy, error)
+}
+
+// PolicyResolverFunc adapts a function to PolicyResolver. It is useful for
+// tests, CLIs and store-backed adapters.
+type PolicyResolverFunc func(ctx context.Context, req ModelRequest) (ModelPolicy, error)
+
+func (f PolicyResolverFunc) ResolveModelPolicy(ctx context.Context, req ModelRequest) (ModelPolicy, error) {
+	return f(ctx, req)
+}
+
 // ModelRequest is one routed model call. TaskID is optional; when present it
 // links the call to a ResearchTask. StepID names the task step and, together
 // with the prompt hash, produces a stable call ID for worker retries.
 type ModelRequest struct {
-	TaskID    domain.TaskID `json:"task_id,omitempty"`
-	StepID    string        `json:"step_id,omitempty"`
+	TaskID domain.TaskID `json:"task_id,omitempty"`
+	// ProgramID identifies the program whose egress policy governs this call.
+	// A production PolicyResolver should require it; it is optional here so
+	// interactive/dry-run callers can still describe a local-only plan.
+	ProgramID domain.ProgramID `json:"program_id,omitempty"`
+	StepID    string           `json:"step_id,omitempty"`
 	Purpose   Purpose       `json:"purpose"`
 	DataClass DataClass     `json:"data_class"`
 	// Provenance records the data classes of the inputs (evidence, task, source
@@ -171,14 +210,15 @@ type ModelRequest struct {
 	Input      []Message    `json:"input"`
 	MaxTokens  int          `json:"max_tokens"`
 	Budget     domain.Money `json:"budget"`
-	// ModelEgress is the program-level egress ceiling. The zero value and
-	// UNKNOWN behave as LOCAL_ONLY.
+	// ModelEgress is a caller hint for CLI/test plans. The Router never treats
+	// it as authority; PolicyResolver supplies the effective policy. The zero
+	// value and UNKNOWN behave as LOCAL_ONLY.
 	ModelEgress domain.ModelEgressPolicy `json:"model_egress,omitempty"`
-	// Redacted attests that the request content has been redacted. It is
-	// required (and only meaningful) for REMOTE_REDACTED_ONLY egress.
+	// Redacted is a caller hint. The Router uses the PolicyResolver attestation
+	// instead, so a forged true value cannot unlock remote egress.
 	Redacted bool `json:"redacted,omitempty"`
-	// Escalation is empty for the default local-first route. A set reason may
-	// prefer a stronger remote provider when the egress policy permits it.
+	// Escalation is a caller hint. The Router only allows third-party providers
+	// when the PolicyResolver authorizes escalation; a forged value is ignored.
 	Escalation EscalationReason `json:"escalation,omitempty"`
 	// CallID is an optional idempotency key. When set, a retry with the same ID
 	// is rejected instead of paying for a second model call. Worker mode
@@ -236,6 +276,35 @@ type ModelResponse struct {
 	Cost       domain.Money  `json:"cost"`
 }
 
+// ProviderTrust is the deployment/trust boundary of a model provider.
+//
+// The three kinds replace the old binary Local flag:
+//
+//   - IN_PROCESS: the model runs in this process (static/dry-run, or a
+//     loopback/unix/stdio endpoint). Never leaves the machine.
+//   - LOCAL_NETWORK: a trusted LAN endpoint (for example a Strata server on
+//     another machine). It is not third-party cloud egress, but it is not the
+//     same process either, so its IP literal must be inside an
+//     operator-configured trusted CIDR.
+//   - THIRD_PARTY: a cloud/remote API. Only eligible with an authoritative
+//     escalation decision, and never for SENSITIVE data.
+type ProviderTrust string
+
+const (
+	TrustInProcess    ProviderTrust = "IN_PROCESS"
+	TrustLocalNetwork ProviderTrust = "LOCAL_NETWORK"
+	TrustThirdParty   ProviderTrust = "THIRD_PARTY"
+)
+
+func (t ProviderTrust) Valid() bool {
+	switch t {
+	case TrustInProcess, TrustLocalNetwork, TrustThirdParty:
+		return true
+	default:
+		return false
+	}
+}
+
 // ProviderInfo declares what a provider may be used for. Prices are in the
 // smallest currency unit (fen) per million tokens.
 type ProviderInfo struct {
@@ -249,11 +318,15 @@ type ProviderInfo struct {
 	MaxOutputTokens    int
 	InputPricePerMTok  int64
 	OutputPricePerMTok int64
-	// Endpoint is the provider's transport identity. A provider declared Local
-	// must use a loopback/unix/in-process endpoint; Router.New rejects a "local"
-	// provider pointed at a remote URL. An empty endpoint is an in-process
-	// provider (for example StaticProvider).
+	// Endpoint is the provider's transport identity. A loopback/unix/static
+	// endpoint is IN_PROCESS. A LOCAL_NETWORK provider must use an IP literal
+	// inside Router.Options.TrustedNetworks. An empty endpoint is an in-process
+	// provider (for example StaticProvider) when Local is true.
 	Endpoint string
+	// Trust is the deployment/trust boundary. The zero value is inferred from
+	// Local and Endpoint for legacy catalogs: a loopback/unix/static endpoint or
+	// Local=true with no endpoint is IN_PROCESS, everything else is THIRD_PARTY.
+	Trust ProviderTrust
 	// ToolCalling/Vision/StructuredOutput describe optional capabilities.
 	ToolCalling      bool
 	Vision           bool
@@ -264,17 +337,50 @@ type ProviderInfo struct {
 	Strength int
 }
 
-// IsLocal reports whether the provider's transport is local. Locality is a
-// property of the transport, not a self-declared boolean: a non-empty remote
-// endpoint is never local even if Local=true.
-func (i ProviderInfo) IsLocal() bool {
-	if endpointIsLocal(i.Endpoint) {
-		return true
+// EffectiveTrust resolves the explicit Trust kind or, for legacy catalogs,
+// infers it from Local/Endpoint. An explicit value always wins.
+func (i ProviderInfo) EffectiveTrust() ProviderTrust {
+	switch i.Trust {
+	case TrustInProcess, TrustLocalNetwork, TrustThirdParty:
+		return i.Trust
 	}
-	if i.Endpoint != "" {
+	if endpointIsLocal(i.Endpoint) {
+		return TrustInProcess
+	}
+	if i.Endpoint == "" {
+		if i.Local {
+			return TrustInProcess
+		}
+		return TrustThirdParty
+	}
+	return TrustThirdParty
+}
+
+// IsLocal reports whether the provider runs in this process. It is retained for
+// legacy tests/callers; the Router uses IsLocalTrust/IsThirdParty so a trusted
+// LAN provider is not mistaken for either a cloud provider or an in-process one.
+func (i ProviderInfo) IsLocal() bool {
+	return i.EffectiveTrust() == TrustInProcess
+}
+
+// IsThirdParty reports whether the provider is cloud/remote egress.
+func (i ProviderInfo) IsThirdParty() bool {
+	return i.EffectiveTrust() == TrustThirdParty
+}
+
+// IsLocalTrust reports whether the provider is inside the trusted boundary:
+// an in-process endpoint, or a LOCAL_NETWORK endpoint whose IP literal is in
+// one of the trusted CIDRs. A THIRD_PARTY provider is never trusted-local.
+func (i ProviderInfo) IsLocalTrust(trusted []netip.Prefix) bool {
+	switch i.EffectiveTrust() {
+	case TrustInProcess:
+		return i.Endpoint == "" || endpointIsLocal(i.Endpoint)
+	case TrustLocalNetwork:
+		ip, ok := endpointIP(i.Endpoint)
+		return ok && trustedContains(trusted, ip)
+	default:
 		return false
 	}
-	return i.Local
 }
 
 // endpointIsLocal accepts loopback hosts, unix/named-pipe/static schemes and
@@ -301,6 +407,42 @@ func endpointIsLocal(endpoint string) bool {
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
 		return ip.Unmap().IsLoopback()
+	}
+	return false
+}
+
+// endpointIP extracts an IP literal from a provider endpoint. It accepts a URL
+// (http://10.0.0.5:8000), host:port (10.0.0.5:8000) and a bare literal
+// (10.0.0.5). A hostname is not accepted: a LOCAL_NETWORK provider must pin an
+// address rather than rely on DNS.
+func endpointIP(endpoint string) (netip.Addr, bool) {
+	e := strings.TrimSpace(endpoint)
+	if e == "" {
+		return netip.Addr{}, false
+	}
+	if u, err := url.Parse(e); err == nil && u.Hostname() != "" {
+		return parseAddrHost(u.Hostname())
+	}
+	if h, _, err := net.SplitHostPort(e); err == nil {
+		return parseAddrHost(h)
+	}
+	return parseAddrHost(e)
+}
+
+func parseAddrHost(host string) (netip.Addr, bool) {
+	host = strings.Trim(host, "[]")
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.Unmap(), true
+	}
+	return netip.Addr{}, false
+}
+
+func trustedContains(prefixes []netip.Prefix, ip netip.Addr) bool {
+	ip = ip.Unmap()
+	for _, p := range prefixes {
+		if p.Contains(ip) {
+			return true
+		}
 	}
 	return false
 }
