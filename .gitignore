@@ -41,3 +41,7 @@ Thumbs.db
 
 # Local-only reviewer notes (not published)
 /docs/advices/
+
+# Python bytecode from benchmark scripts
+__pycache__/
+*.pyc
