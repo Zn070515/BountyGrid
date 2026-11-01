@@ -339,9 +339,9 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - `VERIFIED` 必须 `Reproduced/InScope/ImpactVerified/DataMinimized` 全真且有 Evidence；模型不能单独判 VERIFIED。
 - `go run ./cmd/bountygrid verify -file <json> -persist` 从 PostgreSQL 加载 Program/Decision/Finding，证据 ID 必须存在，写 `verifications`。
 - 证据防伪：`VERIFIED` 额外要求 `DuplicateChecked`，AI 辅助时必须持久化 `HumanVerified + HumanVerificationRef`；CLI 不接受调用方覆盖 `now`。
-- `internal/report.Build`：只接受 `VERIFIED` 的 Verification；组装 `ReportDraft`（`DRAFT`）并返回 `Missing/Ready`。通用必填 + Xianzhi `account_name` / Butian `category`；Butian GROW 的 AI 披露要求模型名/版本/工具名；附件按平台校验扩展名。
+- `internal/report.Build`：只接受 `VERIFIED` 的 Verification；组装 `ReportDraft`（`DRAFT`）并返回 `Missing/Ready`。通用必填 + Xianzhi `account_name` / Butian `vendor/category/asset_scope/weight/activity/task_id/industry/region/contact`；Butian GROW 的 AI 披露要求模型名/版本/工具名；附件按平台校验扩展名；report 文本含 cookie/token/密码/证件/银行卡/完整手机号/邮箱会被拒绝。
 - `go run ./cmd/bountygrid report -file <json> -persist` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`；不提交、不勾选协议。
-- `internal/submit.Service`：`report.Recheck` → `REPORT_SUBMIT` ActionRequest（绑定 `report_id + report_content_hash`）→ Gateway `ALLOW` → `AuthorizeWith` 消费 single-use approval → `Submitter`。本仓库只有 `DryRunSubmitter`，**不触达平台**；审批后修改草稿会使 content hash 不匹配。
+- `internal/submit.Service`：`report.Recheck`（不补默认值）→ 当前 Program.Scope 资产复核 → `REPORT_SUBMIT` ActionRequest（绑定 `report_id + report_content_hash`）→ Gateway `ALLOW` → `AuthorizeWith` 消费 single-use approval → `Submitter`。本仓库只有 `DryRunSubmitter`，**不触达平台**；dry-run 不改变草稿状态，后续仍可真实提交；同一 report 只允许一次真实提交（`submissions.report_id` 唯一 + `GetSubmissionByReport` 前置检查 + `RecordSubmission` 事务）。审批后修改草稿会使 content hash 不匹配。
 - `go run ./cmd/bountygrid submit -print-binding -report <id> -approval-id <id>` 打印审批必须绑定的 `request_id/parameters_hash`（含内容 hash）；`submit -report -account -approval <json>` 执行 dry-run 并写 `submissions`。`approval_id` 有唯一索引，防止同一审批提交两次。
 - `internal/ledger`：v1 只记 CNY 现金；`PAID` 是到账净额，`FEE/TAX` 仅展示；`EXPECTED/SUBMITTED` 不计净收入。
 - `ExternalRef` 对 `PAID/REFUND/REVERSAL` 必填，`(platform,kind,external_ref)` 唯一；`REVERSAL` 只能冲 `PAID/REFUND` 且不得超过目标金额；同 ID 同内容幂等、不同内容报错。
