@@ -205,12 +205,14 @@
 - 模型不能单独判 VERIFIED。
 - 退出条件：未复现 Finding 不能进入报告。
 
-**当前实现（2026-11-01）**：`internal/verify.RuleVerifier` 按 Scope → 授权 → 数据最小化/公开已知 → 重复 → AI 人工验证 → 复现/影响的顺序判定；`VERIFIED` 要求四项 flag 全真且有 Evidence。`bountygrid verify -file` 从 PostgreSQL 加载 Program/Decision，`-persist` 写 `verifications`；`PutVerification/GetVerification` 已接入仓储。仍差：Finding 状态机自动推进、ReportDraft AIDisclosure、人工复核 UI。
+**当前实现（2026-11-01）**：`internal/verify.RuleVerifier` 按 Scope → 授权 → 数据最小化/公开已知 → 重复 → AI 人工验证 → 复现/影响的顺序判定；`VERIFIED` 要求四项 flag 全真、有 Evidence、`DuplicateChecked`，AI 辅助时持久化人工验证 trace。`bountygrid verify -file` 从 PostgreSQL 加载 Program/Decision/Finding、校验证据存在性，`-persist` 写 `verifications`。仍差：Finding 状态机自动推进、人工复核 UI。
 
 ### 6.2 ReportDraft
 
 - 三平台字段映射；必填检查；AI 披露。
 - 退出条件：缺字段返回 REQUIRE_MORE_EVIDENCE；补天 GROW AI 字段完整。
+
+**当前实现（2026-11-01）**：`internal/report.Build` 只接受 `VERIFIED` Verification；通用必填字段 + Xianzhi `account_name` / Butian `category`；AI 披露要求 `human_verification`，Butian GROW 还要求模型名/版本/工具名；附件按平台校验扩展名。`bountygrid report -file [-persist]` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`。仍差：ReportDraft→READY_FOR_REVIEW 的人工状态推进、附件大小/上传、Submission。
 
 ## 7. Submission（Vulbox 首个）
 

@@ -491,6 +491,24 @@ func (d ActionDecision) Validate() error {
 	return nil
 }
 
+func (d ReportDraft) Validate() error {
+	if d.ID == "" || d.FindingID == "" || d.ProgramID == "" {
+		return fmt.Errorf("report draft: id/finding_id/program_id required")
+	}
+	if strings.TrimSpace(d.Status) == "" {
+		return fmt.Errorf("report draft %s: status is empty", d.ID)
+	}
+	if d.CreatedAt.IsZero() {
+		return fmt.Errorf("report draft %s: created_at is zero", d.ID)
+	}
+	for _, a := range d.Attachments {
+		if strings.TrimSpace(a) == "" {
+			return fmt.Errorf("report draft %s: empty attachment path", d.ID)
+		}
+	}
+	return nil
+}
+
 func (v Verification) Validate() error {
 	if v.ID == "" || v.FindingID == "" {
 		return fmt.Errorf("verification: id/finding_id required")

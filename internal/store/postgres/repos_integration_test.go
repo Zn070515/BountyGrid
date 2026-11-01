@@ -397,9 +397,14 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err != nil || gotVerification.Verdict != domain.VerdictRejected {
 		t.Fatalf("verification update = %+v %v", gotVerification, err)
 	}
-	report := domain.ReportDraft{ID: reportID, FindingID: findingID, ProgramID: progID, Status: "DRAFT", CreatedAt: now}
+	report := domain.ReportDraft{ID: reportID, FindingID: findingID, ProgramID: progID, Status: "DRAFT", CreatedAt: now,
+		Fields: map[string]string{"title": "it"}, AIDisclosure: map[string]string{}}
 	if err := r.PutReportDraft(ctx, report); err != nil {
 		t.Fatal(err)
+	}
+	gotReport, err := r.GetReportDraft(ctx, reportID)
+	if err != nil || gotReport.FindingID != findingID || gotReport.Fields["title"] != "it" {
+		t.Fatalf("report draft roundtrip = %+v %v", gotReport, err)
 	}
 	sub := domain.Submission{ID: subID, ReportID: reportID, ProgramID: progID, SubmittedAt: now, Receipt: "it", Status: "SUBMITTED", ApprovalID: "it-approval"}
 	if err := r.PutSubmission(ctx, sub); err != nil {

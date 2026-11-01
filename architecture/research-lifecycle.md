@@ -145,6 +145,8 @@ type Verifier interface {
 - 三平台都要求人工验证；补天 GROW AI 赛道还要求模型/工具字段。
 - AI 未验证报告 >3/>5 有处罚；Policy Engine 在提交前检查披露完整性。
 
+**当前实现（2026-11-01）**：`internal/report.Build` 只接受 `VERIFIED` 的 Verification，组装 `ReportDraft`（`DRAFT`）并返回 `Missing/Ready`。通用必填：`title/asset_url/vuln_type/severity/summary/steps/poc/impact/remediation`；Xianzhi 额外要求 `account_name`（`task_id` 默认 Program.NativeID）；Butian 额外要求 `category`（`vendor` 默认 Program.Name）。AI 披露要求 `human_verification`，Butian GROW 还要求 `model_name/model_version/tool_name`。附件按平台校验扩展名（Vulbox 文档/压缩包；Butian 只收 zip/rar）。`bountygrid report -file [-persist]` 从 PostgreSQL 加载 Program/Finding/Verification，`-persist` 写 `report_drafts`。本步骤不提交、不勾选协议、不代签 NDA。
+
 ## 5. Submission
 
 ### 5.1 人工审批
