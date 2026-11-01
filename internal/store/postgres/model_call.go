@@ -58,7 +58,10 @@ func (r *Repo) ReserveModelCall(ctx context.Context, id string, rec model.CallRe
 func (r *Repo) CompleteModelCall(ctx context.Context, id string, rec model.CallRecord) error {
 	status := rec.Status
 	if status == "" {
-		status = model.CallReserved
+		// "Complete" is the successful transition. Defaulting to RESERVED here
+		// (as ReserveModelCall does) would record a finished call as never
+		// started, leaving it permanently non-reclaimable and retry-blocked.
+		status = model.CallCompleted
 	}
 	rec.Status = status
 	data, err := mustJSON(rec)
