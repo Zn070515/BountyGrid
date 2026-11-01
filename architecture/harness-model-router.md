@@ -214,6 +214,16 @@ type Router interface {
 - 实测：`view_rules` ALLOW → Authorize → 执行成功；缺失账号 DENY `CONTEXT_NOT_FOUND`，工具未执行；`action_decisions=5`、`tool.executed=1`。
 - 未实现：Model Router、ResearchTask 自动领取、真实执行工具（本仓库禁止真实测试）。
 
+### 5.2 Model Router 实现记录（2026-11-01）
+
+- `internal/model`：`Purpose`（PLAN/ANALYZE/CODE/REPORT/EMBED）、`DataClass`（PUBLIC/INTERNAL/SENSITIVE）、`ProviderInfo`、`Provider`、`Router`。
+- 路由：`SENSITIVE` 只允许 `Local=true` 的 Provider；无本地 Provider → `ErrNoProvider`，绝不降级到云端。PLAN/ANALYZE 优先强远程模型，CODE/EMBED/REPORT 优先本地；`MaxOutputTokens` 不足的 Provider 不参与。
+- 预算：调用前按 `MaxTokens` + 字符数估算成本并跳过超预算 Provider；调用后按实际 usage 复核，超预算则丢弃响应并返回 `ErrBudgetExceeded`。所有价格以“分/百万 token、CNY”表示。
+- 审计：每次尝试写 `model.call`，payload 只有 `task_id/purpose/data_class/provider/model/prompt_hash/response_hash/usage/cost/duration_ms/error`，不含 prompt/response 原文。审计写入失败会随响应一起返回错误，不静默忽略。
+- 失败降级：Provider 报错时记录失败并按路由顺序尝试下一个；全部失败返回最后一个错误。
+- `bountygrid model -purpose ... -data-class ... -max-tokens ... -budget ...` 只打印路由计划（`Candidates` + 估算成本），不调用模型、不发网络请求。
+- 未实现：真实本地/云端 Provider 适配器（需要 env 配置与密钥管理）、持久化 `model_calls` 表、Model Router 与 ResearchTask 的自动领取。`StaticProvider` 仅用于测试/本地 dry-run。
+
 ## 6. 审计事件
 
 - `harness.task.started/stopped`

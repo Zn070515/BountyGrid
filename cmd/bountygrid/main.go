@@ -81,6 +81,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "harness:", err)
 			os.Exit(1)
 		}
+	case "model":
+		if err := runModel(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "model:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("bountygrid dev")
 	default:
@@ -90,7 +95,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|decide|schedule|competition|harness|version>")
+	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|decide|schedule|competition|harness|model|version>")
 }
 
 func dsn() (string, error) {

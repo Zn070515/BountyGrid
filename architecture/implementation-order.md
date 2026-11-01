@@ -23,7 +23,7 @@
 | Phase 2：Facts + State | 已实现并硬化；State TTL 受输入 Fact 年龄限制 |
 | Phase 3：Policy Engine / Gateway | 已实现并硬化：authoritative Asset、ExecutionEnvironment、Authorize 重评估、审批在执行前消费 |
 | Phase 4：Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、唯一 QUEUED 任务、CompetitionSnapshot TTL/decay |
-| Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执已实现；Model Router 未实现，无 ACTIVE_HTTP 工具 |
+| Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执已实现；Model Router 路由/数据分级/预算/审计已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
 | Phase 6+：Verification / Submission / Ledger | 领域类型为主，未进入 |
 
 > **真实状态：Phase 0 complete; Phase 1–5 partially implemented; active execution remains disabled.**
@@ -187,13 +187,15 @@
 - 沙箱/网络白名单/预算。
 - 退出条件：工具无法绕过 Policy；越权请求被 DENY。
 
-**当前实现（2026-11-01）**：`internal/harness` 的 Registry 校验工具名/动作/重复；Harness 强制 Evaluate→ALLOW→Budget→Authorize→Execute，DENY/REQUIRE_HUMAN 不调用工具；网络工具只拿到 `harness.Egress`（每次请求/重定向走 `Sandbox.CheckURL`），空 allowlist 直接拒绝；Destructive 默认禁用。`NetworkEgress`/`WritesFiles`/`Destructive` 工具必须有 `IdempotencyKey`，执行前预占 `execution_receipts`，重试回放而不再执行；工具已执行但审计失败时，回执保持 `EXECUTED`，重试只补审计。内置 `view_rules/read_scope/report_draft` 只读工具；`tool.executed` 审计。实测 ALLOW 执行、缺失账号 DENY 且工具未执行；`action_decisions=5`、`tool.executed=1`。仍差：Model Router、真实执行工具（本仓库禁止真实测试）、ResearchTask 自动领取。
+**当前实现（2026-11-01）**：`internal/harness` 的 Registry 校验工具名/动作/重复；Harness 强制 Evaluate→ALLOW→Budget→Authorize→Execute，DENY/REQUIRE_HUMAN 不调用工具；网络工具只拿到 `harness.Egress`（每次请求/重定向走 `Sandbox.CheckURL`），空 allowlist 直接拒绝；Destructive 默认禁用。`NetworkEgress`/`WritesFiles`/`Destructive` 工具必须有 `IdempotencyKey`，执行前预占 `execution_receipts`，重试回放而不再执行；工具已执行但审计失败时，回执保持 `EXECUTED`，重试只补审计。内置 `view_rules/read_scope/report_draft` 只读工具；`tool.executed` 审计。实测 ALLOW 执行、缺失账号 DENY 且工具未执行；`action_decisions=5`、`tool.executed=1`。仍差：真实执行工具（本仓库禁止真实测试）、ResearchTask 自动领取。
 
 ### 5.2 Model Router
 
 - 路由/预算/数据分级/审计。
 - 模型输出不直接执行动作。
 - 退出条件：SENSITIVE 数据默认本地；模型调用有成本/证据记录。
+
+**当前实现（2026-11-01）**：`internal/model` 实现 `Purpose/DataClass/ProviderInfo/Provider/Router`；SENSITIVE 只走本地，无本地 Provider 直接 `ErrNoProvider`；PLAN/ANALYZE 优先强远程、CODE/EMBED/REPORT 优先本地；调用前估算、调用后按实际 usage 复核预算；每次尝试写 `model.call` 审计（只有 hash/usage/cost，不含原文）。`bountygrid model` 仅输出路由计划，不调用模型。仍差：真实本地/云端 Provider、持久化 `model_calls`、ResearchTask 自动领取。
 
 ## 6. Verification + Report
 
