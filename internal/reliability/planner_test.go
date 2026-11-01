@@ -81,7 +81,7 @@ func TestLoopExecutesExactlyOneActionPerStep(t *testing.T) {
 	executor := &fakeExecutor{}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor,
-		Authorization: loopAuthorization(), MaxSteps: 1, Now: fixedNow,
+		Authorization: loopAuthorization(), MaxSteps: 1, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestLoopFiltersDisallowedActions(t *testing.T) {
 	executor := &fakeExecutor{}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor,
-		Authorization: loopAuthorization(), MaxSteps: 1, Now: fixedNow,
+		Authorization: loopAuthorization(), MaxSteps: 1, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestLoopStopsAtMaxSteps(t *testing.T) {
 	executor := &fakeExecutor{}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor,
-		Authorization: loopAuthorization(), MaxSteps: 3, Now: fixedNow,
+		Authorization: loopAuthorization(), MaxSteps: 3, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestLoopReplansFromNewObservation(t *testing.T) {
 	}}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor,
-		Authorization: loopAuthorization(), MaxSteps: 2, Now: fixedNow,
+		Authorization: loopAuthorization(), MaxSteps: 2, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +204,7 @@ func TestLoopStopsWhenDetectorStalls(t *testing.T) {
 	executor := &fakeExecutor{}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor,
-		Authorization: loopAuthorization(), MaxSteps: 20, Now: fixedNow,
+		Authorization: loopAuthorization(), MaxSteps: 20, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +235,7 @@ func TestLoopStopsWhenBudgetExhausted(t *testing.T) {
 	executor := &fakeExecutor{}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor,
-		Authorization: loopAuthorization(), MaxSteps: 10, Now: fixedNow,
+		Authorization: loopAuthorization(), MaxSteps: 10, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +262,7 @@ func TestLoopRejectsExpiredAuthorization(t *testing.T) {
 	auth.ExpiresAt = testNow.Add(-time.Minute)
 	loop, err := NewLoop(LoopConfig{
 		Proposer: &fakeProposer{}, Executor: &fakeExecutor{},
-		Authorization: auth, MaxSteps: 1, Now: fixedNow,
+		Authorization: auth, MaxSteps: 1, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func TestExecutorFailureIsObservedAndNotEchoed(t *testing.T) {
 	}}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor,
-		Authorization: loopAuthorization(), MaxSteps: 1, Now: fixedNow,
+		Authorization: loopAuthorization(), MaxSteps: 1, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)

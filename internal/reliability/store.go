@@ -108,8 +108,13 @@ func (s *FileSessionStore) saveLocked(session *ResearchSession, path string) err
 		return fmt.Errorf("reliability: read existing session %s: %w", session.ID, err)
 	}
 
+	// Marshal a copy whose embedded Revision already matches the envelope. The
+	// live session is only advanced after the rename commits, so a failed write
+	// does not make the in-memory revision look saved.
+	snapshot := *session
+	snapshot.Revision = next
 	payload, err := json.MarshalIndent(sessionEnvelope{
-		Version: sessionSchemaVersion, Revision: next, SavedAt: time.Now().UTC(), Session: *session,
+		Version: sessionSchemaVersion, Revision: next, SavedAt: time.Now().UTC(), Session: snapshot,
 	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("reliability: marshal session %s: %w", session.ID, err)
@@ -144,18 +149,32 @@ func (s *FileSessionStore) saveLocked(session *ResearchSession, path string) err
 	return nil
 }
 
-const (
-	sessionLockSuffix = ".lock"
-	// sessionLockStale is when a lock left by a crashed writer may be broken.
-	// Saves are small; a live save should never take this long.
-	sessionLockStale = 30 * time.Second
-)
+const sessionLockSuffix = ".lock"
 
-// withLock serializes writers for one session. The lock file makes the
-// read-compare-write CAS safe across processes on a single machine; a stale
-// lock older than sessionLockStale is broken so a crash cannot block recovery.
+// withLock serializes writers for one session. The lock is an OS advisory lock
+// on a stable lock file:
+//
+//   - the kernel releases it when the holder closes the file or dies, so a
+//     crash needs no age-based "stale lock" breaking;
+//   - mtime is never used to steal a lock, which removes the TOCTOU race where
+//     two recovering writers could delete each other's fresh lock and both
+//     enter the revision CAS;
+//   - the lock file itself is left in place. Removing it after unlock would let
+//     two processes lock different inodes at the same path.
+//
+// The read-compare-write CAS in saveLocked still runs under this lock, so only
+// one writer can observe revision N and commit N+1.
 func (s *FileSessionStore) withLock(ctx context.Context, path string, fn func() error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	lockPath := path + sessionLockSuffix
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("reliability: open session lock: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
 	waitCtx := ctx
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -163,19 +182,13 @@ func (s *FileSessionStore) withLock(ctx context.Context, path string, fn func() 
 		defer cancel()
 	}
 	for {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(f, "%d %d", os.Getpid(), time.Now().Unix())
-			_ = f.Close()
-			defer func() { _ = os.Remove(lockPath) }()
-			return fn()
-		}
-		if !errors.Is(err, os.ErrExist) {
+		locked, err := tryLockFile(f)
+		if err != nil {
 			return fmt.Errorf("reliability: acquire session lock: %w", err)
 		}
-		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > sessionLockStale {
-			_ = os.Remove(lockPath)
-			continue
+		if locked {
+			defer func() { _ = unlockFile(f) }()
+			return fn()
 		}
 		select {
 		case <-waitCtx.Done():

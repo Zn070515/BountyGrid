@@ -112,7 +112,7 @@ func TestInterruptedAttemptOnlyBlocksSameToolAndArgs(t *testing.T) {
 	executor := &fakeExecutor{}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor, Authorization: loopAuthorization(),
-		MaxSteps: 1, Now: fixedNow,
+		MaxSteps: 1, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestInterruptedOnlyProposalsStopTheLoop(t *testing.T) {
 	executor := &fakeExecutor{}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor, Authorization: loopAuthorization(),
-		MaxSteps: 1, Now: fixedNow,
+		MaxSteps: 1, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -158,15 +158,21 @@ func TestInterruptedOnlyProposalsStopTheLoop(t *testing.T) {
 	}
 }
 
-func TestLoopRequiresStoreWhenConfigured(t *testing.T) {
+func TestLoopRequiresStoreByDefault(t *testing.T) {
 	cfg := LoopConfig{
 		Proposer: &fakeProposer{}, Executor: &fakeExecutor{},
-		Authorization: loopAuthorization(), RequireStore: true,
+		Authorization: loopAuthorization(),
 	}
 	if _, err := NewLoop(cfg); !errors.Is(err, ErrSessionStoreRequired) {
 		t.Fatalf("err = %v, want ErrSessionStoreRequired", err)
 	}
+	// Running without a store is an explicit, named choice, not the default.
+	cfg.AllowEphemeral = true
+	if _, err := NewLoop(cfg); err != nil {
+		t.Fatalf("explicit ephemeral loop rejected: %v", err)
+	}
 	cfg.Store = &capturingSessionStore{}
+	cfg.AllowEphemeral = false
 	if _, err := NewLoop(cfg); err != nil {
 		t.Fatalf("loop with store rejected: %v", err)
 	}
@@ -234,7 +240,7 @@ func TestSameProposalAcrossRunsGetsDistinctAttempts(t *testing.T) {
 	newLoop := func() *Loop {
 		loop, err := NewLoop(LoopConfig{
 			Proposer: proposer, Executor: executor, Authorization: loopAuthorization(),
-			MaxSteps: 1, Now: fixedNow,
+			MaxSteps: 1, AllowEphemeral: true, Now: fixedNow,
 		})
 		if err != nil {
 			t.Fatal(err)

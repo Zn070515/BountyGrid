@@ -184,7 +184,13 @@ func validatorGrant(now time.Time, prog domain.Program, epoch uint64) ExecutionG
 	}
 }
 
-func decideWithValidator(p GrantPolicy) (PolicyDecision, string) {
+// decideWithValidator pins the policy clock to the test clock. Without it,
+// GrantPolicy falls back to time.Now and these tests become a time bomb once
+// the hardcoded fixture date passes.
+func decideWithValidator(now time.Time, p GrantPolicy) (PolicyDecision, string) {
+	if p.Now == nil {
+		p.Now = func() time.Time { return now }
+	}
 	return p.Decide(context.Background(), Request{
 		Protocol: ProtocolHTTP, Host: "api.example.com", Port: 443,
 		Method: http.MethodGet, Path: "/x",
@@ -197,7 +203,7 @@ func TestGrantPolicyValidatorDeniesLeaseExpiry(t *testing.T) {
 	grant := validatorGrant(now, prog, epochOf(t, rev))
 	grant.LeaseUntil = now.Add(-time.Second)
 
-	decision, reason := decideWithValidator(GrantPolicy{Grant: &grant, Validator: v})
+	decision, reason := decideWithValidator(now, GrantPolicy{Grant: &grant, Validator: v})
 	if decision != Deny {
 		t.Fatalf("decision = %s (%s), want Deny", decision, reason)
 	}
@@ -214,7 +220,7 @@ func TestGrantPolicyValidatorDeniesBumpedEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	decision, reason := decideWithValidator(GrantPolicy{Grant: &grant, Validator: v})
+	decision, reason := decideWithValidator(now, GrantPolicy{Grant: &grant, Validator: v})
 	if decision != Deny {
 		t.Fatalf("decision = %s (%s), want Deny", decision, reason)
 	}
@@ -233,7 +239,7 @@ func TestGrantPolicyValidatorDeniesPausedProgram(t *testing.T) {
 	grant.ScopeRevision = paused.Scope.Revision()
 	grant.PolicyRevision = paused.PolicyRevision()
 
-	decision, reason := decideWithValidator(GrantPolicy{Grant: &grant, Validator: v})
+	decision, reason := decideWithValidator(now, GrantPolicy{Grant: &grant, Validator: v})
 	if decision != Deny {
 		t.Fatalf("decision = %s (%s), want Deny", decision, reason)
 	}
@@ -257,7 +263,7 @@ func TestGrantPolicyValidatorDeniesRevisionMismatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			grant := validatorGrant(now, prog, epochOf(t, rev))
 			tc.mutate(&grant)
-			decision, reason := decideWithValidator(GrantPolicy{Grant: &grant, Validator: v})
+			decision, reason := decideWithValidator(now, GrantPolicy{Grant: &grant, Validator: v})
 			if decision != Deny {
 				t.Fatalf("decision = %s (%s), want Deny", decision, reason)
 			}
@@ -273,7 +279,7 @@ func TestGrantPolicyValidatorAllowsFreshMatchingGrant(t *testing.T) {
 	v, prog, rev := grantValidatorFixture(t, now)
 	grant := validatorGrant(now, prog, epochOf(t, rev))
 
-	decision, reason := decideWithValidator(GrantPolicy{Grant: &grant, Validator: v})
+	decision, reason := decideWithValidator(now, GrantPolicy{Grant: &grant, Validator: v})
 	if decision != Allow {
 		t.Fatalf("decision = %s (%s), want Allow", decision, reason)
 	}

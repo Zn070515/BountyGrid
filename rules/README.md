@@ -137,9 +137,15 @@ Platform permissions exist in Go, not JSON:
 
 ```go
 store := postgres.NewEvidenceStore(pool) // implements authz.EvidenceStore
+contents, err := authz.NewFileContentReader(".evidence") // implements authz.EvidenceContentReader
+if err != nil {
+    return err
+}
+quote := "PERMISSION program=vulbox/444 action=ACTIVE_HTTP hosts=api.example.com methods=GET paths=/v1"
 pp, err := authz.BuildPlatformPolicy(ctx, program, []authz.PermissionFact{{
     EvidenceID:          "ev-platform-policy-...",
     EvidenceContentHash: "sha256:...", // the hash of that Evidence record
+    EvidenceQuote:       quote,        // must exactly match a PERMISSION line in the content
     Platform:            program.Platform,
     ProgramID:           program.ID,
     Action:              domain.ActionActiveHTTP,
@@ -150,10 +156,11 @@ pp, err := authz.BuildPlatformPolicy(ctx, program, []authz.PermissionFact{{
     ValidUntil:          validUntil,
     PolicyRevision:      program.PolicyRevision(),
     Justification:       "the platform policy page explicitly permits this endpoint",
-}}, store, now)
+}}, store, contents, now)
 if err != nil {
     // reject: missing evidence, wrong platform/hash, non-authorizing source
-    // type, missing hosts/methods, restrictions, wrong revision, expired, stale
+    // type, missing quote/selectors, content hash mismatch, restrictions,
+    // wrong revision, expired, stale
 }
 
 engine := policy.NewEngineWithRules(operatorRules).WithPlatformAuthority(pp)
@@ -161,14 +168,32 @@ engine := policy.NewEngineWithRules(operatorRules).WithPlatformAuthority(pp)
 
 `authz.VerifyPlatformEvidence` checks that the Evidence exists, belongs to the
 same platform, matches `EvidenceContentHash`, has `SourceType` `POLICY` or
-`ANNOUNCEMENT`, that the permission binds the program, names an action and
-non-empty hosts/methods, has valid path prefixes, carries no `Restrictions`,
+`ANNOUNCEMENT`, that `EvidenceQuote` exactly matches an explicit `PERMISSION`
+line in the re-hashed evidence content, that every selector equals that line,
+that the permission binds the program, names an action and non-empty
+hosts/methods, has valid path prefixes, carries no `Restrictions`,
 has a matching `policy_revision`, and is inside its observation window while
 `Program.PolicyFreshAt` holds. Only a permission that passes all of them can
 set `CanRelax`; `PlatformPolicy.Evaluate` re-runs the same checks at decision
 time, so deleting or replacing the Evidence removes authority. A program-list
 (`SourceType=PROGRAM`) Evidence is not authorization. See
 [`architecture/authz.md`](../architecture/authz.md).
+
+The CLI compiles the same facts from stored evidence instead of requiring a Go
+caller:
+
+```bash
+go run ./cmd/bountygrid policy compile -program vulbox/444 -evidence ev-platform-policy-1 -content-root .
+go run ./cmd/bountygrid decide -platform-evidence ev-platform-policy-1 -request req.json
+```
+
+`policy compile` reads the redacted evidence file through
+`authz.FileContentReader`, parses only explicit `PERMISSION` lines, verifies
+them with `authz.BuildPlatformPolicy`, and prints the resulting fingerprint.
+Non-`POLICY`/`ANNOUNCEMENT` evidence is reported as skipped; unreadable or
+malformed evidence fails the command. `decide -platform-evidence` is opt-in and
+still cannot override hard `DENY`, operator guardrails, scope/eligibility/
+freshness, or runtime constraints.
 
 ## Using rules in decisions
 

@@ -203,11 +203,14 @@ bountygrid revoke -program <program-id> -reason "why"
 ```
 
 The command bumps the durable epoch and appends a `grant.revoked` audit event
-(`ActorKind=HUMAN`) in **one transaction** (`Repo.RevokeProgramWithAudit`). If
-the audit payload is rejected (for example the operator reason contains a
-secret), the epoch bump is rolled back: an effective revocation without its
-audit trail must not be committed. Outstanding grants are rejected on their next
-request by both `GrantPolicy` and `Egress`, even after a process restart.
+(`ActorKind=HUMAN`) in **one transaction** (`Repo.RevokeProgramWithAudit`). The
+operator reason is sanitized before the event is validated: a secret-like reason
+is stored only as `reason_redacted: true`, `reason_hash`, and
+`redaction_kinds`, so the emergency kill switch cannot be blocked by the audit
+secret scanner. A genuine payload rejection still rolls the bump back: an
+effective revocation without its audit trail must not be committed. Outstanding
+grants are rejected on their next request by both `GrantPolicy` and `Egress`,
+even after a process restart.
 
 ## Deliberate limits
 

@@ -85,6 +85,93 @@ func TestFileSessionStoreRoundTrip(t *testing.T) {
 	}
 }
 
+// The envelope carries the authoritative revision, but the embedded session is
+// also marshaled. They must agree: a consumer that decodes the envelope and
+// uses env.Session directly otherwise sees the pre-save revision and its next
+// Save is rejected with a false conflict.
+func TestFileSessionStorePersistsOneRevision(t *testing.T) {
+	store, err := NewFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewResearchSession("sess/revision", "task-revision", testNow)
+	if err := store.Save(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.path(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env sessionEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Revision != 1 || env.Session.Revision != env.Revision {
+		t.Fatalf("envelope revision=%d session revision=%d, want both 1", env.Revision, env.Session.Revision)
+	}
+}
+
+// Save must tolerate a nil context the same way Load/List do (contextErr treats
+// nil as "no cancellation"). Dereferencing it in withLock used to panic.
+func TestFileSessionStoreSaveWithNilContext(t *testing.T) {
+	store, err := NewFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewResearchSession("sess/nil-context", "task-nil-context", testNow)
+	if err := store.Save(nil, s); err != nil {
+		t.Fatalf("save with nil context: %v", err)
+	}
+}
+
+// TestFileSessionStoreDoesNotBreakLiveLock proves stale-lock recovery is based
+// on an OS lock, not mtime. A writer holding the lock keeps it even when the
+// file's mtime is old; another Save must wait instead of deleting the live lock
+// and entering the revision CAS concurrently.
+func TestFileSessionStoreDoesNotBreakLiveLock(t *testing.T) {
+	store, err := NewFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewResearchSession("sess/live-lock", "task-live-lock", testNow)
+	path, err := store.path(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := path + sessionLockSuffix
+	if err := os.WriteFile(lockPath, []byte("live writer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Close() }()
+	locked, err := tryLockFile(holder)
+	if err != nil || !locked {
+		t.Fatalf("test could not take the lock: locked=%v err=%v", locked, err)
+	}
+	defer func() { _ = unlockFile(holder) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	err = store.Save(ctx, s)
+	if err == nil {
+		t.Fatal("Save broke a live lock and overwrote the session")
+	}
+	if !strings.Contains(err.Error(), "wait for session lock") {
+		t.Fatalf("err = %v, want a wait-for-lock error", err)
+	}
+}
+
 func TestFileSessionStoreListSortsAndIgnoresForeignFiles(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileSessionStore(dir)
@@ -254,8 +341,11 @@ func TestFileSessionStoreOverwritesAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".tmp") || strings.HasSuffix(entry.Name(), ".lock") {
-			t.Fatalf("leftover temp/lock file %s", entry.Name())
+		// The lock file is a stable coordination inode; deleting it after use
+		// would let two processes lock different inodes at the same path. Temp
+		// files, however, must never survive a save.
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Fatalf("leftover temp file %s", entry.Name())
 		}
 	}
 }

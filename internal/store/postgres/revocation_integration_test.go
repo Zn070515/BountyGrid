@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -202,17 +203,33 @@ func TestRevokeProgramWithAuditIsAtomic(t *testing.T) {
 		t.Fatalf("epoch=%d audits=%d, want 1/1", epoch, auditCount())
 	}
 
-	if _, err := r.RevokeProgramWithAudit(ctx, id, "password=secret123", time.Now().UTC()); err == nil {
-		t.Fatal("a secret reason must be rejected by audit validation")
-	}
-	got, err := r.Epoch(ctx, id)
+	// A secret-like reason is redacted, not rejected: the kill switch must not
+	// be blocked by the audit guardrail, and the bump + audit stay atomic.
+	epoch, err = r.RevokeProgramWithAudit(ctx, id, "password=secret123", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 1 {
-		t.Fatalf("epoch after failed audit = %d, want 1 (rollback)", got)
+	if epoch != 2 || auditCount() != 2 {
+		t.Fatalf("epoch=%d audits=%d, want 2/2", epoch, auditCount())
 	}
-	if auditCount() != 1 {
-		t.Fatalf("audits after failed audit = %d, want 1", auditCount())
+	var payloadText string
+	if err := r.Pool.QueryRow(ctx, `
+		SELECT payload::text FROM audit_events
+		WHERE event_type='grant.revoked' AND entity_id=$1
+		ORDER BY id DESC LIMIT 1`, id).Scan(&payloadText); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(payloadText, "secret123") {
+		t.Fatalf("revocation audit leaked the secret: %s", payloadText)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadText), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["reason_redacted"] != true {
+		t.Fatalf("revocation audit did not mark the reason redacted: %s", payloadText)
+	}
+	if _, ok := payload["reason"]; ok {
+		t.Fatalf("redacted reason was still stored verbatim: %s", payloadText)
 	}
 }

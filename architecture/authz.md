@@ -56,7 +56,9 @@ Policy = operator guardrail（只能收紧）
 - `EvidenceContentReader` 提供 Evidence 的脱敏原文；验证器会重新计算
   `redact.Hash(content)` 并与 `Evidence.ContentHash` 比对。没有 content reader
   时 fail closed（`PLATFORM_EVIDENCE_CONTENT_MISSING`），不能只凭 EvidenceID
-  和哈希声明权限。
+  和哈希声明权限。默认实现 `authz.FileContentReader` 只读 `RawRef` 指向的
+  本地脱敏文件：相对路径固定在 `-content-root` 下解析、拒绝越界路径/符号链接、
+  只接受普通文件且有 8 MiB 上限，文件不存在映射为 `domain.ErrNotFound`。
 - `rules` 包不再暴露 `PlatformRule` / `PlatformRuleSpec` / `NewPlatformRule`
   这类可由调用方随意构造的公共路径；operator 规则仍是 JSON-only，平台授权
   只能走 `authz.BuildPlatformPolicy(ctx, program, permissionFacts, store, contents, now)`。
@@ -217,13 +219,22 @@ ceiling；平台授权不能覆盖 operator guardrail。`cmd/bountygrid policy c
 
 残余限制：
 
-- `PlatformPolicy` 在构建时和每次决策时都会读取 Evidence。这会为带平台授权的
-  决策增加一次数据库读；这是有意选择：删除/替换证据必须立即移除授权。
-- 平台授权尚未接入 CLI/DB 的自动编译流程；目前只有 Go API
-  （`BuildPlatformPolicy` + `WithPlatformAuthority`）。Reader 尚未把真实规则页
-  文本抽取为 `PERMISSION` 行，因此当前不会自动产生平台放宽；平台专用 Reader
-  需要把抓取到的政策页转换为显式 PERMISSION 行，再由 `ExtractPermissions`
-  生成 `PermissionFact`。纯正文（没有 PERMISSION 行）不会产生任何授权。
+- `PlatformPolicy` 在构建时和每次决策时都会重新读取并校验 Evidence，但按
+  EvidenceID 在一次调用内缓存：同一政策页被多条 permission 引用时只读一次，
+  不是每条 permission 一次。这是有意选择：删除/替换证据必须在下一次决策立即
+  移除授权，缓存不能跨调用存活。
+- 平台授权已有 CLI 编译入口：`bountygrid policy compile -program <id>
+  [-evidence <ids>] [-content-root .]` 通过 `FileContentReader` 读取 `.evidence/`
+  下的脱敏原文，`CompilePermissions` 把显式 `PERMISSION` 行转换成
+  `PermissionFact`，再由 `BuildPlatformPolicy` 验证并输出
+  `platform_policy_fingerprint`。`bountygrid decide -platform-evidence <ids>`
+  把同一结果挂到决策引擎（`-request` 与 `-authorize` 都可；`-authorize` 从存储
+  决策取 ProgramID 并用同一批 evidence 重建 fingerprint）；该 flag 是显式
+  opt-in，仍不能覆盖硬 DENY、operator guardrail 或任何 domain gate。非 `POLICY`/`ANNOUNCEMENT` 证据列为 skipped，
+  证据读取失败、PERMISSION 行格式错误或验证失败都直接报错（fail closed）。
+- Reader 仍不会从纯正文推断权限。平台专用 Reader 需要把页面中明确写出的
+  host/method 许可转换成 `PERMISSION` 行；没有该行的政策页不会产生任何授权，
+  这是有意的 fail-closed 选择。
 - `CheckRevisionBinding` 是显式 helper；Gateway 的 `Authorize` 仍以重跑
   Policy 为准，没有额外用旧 decision 的 revision 做二次拒绝。
 - 一个 `PlatformPolicy` 只服务一个 Program；跨 program 复用会返回空授权。
