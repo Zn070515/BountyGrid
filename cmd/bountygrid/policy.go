@@ -217,7 +217,7 @@ func compilePlatformAuthority(
 		seen[id] = struct{}{}
 		ev, err := store.GetEvidence(ctx, id)
 		if err != nil {
-			return out, nil, fmt.Errorf("policy compile: load evidence %s: %w", id, err)
+			return out, nil, fmt.Errorf("load evidence %s: %w", id, err)
 		}
 		out.Evidence = append(out.Evidence, string(id))
 		if ev.SourceType != domain.SourcePolicy && ev.SourceType != domain.SourceAnnouncement {
@@ -229,11 +229,11 @@ func compilePlatformAuthority(
 		}
 		content, err := contents.ReadContent(ctx, ev)
 		if err != nil {
-			return out, nil, fmt.Errorf("policy compile: read evidence %s: %w", id, err)
+			return out, nil, fmt.Errorf("read evidence %s: %w", id, err)
 		}
 		compiled, err := authz.CompilePermissions(program, ev, content)
 		if err != nil {
-			return out, nil, fmt.Errorf("policy compile: evidence %s: %w", id, err)
+			return out, nil, fmt.Errorf("evidence %s: %w", id, err)
 		}
 		for _, restricted := range compiled.Restricted {
 			out.Restricted = append(out.Restricted, restricted.Quote)
@@ -242,7 +242,7 @@ func compilePlatformAuthority(
 	}
 	pp, err := authz.BuildPlatformPolicy(ctx, program, permissions, store, contents, now)
 	if err != nil {
-		return out, nil, fmt.Errorf("policy compile: %w", err)
+		return out, nil, err
 	}
 	out.Fingerprint = pp.Fingerprint()
 	out.Count = pp.Len()
@@ -287,7 +287,7 @@ func executePolicyCompile(ctx context.Context, o policyCompileOptions) error {
 	}
 	out, _, err := compilePlatformAuthority(ctx, repo, contents, program, ids, o.Now)
 	if err != nil {
-		return err
+		return fmt.Errorf("policy compile: %w", err)
 	}
 	return encodePolicyOutput(out)
 }

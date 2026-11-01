@@ -89,7 +89,7 @@ func attachPlatformAuthority(ctx context.Context, store platformAuthorityStore, 
 	}
 	contents, err := authz.NewFileContentReader(contentRoot)
 	if err != nil {
-		return err
+		return fmt.Errorf("decide: platform evidence: %w", err)
 	}
 	ids := make([]domain.EvidenceID, 0, len(evidenceIDs))
 	for _, id := range evidenceIDs {
@@ -97,7 +97,7 @@ func attachPlatformAuthority(ctx context.Context, store platformAuthorityStore, 
 	}
 	_, pp, err := compilePlatformAuthority(ctx, store, contents, program, ids, now)
 	if err != nil {
-		return err
+		return fmt.Errorf("decide: platform evidence: %w", err)
 	}
 	engine.SetPlatformPolicy(pp)
 	return nil

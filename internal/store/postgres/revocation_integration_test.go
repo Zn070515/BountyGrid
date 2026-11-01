@@ -174,9 +174,11 @@ func TestFirstUpsertIsSerialized(t *testing.T) {
 	}
 }
 
-// TestRevokeProgramWithAuditIsAtomic proves the bump and the audit event share
-// one transaction: a rejected audit payload (an operator reason containing a
-// secret) rolls the epoch bump back instead of leaving an unaudited revocation.
+// TestRevokeProgramWithAuditIsAtomic proves the epoch bump and its audit event
+// commit together. A secret-like operator reason is redacted (hash + kinds)
+// instead of aborting the kill switch, and both the new epoch and the audit row
+// are committed. Note: this no longer exercises the rollback path, because the
+// sanitizer makes a payload rejection unreachable from an operator reason.
 func TestRevokeProgramWithAuditIsAtomic(t *testing.T) {
 	r, ctx := integrationRepo(t)
 	id := domain.ProgramID(fmt.Sprintf("it-revoke-atomic-%d", time.Now().UTC().UnixNano()))

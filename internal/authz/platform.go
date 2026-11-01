@@ -448,11 +448,25 @@ func (p *PlatformPolicy) Fingerprint() string {
 }
 
 func (p *PlatformPolicy) computeFingerprint() string {
+	// The fingerprint identifies the authority, not the order in which a caller
+	// happened to list its evidence. Serialize each permission and sort, so
+	// compiling the same authority from `-platform-evidence evA,evB` and from
+	// `-platform-evidence evB,evA` produces the same fingerprint (otherwise
+	// `decide -authorize` rejects an otherwise unchanged decision).
+	encoded := make([]string, 0, len(p.permissions))
+	for _, permission := range p.permissions {
+		raw, err := json.Marshal(permission)
+		if err != nil {
+			return ""
+		}
+		encoded = append(encoded, string(raw))
+	}
+	slices.Sort(encoded)
 	raw, err := json.Marshal(struct {
 		Program     domain.ProgramID
 		Platform    domain.Platform
-		Permissions []PermissionFact
-	}{Program: p.programID, Platform: p.platform, Permissions: p.permissions})
+		Permissions []string
+	}{Program: p.programID, Platform: p.platform, Permissions: encoded})
 	if err != nil {
 		return ""
 	}

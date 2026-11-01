@@ -201,8 +201,8 @@ type LoopConfig struct {
 	MaxSteps int
 	Detector *LoopDetector
 	// Store checkpoints the session after every executed step and at exit, so
-	// a STALLED/PARKED/HANDOFF session survives a process restart. Nil keeps
-	// the loop in-memory only.
+	// a STALLED/PARKED/HANDOFF session survives a process restart. A nil Store
+	// is rejected unless AllowEphemeral is set.
 	Store SessionStore
 	// AllowEphemeral opts out of durable checkpointing. The zero value requires
 	// Store: the pre-execution STARTED checkpoint is the only record that a

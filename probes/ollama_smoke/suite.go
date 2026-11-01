@@ -270,7 +270,7 @@ func runLoopSuite(ctx context.Context, addr, model string) (any, error) {
 	executor := &noProgressExecutor{}
 	loop, err := reliability.NewLoop(reliability.LoopConfig{
 		Proposer: proposer, Executor: executor, Authorization: auth,
-		Evidence: evidence, MaxSteps: 6,
+		Evidence: evidence, MaxSteps: 6, AllowEphemeral: true,
 	})
 	if err != nil {
 		return nil, err
