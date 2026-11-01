@@ -12,7 +12,33 @@ import (
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy/rules"
+	"github.com/Zn070515/BountyGrid/internal/redact"
 )
+
+// PermissionLinePrefix marks an explicit, machine-readable permission in a
+// policy evidence document. A platform-specific Reader/compiler must emit these
+// lines from the captured page; authz never infers a permission from prose.
+const PermissionLinePrefix = "PERMISSION "
+
+// EvidenceContentReader returns the redacted content that was hashed into
+// Evidence.ContentHash. It is the trusted source the permission compiler reads;
+// a nil reader means no semantic authority (fail closed).
+type EvidenceContentReader interface {
+	ReadContent(ctx context.Context, evidence domain.Evidence) (string, error)
+}
+
+// ExtractedPermission is one parsed PERMISSION line. It is the output of the
+// trusted compiler and the only source from which a PermissionFact may cite
+// selectors.
+type ExtractedPermission struct {
+	Quote        string
+	ProgramID    domain.ProgramID
+	Action       domain.Action
+	Hosts        []string
+	Methods      []string
+	PathPrefixes []string
+	Restrictions []string
+}
 
 // PermissionFact is the only input accepted by BuildPlatformPolicy. It is an
 // explicit, evidence-bound statement that the platform permits one action on a
@@ -30,9 +56,14 @@ type PermissionFact struct {
 	// if the stored Evidence changes, authority is removed.
 	EvidenceID          domain.EvidenceID
 	EvidenceContentHash string
-	Platform            domain.Platform
-	ProgramID           domain.ProgramID
-	Action              domain.Action
+	// EvidenceQuote is the exact PERMISSION line in the evidence content that
+	// grants this fact. Verification requires the quote to match a parsed line
+	// and every selector to equal the parsed values; a caller cannot invent a
+	// permission that the content does not state.
+	EvidenceQuote string
+	Platform      domain.Platform
+	ProgramID     domain.ProgramID
+	Action        domain.Action
 	// Hosts and Methods must be explicitly non-empty. PathPrefixes may be
 	// empty, meaning "any path on the listed hosts".
 	Hosts        []string
@@ -86,15 +117,15 @@ func (p PermissionFact) ID() string {
 // revision and an expired permission are all rejections. Store/database
 // failures are returned as errors so a transient outage is never mistaken for
 // authority.
-func VerifyPlatformEvidence(ctx context.Context, permission PermissionFact, program domain.Program, store EvidenceStore, now time.Time) error {
-	_, err := verifyPermission(ctx, permission, program, store, now)
+func VerifyPlatformEvidence(ctx context.Context, permission PermissionFact, program domain.Program, store EvidenceStore, contents EvidenceContentReader, now time.Time) error {
+	_, err := verifyPermission(ctx, permission, program, store, contents, now)
 	return err
 }
 
 // verifyPermission validates a permission and returns its normalized copy.
 // BuildPlatformPolicy stores the normalized copy so matching does not have to
 // re-normalize host/method/path selectors.
-func verifyPermission(ctx context.Context, permission PermissionFact, program domain.Program, store EvidenceStore, now time.Time) (PermissionFact, error) {
+func verifyPermission(ctx context.Context, permission PermissionFact, program domain.Program, store EvidenceStore, contents EvidenceContentReader, now time.Time) (PermissionFact, error) {
 	var zero PermissionFact
 	if store == nil {
 		return zero, reject(ReasonEvidenceStoreMissing, "no evidence store configured")
@@ -148,7 +179,68 @@ func verifyPermission(ctx context.Context, permission PermissionFact, program do
 		return zero, reject(ReasonEvidenceSourceTypeNotAuthorizing,
 			"evidence %s source type %q is not POLICY or ANNOUNCEMENT", normalized.EvidenceID, ev.SourceType)
 	}
+	if contents == nil {
+		return zero, reject(ReasonEvidenceContentMissing,
+			"no evidence content reader configured for %s", normalized.EvidenceID)
+	}
+	content, err := contents.ReadContent(ctx, ev)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return zero, reject(ReasonEvidenceContentMissing, "content for evidence %s not found", normalized.EvidenceID)
+		}
+		return zero, fmt.Errorf("authz: read evidence content %s: %w", normalized.EvidenceID, err)
+	}
+	if redact.Hash([]byte(content)) != ev.ContentHash {
+		return zero, reject(ReasonEvidenceContentHashMismatch,
+			"evidence %s content does not hash to %q", normalized.EvidenceID, ev.ContentHash)
+	}
+	extracted, err := ExtractPermissions(content)
+	if err != nil {
+		return zero, reject(ReasonPermissionLineInvalid,
+			"evidence %s permission lines: %v", normalized.EvidenceID, err)
+	}
+	matched, ok := findQuotedPermission(extracted, normalized.EvidenceQuote)
+	if !ok {
+		return zero, reject(ReasonPermissionNotInEvidence,
+			"permission %s quote is not a PERMISSION line in evidence %s", normalized.ID(), normalized.EvidenceID)
+	}
+	if matched.ProgramID != normalized.ProgramID || matched.Action != normalized.Action ||
+		!sameStringSet(matched.Hosts, normalized.Hosts) ||
+		!sameStringSet(matched.Methods, normalized.Methods) ||
+		!sameStringSet(matched.PathPrefixes, normalized.PathPrefixes) {
+		return zero, reject(ReasonPermissionNotInEvidence,
+			"permission %s selectors do not match its quoted evidence line", normalized.ID())
+	}
+	if len(matched.Restrictions) > 0 {
+		return zero, reject(ReasonPermissionRestrictionsPresent,
+			"permission %s quotes a restricted line; a restricted permission requires human review", normalized.ID())
+	}
 	return normalized, nil
+}
+
+func findQuotedPermission(extracted []ExtractedPermission, quote string) (ExtractedPermission, bool) {
+	for _, p := range extracted {
+		if p.Quote == quote {
+			return p, true
+		}
+	}
+	return ExtractedPermission{}, false
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, v := range a {
+		seen[v] = struct{}{}
+	}
+	for _, v := range b {
+		if _, ok := seen[v]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // normalizePermissionFact enforces the explicit permission shape and
@@ -159,6 +251,10 @@ func normalizePermissionFact(permission PermissionFact) (PermissionFact, error) 
 	permission.EvidenceID = domain.EvidenceID(strings.TrimSpace(string(permission.EvidenceID)))
 	if permission.EvidenceID == "" {
 		return zero, reject(ReasonEvidenceMissing, "permission has no evidence id")
+	}
+	permission.EvidenceQuote = strings.TrimSpace(permission.EvidenceQuote)
+	if permission.EvidenceQuote == "" {
+		return zero, reject(ReasonPermissionQuoteMissing, "permission %s has no evidence quote", permission.ID())
 	}
 	permission.ProgramID = domain.ProgramID(strings.TrimSpace(string(permission.ProgramID)))
 	if permission.ProgramID == "" {
@@ -236,16 +332,16 @@ func normalizePermissionFact(permission PermissionFact) (PermissionFact, error) 
 // rule file, an arbitrary platform-rule spec, or raw selector data: every
 // candidate must be a PermissionFact and must pass VerifyPlatformEvidence. The resulting
 // policy is immutable and holds only verified, normalized permissions.
-func BuildPlatformPolicy(ctx context.Context, program domain.Program, permissions []PermissionFact, store EvidenceStore, now time.Time) (*PlatformPolicy, error) {
+func BuildPlatformPolicy(ctx context.Context, program domain.Program, permissions []PermissionFact, store EvidenceStore, contents EvidenceContentReader, now time.Time) (*PlatformPolicy, error) {
 	verified := make([]PermissionFact, 0, len(permissions))
 	for _, permission := range permissions {
-		normalized, err := verifyPermission(ctx, permission, program, store, now)
+		normalized, err := verifyPermission(ctx, permission, program, store, contents, now)
 		if err != nil {
 			return nil, err
 		}
 		verified = append(verified, normalized)
 	}
-	return newPlatformPolicy(program, verified, store), nil
+	return newPlatformPolicy(program, verified, store, contents), nil
 }
 
 // PlatformPolicy is verified platform authority for exactly one program. It can
@@ -258,15 +354,17 @@ type PlatformPolicy struct {
 	platform    domain.Platform
 	permissions []PermissionFact
 	store       EvidenceStore
+	contents    EvidenceContentReader
 	fingerprint string
 }
 
-func newPlatformPolicy(program domain.Program, verified []PermissionFact, store EvidenceStore) *PlatformPolicy {
+func newPlatformPolicy(program domain.Program, verified []PermissionFact, store EvidenceStore, contents EvidenceContentReader) *PlatformPolicy {
 	p := &PlatformPolicy{
 		programID:   program.ID,
 		platform:    program.Platform,
 		permissions: append([]PermissionFact(nil), verified...),
 		store:       store,
+		contents:    contents,
 	}
 	p.fingerprint = p.computeFingerprint()
 	return p
@@ -343,7 +441,7 @@ func (p *PlatformPolicy) Evaluate(ctx context.Context, program domain.Program, r
 		// been deleted or replaced since the policy was compiled. A failed
 		// verification simply yields no authority for that permission (the base
 		// decision/freshness gates still apply).
-		verified, err := verifyPermission(ctx, permission, program, p.store, now)
+		verified, err := verifyPermission(ctx, permission, program, p.store, p.contents, now)
 		if err != nil {
 			continue
 		}
@@ -359,6 +457,110 @@ func (p *PlatformPolicy) Evaluate(ctx context.Context, program domain.Program, r
 		out.CanRelax = true
 	}
 	return out, nil
+}
+
+// ExtractPermissions parses the explicit PERMISSION lines from a policy
+// evidence document. A platform-specific Reader/compiler must emit these lines
+// from the captured page; prose is never interpreted as permission. Any
+// malformed line invalidates the document (fail closed).
+//
+// Grammar (one line per permission):
+//
+//	PERMISSION program=<id> action=<ACTION> hosts=<h1,h2> methods=<GET,POST> [paths=/a,/b] [restrictions=<r1,r2>]
+func ExtractPermissions(content string) ([]ExtractedPermission, error) {
+	var out []ExtractedPermission
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, PermissionLinePrefix) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("permission line has no fields")
+		}
+		values := make(map[string]string, len(fields))
+		for _, field := range fields[1:] {
+			key, value, ok := strings.Cut(field, "=")
+			key = strings.ToLower(strings.TrimSpace(key))
+			value = strings.TrimSpace(value)
+			if !ok || key == "" || value == "" {
+				return nil, fmt.Errorf("malformed permission field %q", field)
+			}
+			switch key {
+			case "program", "action", "hosts", "methods", "paths", "restrictions":
+			default:
+				return nil, fmt.Errorf("unknown permission field %q", key)
+			}
+			if _, duplicate := values[key]; duplicate {
+				return nil, fmt.Errorf("duplicate permission field %q", key)
+			}
+			values[key] = value
+		}
+		program := domain.ProgramID(strings.TrimSpace(values["program"]))
+		if program == "" {
+			return nil, fmt.Errorf("missing program")
+		}
+		action := domain.Action(strings.ToUpper(strings.TrimSpace(values["action"])))
+		if !action.Valid() {
+			return nil, fmt.Errorf("invalid action %q", values["action"])
+		}
+		hosts, err := parsePermissionList(values["hosts"], rules.NormalizeHostPattern)
+		if err != nil || len(hosts) == 0 {
+			return nil, fmt.Errorf("hosts: %v", err)
+		}
+		methods, err := parsePermissionList(values["methods"], rules.NormalizeMethod)
+		if err != nil || len(methods) == 0 {
+			return nil, fmt.Errorf("methods: %v", err)
+		}
+		var paths []string
+		if value, ok := values["paths"]; ok {
+			paths, err = parsePermissionList(value, rules.CanonicalPath)
+			if err != nil {
+				return nil, fmt.Errorf("paths: %w", err)
+			}
+		}
+		var restrictions []string
+		if value, ok := values["restrictions"]; ok {
+			restrictions, err = parsePermissionList(value, normalizeRestriction)
+			if err != nil {
+				return nil, fmt.Errorf("restrictions: %w", err)
+			}
+		}
+		out = append(out, ExtractedPermission{
+			Quote: line, ProgramID: program, Action: action,
+			Hosts: hosts, Methods: methods, PathPrefixes: paths, Restrictions: restrictions,
+		})
+	}
+	return out, nil
+}
+
+func parsePermissionList(raw string, normalize func(string) (string, error)) ([]string, error) {
+	var out []string
+	seen := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("empty entry")
+		}
+		value, err := normalize(part)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out, nil
+}
+
+func normalizeRestriction(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("empty restriction")
+	}
+	return raw, nil
 }
 
 // matches reports whether a verified permission permits the normalized

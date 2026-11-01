@@ -43,13 +43,23 @@ Policy = operator guardrail（只能收紧）
   platform authority is compiled from Evidence via `internal/authz`，不能来自
   手写 JSON。`rules/platform-evidence.example.json` 只作为负例保留。
 - 平台授权只接受 `authz.PermissionFact`。它是显式的权限事实：必须写明
-  `EvidenceID + EvidenceContentHash + Platform + ProgramID + Action + Hosts +
-  Methods + PathPrefixes + ObservedAt + ValidUntil + PolicyRevision +
-  Justification`。`Hosts` / `Methods` 不允许为空（空不等于“全部”），
-  `Restrictions` 必须为空（非空表示条件型/人工复核，不是自动放宽）。
+  `EvidenceID + EvidenceContentHash + EvidenceQuote + Platform + ProgramID +
+  Action + Hosts + Methods + PathPrefixes + ObservedAt + ValidUntil +
+  PolicyRevision + Justification`。`Hosts` / `Methods` 不允许为空（空不等于
+  “全部”），`Restrictions` 必须为空（非空表示条件型/人工复核，不是自动放宽）。
+- `EvidenceQuote` 必须引用 Evidence 内容中的一条显式授权行：
+  `PERMISSION program=<id> action=<ACTION> hosts=<h1,h2> methods=<GET,POST>
+  [paths=/a,/b] [restrictions=<...>]`。`authz.ExtractPermissions` 按严格语法
+  解析这些行；验证器要求 quote 精确匹配某一行、且 `ProgramID/Action/Hosts/
+  Methods/PathPrefixes` 与该行完全一致。没有 PERMISSION 行、quote 不匹配、
+  selector 对不上、行带 restrictions 都拒绝。页面正文本身不会被当作权限。
+- `EvidenceContentReader` 提供 Evidence 的脱敏原文；验证器会重新计算
+  `redact.Hash(content)` 并与 `Evidence.ContentHash` 比对。没有 content reader
+  时 fail closed（`PLATFORM_EVIDENCE_CONTENT_MISSING`），不能只凭 EvidenceID
+  和哈希声明权限。
 - `rules` 包不再暴露 `PlatformRule` / `PlatformRuleSpec` / `NewPlatformRule`
   这类可由调用方随意构造的公共路径；operator 规则仍是 JSON-only，平台授权
-  只能走 `authz.BuildPlatformPolicy(ctx, program, permissionFacts, store, now)`。
+  只能走 `authz.BuildPlatformPolicy(ctx, program, permissionFacts, store, contents, now)`。
 - `authz.BuildPlatformPolicy` 在构造 `PlatformPolicy` 前逐条调用
   `authz.VerifyPlatformEvidence`。验证不通过就没有 `PlatformPolicy`，也就没有
   `CanRelax`。
@@ -66,9 +76,12 @@ Policy = operator guardrail（只能收紧）
 type EvidenceStore interface {
     GetEvidence(ctx context.Context, id domain.EvidenceID) (domain.Evidence, error)
 }
+type EvidenceContentReader interface {
+    ReadContent(ctx context.Context, evidence domain.Evidence) (string, error)
+}
 ```
 
-`VerifyPlatformEvidence(ctx, permission, program, store, now)` 依次检查：
+`VerifyPlatformEvidence(ctx, permission, program, store, contents, now)` 依次检查：
 
 | 检查 | 失败结果 |
 |------|----------|
@@ -83,6 +96,11 @@ type EvidenceStore interface {
 | `Evidence.Platform == Program.Platform` | `PLATFORM_EVIDENCE_PLATFORM_MISMATCH` |
 | `Evidence.ContentHash == permission.EvidenceContentHash` 且非空 | `PLATFORM_EVIDENCE_CONTENT_HASH_MISMATCH` |
 | `Evidence.SourceType` 是 `POLICY` 或 `ANNOUNCEMENT` | `PLATFORM_EVIDENCE_SOURCE_TYPE_NOT_AUTHORIZING` |
+| 配置了 content reader 且内容存在 | `PLATFORM_EVIDENCE_CONTENT_MISSING` |
+| `redact.Hash(content) == Evidence.ContentHash` | `PLATFORM_EVIDENCE_CONTENT_HASH_MISMATCH` |
+| `EvidenceQuote` 非空且精确匹配一条 PERMISSION 行 | `PLATFORM_PERMISSION_QUOTE_MISSING` / `PLATFORM_PERMISSION_NOT_IN_EVIDENCE` |
+| `ProgramID/Action/Hosts/Methods/PathPrefixes` 与引用行一致 | `PLATFORM_PERMISSION_NOT_IN_EVIDENCE` |
+| 引用行没有 `restrictions` | `PLATFORM_PERMISSION_RESTRICTIONS_PRESENT` |
 | `Action.Valid()` | `PLATFORM_PERMISSION_ACTION_INVALID` |
 | `Hosts` 非空且每个 host pattern 合法 | `PLATFORM_PERMISSION_HOSTS_MISSING` / `PLATFORM_PERMISSION_HOST_INVALID` |
 | `Methods` 非空且每个 method 合法 | `PLATFORM_PERMISSION_METHODS_MISSING` |
@@ -202,8 +220,10 @@ ceiling；平台授权不能覆盖 operator guardrail。`cmd/bountygrid policy c
 - `PlatformPolicy` 在构建时和每次决策时都会读取 Evidence。这会为带平台授权的
   决策增加一次数据库读；这是有意选择：删除/替换证据必须立即移除授权。
 - 平台授权尚未接入 CLI/DB 的自动编译流程；目前只有 Go API
-  （`BuildPlatformPolicy` + `WithPlatformAuthority`）。Reader 也尚未自动把
-  规则页文本抽取为 `PermissionFact`，因此当前不会自动产生平台放宽。
+  （`BuildPlatformPolicy` + `WithPlatformAuthority`）。Reader 尚未把真实规则页
+  文本抽取为 `PERMISSION` 行，因此当前不会自动产生平台放宽；平台专用 Reader
+  需要把抓取到的政策页转换为显式 PERMISSION 行，再由 `ExtractPermissions`
+  生成 `PermissionFact`。纯正文（没有 PERMISSION 行）不会产生任何授权。
 - `CheckRevisionBinding` 是显式 helper；Gateway 的 `Authorize` 仍以重跑
   Policy 为准，没有额外用旧 decision 的 revision 做二次拒绝。
 - 一个 `PlatformPolicy` 只服务一个 Program；跨 program 复用会返回空授权。

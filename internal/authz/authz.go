@@ -108,6 +108,10 @@ const (
 	ReasonPermissionFromFuture             = "PLATFORM_PERMISSION_FROM_FUTURE"
 	ReasonPermissionRevisionMissing        = "PLATFORM_PERMISSION_REVISION_MISSING"
 	ReasonPermissionJustificationMissing   = "PLATFORM_PERMISSION_JUSTIFICATION_MISSING"
+	ReasonEvidenceContentMissing           = "PLATFORM_EVIDENCE_CONTENT_MISSING"
+	ReasonPermissionQuoteMissing           = "PLATFORM_PERMISSION_QUOTE_MISSING"
+	ReasonPermissionNotInEvidence          = "PLATFORM_PERMISSION_NOT_IN_EVIDENCE"
+	ReasonPermissionLineInvalid            = "PLATFORM_PERMISSION_LINE_INVALID"
 )
 
 // RejectedError reports that platform authority could not be verified. It is
