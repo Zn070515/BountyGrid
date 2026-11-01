@@ -187,15 +187,21 @@ func publicWelfareProgram(v pubVendor, evID domain.EvidenceID, at time.Time) (do
 		cardFact(evID, pid, "butian.pub.company_name", v.CompanyName, "", at),
 		cardFact(evID, pid, "butian.pub.source", publicWelfareAPI, "", at),
 	}
+	// Use the canonical state engine rather than a second hand-written
+	// derivation. The reader only supplies the observed facts; RUNNING comes
+	// from `listed=true` via state.DeriveProgramState.
+	in, err := state.ProgramInputFromFacts(facts.NewFactSet(fs))
+	if err != nil {
+		return domain.Program{}, nil, fmt.Errorf("butian: public welfare state input: %w", err)
+	}
+	st, err := state.DeriveProgramState(in, at, 30*time.Minute)
+	if err != nil {
+		return domain.Program{}, nil, fmt.Errorf("butian: public welfare state: %w", err)
+	}
 	prog := domain.Program{
 		ID: pid, Platform: domain.PlatformButian, NativeID: v.CompanyID,
 		Name: v.CompanyName, Type: domain.TypePublicWelfareSRC,
-		Status: domain.ProgramState{
-			Status: domain.StatusRunning, Reason: "derived_from_public_welfare_listing",
-			ObservedAt: at, ValidUntil: at.Add(30 * time.Minute), Confidence: 0.8,
-			Inputs:   []domain.FactID{listed.ID, canonicalListed.ID},
-			Evidence: []domain.EvidenceID{evID},
-		},
+		Status: st,
 		Eligibility: domain.EligibilityState{
 			Decision: domain.Eligible, EvaluatedAt: at, PolicyVersion: extractor,
 		},
