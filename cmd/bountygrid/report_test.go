@@ -67,7 +67,8 @@ func reportVerificationFixture() domain.Verification {
 		Reproduced: true, InScope: true, ImpactVerified: true, DataMinimized: true,
 		DuplicateChecked: true, DuplicateRisk: 0.1,
 		VerifiedBy: "rule/verify@0.1.0", VerifiedAt: testNow,
-		Evidence: []domain.EvidenceID{"ev-finding", "ev-repro"},
+		Evidence:   []domain.EvidenceID{"ev-finding", "ev-repro"},
+		ReceiptIDs: []domain.ReceiptID{"rcpt/1"},
 	}
 }
 

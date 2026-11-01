@@ -18,11 +18,12 @@ import (
 )
 
 type submitOptions struct {
-	ReportID     string
-	AccountID    string
-	Approval     string
-	ApprovalID   string
-	PrintBinding bool
+	ReportID        string
+	AccountID       string
+	Approval        string
+	ApprovalID      string
+	PrintBinding    bool
+	AttachmentsRoot string
 }
 
 // approvalFile is the JSON shape for a human approval. domain.HumanApproval has
@@ -68,6 +69,7 @@ func parseSubmitOptions(args []string) (submitOptions, error) {
 	fs.StringVar(&o.Approval, "approval", "", "human approval JSON file")
 	fs.StringVar(&o.ApprovalID, "approval-id", "", "approval id for -print-binding")
 	fs.BoolVar(&o.PrintBinding, "print-binding", false, "print the request_id/parameters_hash an approval must bind")
+	fs.StringVar(&o.AttachmentsRoot, "attachments-root", "", "root for re-verifying approved attachment hashes")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -118,7 +120,8 @@ func runSubmit(ctx context.Context, args []string) error {
 	gate := gateway.New(repo, nil, postgres.NewAuditStore(pool), postgres.NewPostgresApprovalLedger(pool))
 	svc, err := submit.New(submit.Options{
 		Store: repo, Gate: gate, Submitter: submit.DryRunSubmitter{},
-		Auditor: postgres.NewAuditStore(pool),
+		Auditor:         postgres.NewAuditStore(pool),
+		AttachmentsRoot: opts.AttachmentsRoot,
 	})
 	if err != nil {
 		return err

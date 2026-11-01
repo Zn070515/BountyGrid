@@ -27,6 +27,11 @@ type reportFile struct {
 	Fields         report.Fields    `json:"fields"`
 	AI             report.AIUse     `json:"ai"`
 	Attachments    []string         `json:"attachments,omitempty"`
+	// AttachmentsRoot enables strict attachment validation (workspace
+	// confinement, magic bytes, size, hash, sensitive scan).
+	AttachmentsRoot    string                         `json:"attachments_root,omitempty"`
+	MaxAttachmentBytes int64                          `json:"max_attachment_bytes,omitempty"`
+	AttachmentEvidence map[string][]domain.EvidenceID `json:"attachment_evidence,omitempty"`
 }
 
 type reportStore interface {
@@ -117,6 +122,8 @@ func executeReport(ctx context.Context, store reportStore, in reportFile, persis
 	res, err := report.Build(report.Input{
 		Finding: finding, Program: program, Verification: verification,
 		Fields: in.Fields, AI: in.AI, Attachments: in.Attachments, Now: now,
+		AttachmentsRoot: in.AttachmentsRoot, MaxAttachmentBytes: in.MaxAttachmentBytes,
+		AttachmentEvidence: in.AttachmentEvidence,
 	})
 	if err != nil {
 		return reportOutput{}, err

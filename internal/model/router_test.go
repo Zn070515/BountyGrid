@@ -216,3 +216,85 @@ func BenchmarkRouterCandidates(b *testing.B) {
 		_ = r.Candidates(req)
 	}
 }
+
+func TestProvenanceRaisesDataClass(t *testing.T) {
+	remote := testProvider("remote", false, 5, 100, 1, "remote")
+	local := testProvider("local", true, 1, 100, 1, "local")
+	r, _ := newTestRouter(t, remote, local)
+	req := testRequest(PurposeAnalyze, DataPublic, 10, 0)
+	req.Provenance = []DataClass{DataSensitive}
+	resp, err := r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Provider != "local" {
+		t.Fatalf("sensitive provenance routed to %s", resp.Provider)
+	}
+}
+
+func TestLocalClaimWithRemoteEndpointRejected(t *testing.T) {
+	p := testProvider("fake-local", true, 1, 100, 1, "x")
+	p.Meta.Endpoint = "https://api.example.com"
+	if _, err := New(Options{Providers: []Provider{p}}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestLoopbackEndpointIsLocal(t *testing.T) {
+	p := testProvider("loopback", false, 1, 100, 1, "x")
+	p.Meta.Endpoint = "http://127.0.0.1:8080"
+	r, _ := newTestRouter(t, p, testProvider("remote", false, 5, 100, 1, "r"))
+	req := testRequest(PurposeAnalyze, DataSensitive, 10, 0)
+	resp, err := r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Provider != "loopback" {
+		t.Fatalf("loopback provider was not treated as local: %s", resp.Provider)
+	}
+}
+
+func TestContextWindowAndCapabilitiesFilter(t *testing.T) {
+	small := testProvider("small", true, 1, 100, 1, "s")
+	small.Meta.MaxContextTokens = 10
+	big := testProvider("big", true, 1, 10000, 1, "b")
+	big.Meta.MaxContextTokens = 10000
+	big.Meta.ToolCalling = true
+	r, _ := newTestRouter(t, small, big)
+	req := testRequest(PurposeCode, DataPublic, 100, 0)
+	req.RequiredCapabilities = []Capability{CapabilityToolCalling}
+	resp, err := r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Provider != "big" {
+		t.Fatalf("context/capability filter chose %s", resp.Provider)
+	}
+}
+
+func TestFallbackChainBudgetIsCumulative(t *testing.T) {
+	a := testProvider("a", true, 1, 100, 20000, "a")
+	a.Err = errors.New("provider down")
+	b := testProvider("b", true, 1, 100, 20000, "b")
+	r, _ := newTestRouter(t, a, b)
+	req := testRequest(PurposeCode, DataPublic, 100, 4) // each estimate ~3
+	if _, err := r.Route(context.Background(), req); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("err = %v, want cumulative ErrBudgetExceeded", err)
+	}
+}
+
+func TestCallIDIdempotency(t *testing.T) {
+	p := testProvider("p", true, 1, 100, 0, "ok")
+	r, _ := newTestRouter(t, p)
+	req := testRequest(PurposeCode, DataPublic, 10, 0)
+	req.CallID = "call-1"
+	if _, err := r.Route(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Route(context.Background(), req); !errors.Is(err, ErrDuplicateCall) {
+		t.Fatalf("second call err = %v, want ErrDuplicateCall", err)
+	}
+	if p.Calls != 1 {
+		t.Fatalf("provider called %d times", p.Calls)
+	}
+}

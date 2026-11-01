@@ -23,17 +23,39 @@ const (
 var ErrInvalidInput = errors.New("verify: invalid input")
 
 // EvidenceChecker verifies that an EvidenceID exists in the durable store.
-// When nil, the verifier can only check that IDs are syntactically non-empty.
+// Verification is a security boundary: without a checker the verifier fails
+// closed and cannot produce VERIFIED.
 type EvidenceChecker interface {
 	HasEvidence(ctx context.Context, id domain.EvidenceID) (bool, error)
+}
+
+// ReceiptChecker resolves the execution receipts recorded on a Finding. An
+// ALLOW decision proves authorization, not execution; a completed receipt is
+// the proof that the action actually ran and produced the evidence.
+type ReceiptChecker interface {
+	GetReceiptByID(ctx context.Context, id string) (domain.ExecutionReceipt, error)
+}
+
+// HumanReviewChecker resolves a durable human review by ID.
+type HumanReviewChecker interface {
+	GetHumanReview(ctx context.Context, id string) (domain.HumanReview, error)
 }
 
 type Input struct {
 	Finding  domain.Finding
 	Program  domain.Program
 	Decision *domain.ActionDecision
-	// Evidence, when set, rejects fabricated evidence IDs.
+	// Evidence must be set for a VERIFIED verdict; a nil checker is unknown, not
+	// "everything exists".
 	Evidence EvidenceChecker
+	// Receipts may be supplied directly (tests, already-resolved callers) or
+	// resolved from Finding.ExecutionReceipts through ReceiptChecker.
+	Receipts       []domain.ExecutionReceipt
+	ReceiptChecker ReceiptChecker
+	// HumanReview may be supplied directly or resolved from HumanReviewID.
+	HumanReview       *domain.HumanReview
+	HumanReviewID     string
+	HumanReviewLookup HumanReviewChecker
 
 	Reproduced           bool
 	ReproductionEvidence []domain.EvidenceID
@@ -59,6 +81,9 @@ type Input struct {
 type Options struct {
 	DuplicateRiskThreshold float64
 	Now                    func() time.Time
+	// Evidence is the default checker used when Input.Evidence is nil. There is
+	// no mode in which verification succeeds without one.
+	Evidence EvidenceChecker
 }
 
 type Verifier interface {
@@ -68,6 +93,7 @@ type Verifier interface {
 type RuleVerifier struct {
 	threshold float64
 	now       func() time.Time
+	evidence  EvidenceChecker
 }
 
 func NewRuleVerifier(opts Options) *RuleVerifier {
@@ -77,7 +103,7 @@ func NewRuleVerifier(opts Options) *RuleVerifier {
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &RuleVerifier{threshold: opts.DuplicateRiskThreshold, now: opts.Now}
+	return &RuleVerifier{threshold: opts.DuplicateRiskThreshold, now: opts.Now, evidence: opts.Evidence}
 }
 
 func (r *RuleVerifier) Verify(ctx context.Context, in Input) (domain.Verification, error) {
@@ -188,16 +214,22 @@ func (r *RuleVerifier) Verify(ctx context.Context, in Input) (domain.Verificatio
 	}
 
 	// 4b. Evidence IDs must exist in the durable store; a syntactically valid
-	// ID is not proof.
-	if in.Evidence != nil {
-		for _, id := range v.Evidence {
-			ok, err := in.Evidence.HasEvidence(ctx, id)
-			if err != nil {
-				return domain.Verification{}, fmt.Errorf("verify: check evidence %s: %w", id, err)
-			}
-			if !ok {
-				return reject(domain.VerdictNeedsEvidence, "EVIDENCE_NOT_FOUND:"+string(id))
-			}
+	// ID is not proof. A missing checker is unknown, not "all IDs exist", so the
+	// verifier fails closed.
+	checker := in.Evidence
+	if checker == nil {
+		checker = r.evidence
+	}
+	if checker == nil {
+		return reject(domain.VerdictNeedsEvidence, "EVIDENCE_CHECKER_MISSING")
+	}
+	for _, id := range v.Evidence {
+		ok, err := checker.HasEvidence(ctx, id)
+		if err != nil {
+			return domain.Verification{}, fmt.Errorf("verify: check evidence %s: %w", id, err)
+		}
+		if !ok {
+			return reject(domain.VerdictNeedsEvidence, "EVIDENCE_NOT_FOUND:"+string(id))
 		}
 	}
 
@@ -209,14 +241,39 @@ func (r *RuleVerifier) Verify(ctx context.Context, in Input) (domain.Verificatio
 		return reject(domain.VerdictDuplicateRisk, "DUPLICATE_RISK")
 	}
 
-	// 6. AI assistance must have a human verification trace.
+	// 6. AI assistance must have a durable human review, not just a string.
 	if in.AIAssisted {
 		if !in.HumanVerified {
 			return reject(domain.VerdictRejected, "AI_NOT_HUMAN_VERIFIED")
 		}
-		if strings.TrimSpace(in.HumanVerificationRef) == "" {
-			return reject(domain.VerdictNeedsEvidence, "AI_HUMAN_VERIFICATION_REF_MISSING")
+		review, reason, err := resolveHumanReview(ctx, in)
+		if err != nil {
+			return domain.Verification{}, fmt.Errorf("verify: load human review: %w", err)
 		}
+		if reason != "" {
+			return reject(domain.VerdictNeedsEvidence, reason)
+		}
+		if review.FindingID != in.Finding.ID {
+			return reject(domain.VerdictRejected, "AI_HUMAN_REVIEW_FINDING_MISMATCH")
+		}
+		if review.Verdict != domain.HumanReviewApproved {
+			return reject(domain.VerdictRejected, "AI_HUMAN_REVIEW_REJECTED")
+		}
+		if review.ReviewedAt.After(now.Add(time.Minute)) {
+			return reject(domain.VerdictRejected, "AI_HUMAN_REVIEW_FROM_FUTURE")
+		}
+		for _, id := range review.Evidence {
+			ok, err := checker.HasEvidence(ctx, id)
+			if err != nil {
+				return domain.Verification{}, fmt.Errorf("verify: check human review evidence %s: %w", id, err)
+			}
+			if !ok {
+				return reject(domain.VerdictNeedsEvidence, "HUMAN_REVIEW_EVIDENCE_NOT_FOUND:"+string(id))
+			}
+		}
+		v.Evidence = unionEvidence(v.Evidence, review.Evidence)
+		v.HumanReviewID = review.ID
+		v.HumanVerificationRef = firstNonEmpty(in.HumanVerificationRef, review.NotesHash)
 	}
 
 	// 7. Reproduction and impact must both be claimed and evidenced.
@@ -235,12 +292,147 @@ func (r *RuleVerifier) Verify(ctx context.Context, in Input) (domain.Verificatio
 	}
 	v.ImpactVerified = true
 
+	// 8. Evidence of execution: the finding must be backed by a COMPLETED
+	// receipt for the same program/asset/action and overlapping evidence. An
+	// ALLOW decision is authorization, not proof that the tool ran.
+	receipts, reason, err := resolveReceipts(ctx, in)
+	if err != nil {
+		return domain.Verification{}, fmt.Errorf("verify: load execution receipts: %w", err)
+	}
+	if reason != "" {
+		return reject(domain.VerdictNeedsEvidence, reason)
+	}
+	matching := matchingReceipts(receipts, in)
+	if len(matching) == 0 {
+		return reject(domain.VerdictNeedsEvidence, "EXECUTION_RECEIPT_NOT_PROVEN")
+	}
+	for _, rec := range matching {
+		v.ReceiptIDs = append(v.ReceiptIDs, domain.ReceiptID(rec.ID))
+	}
+	if len(in.Finding.SourceDecisionIDs) > 0 && !containsDecision(in.Finding.SourceDecisionIDs, in.Decision.ID) {
+		return reject(domain.VerdictRejected, "AUTHORIZATION_NOT_LINKED_TO_FINDING")
+	}
+
 	v.Verdict = domain.VerdictVerified
 	v.Reasons = append(v.Reasons, "ALL_CHECKS_PASSED")
 	if err := v.Validate(); err != nil {
 		return domain.Verification{}, fmt.Errorf("verify: produced invalid verification: %w", err)
 	}
 	return v, nil
+}
+
+func resolveHumanReview(ctx context.Context, in Input) (*domain.HumanReview, string, error) {
+	if in.HumanReview != nil {
+		if err := in.HumanReview.Validate(); err != nil {
+			return nil, "AI_HUMAN_REVIEW_INVALID", nil
+		}
+		return in.HumanReview, "", nil
+	}
+	id := strings.TrimSpace(in.HumanReviewID)
+	if id == "" {
+		return nil, "AI_HUMAN_REVIEW_MISSING", nil
+	}
+	if in.HumanReviewLookup == nil {
+		return nil, "AI_HUMAN_REVIEW_UNRESOLVED", nil
+	}
+	review, err := in.HumanReviewLookup.GetHumanReview(ctx, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, "AI_HUMAN_REVIEW_NOT_FOUND", nil
+		}
+		return nil, "", err
+	}
+	if err := review.Validate(); err != nil {
+		return nil, "AI_HUMAN_REVIEW_INVALID", nil
+	}
+	return &review, "", nil
+}
+
+func resolveReceipts(ctx context.Context, in Input) ([]domain.ExecutionReceipt, string, error) {
+	out := append([]domain.ExecutionReceipt{}, in.Receipts...)
+	if len(in.Finding.ExecutionReceipts) > 0 {
+		if in.ReceiptChecker == nil {
+			if len(out) == 0 {
+				return nil, "EXECUTION_RECEIPT_CHECKER_MISSING", nil
+			}
+		} else {
+			for _, rid := range in.Finding.ExecutionReceipts {
+				rec, err := in.ReceiptChecker.GetReceiptByID(ctx, string(rid))
+				if err != nil {
+					if errors.Is(err, domain.ErrReceiptNotFound) {
+						continue
+					}
+					return nil, "", err
+				}
+				out = append(out, rec)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, "EXECUTION_RECEIPT_MISSING", nil
+	}
+	return out, "", nil
+}
+
+// matchingReceipts selects the receipts that actually prove this finding: same
+// program, same asset, a scoped action, the decision that authorized it, and at
+// least one evidence ID shared with the finding/reproduction/impact evidence.
+func matchingReceipts(receipts []domain.ExecutionReceipt, in Input) []domain.ExecutionReceipt {
+	evidence := unionEvidence(in.Finding.Evidence, in.ReproductionEvidence, in.ImpactEvidence)
+	var out []domain.ExecutionReceipt
+	for _, rec := range receipts {
+		if rec.Status != domain.ReceiptCompleted {
+			continue
+		}
+		if rec.DecisionID == "" || in.Decision == nil || rec.DecisionID != in.Decision.ID {
+			continue
+		}
+		if rec.ProgramID != in.Finding.ProgramID {
+			continue
+		}
+		if !rec.Action.NeedsScope() {
+			continue
+		}
+		if in.Finding.AssetID != nil {
+			if rec.AssetID == nil || *rec.AssetID != *in.Finding.AssetID {
+				continue
+			}
+		}
+		if !intersectsEvidence(rec.Evidence, evidence) {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+func intersectsEvidence(a, b []domain.EvidenceID) bool {
+	seen := make(map[domain.EvidenceID]struct{}, len(a))
+	for _, id := range a {
+		seen[id] = struct{}{}
+	}
+	for _, id := range b {
+		if _, ok := seen[id]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDecision(ids []domain.DecisionID, id domain.DecisionID) bool {
+	for _, x := range ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }
 
 func findingKey(id domain.FindingID) string {

@@ -19,6 +19,7 @@ type fakeScheduleStore struct {
 	opps     []domain.Opportunity
 	tasks    []domain.ResearchTask
 	comp     *domain.CompetitionSnapshot
+	ledger   []domain.LedgerEntry
 }
 
 func (f *fakeScheduleStore) ListPrograms(ctx context.Context, platform domain.Platform) ([]domain.Program, error) {
@@ -55,6 +56,9 @@ func (f *fakeScheduleStore) PutOpportunity(ctx context.Context, o domain.Opportu
 func (f *fakeScheduleStore) PutResearchTask(ctx context.Context, t domain.ResearchTask) error {
 	f.tasks = append(f.tasks, t)
 	return nil
+}
+func (f *fakeScheduleStore) ListLedgerEntries(ctx context.Context, platform domain.Platform, programID domain.ProgramID, since, until *time.Time) ([]domain.LedgerEntry, error) {
+	return f.ledger, nil
 }
 
 func schedProgram(id string, status domain.ProgramStatus, eligible bool, scopeGranted bool) domain.Program {

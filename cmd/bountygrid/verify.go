@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
@@ -38,7 +39,13 @@ type verifyFile struct {
 	AIAssisted           bool                `json:"ai_assisted"`
 	HumanVerified        bool                `json:"human_verified"`
 	HumanVerificationRef string              `json:"human_verification_ref"`
-	VerifiedBy           string              `json:"verified_by"`
+	HumanReviewID        string              `json:"human_review_id"`
+	// HumanReview may be supplied inline. When -persist is set it is written to
+	// the durable human_reviews store before the Verification so the reference
+	// resolves.
+	HumanReview       *domain.HumanReview `json:"human_review,omitempty"`
+	ExecutionReceipts []string            `json:"execution_receipts"`
+	VerifiedBy        string              `json:"verified_by"`
 }
 
 // verifyFinding is the JSON shape for a Finding. domain.Finding has no JSON
@@ -55,6 +62,10 @@ type verifyFinding struct {
 	Evidence  []domain.EvidenceID `json:"evidence"`
 	Status    string              `json:"status"`
 	CreatedAt time.Time           `json:"created_at"`
+	// Provenance: which decisions authorized the work and which receipts prove
+	// it executed. The verifier resolves each receipt from the store.
+	SourceDecisionIDs []domain.DecisionID `json:"source_decision_ids,omitempty"`
+	ExecutionReceipts []domain.ReceiptID  `json:"execution_receipts,omitempty"`
 }
 
 func (f verifyFinding) toDomain() domain.Finding {
@@ -62,6 +73,7 @@ func (f verifyFinding) toDomain() domain.Finding {
 		ID: f.ID, TaskID: f.TaskID, ProgramID: f.ProgramID, AssetID: f.AssetID,
 		Title: f.Title, VulnType: f.VulnType, Severity: f.Severity,
 		Evidence: f.Evidence, Status: f.Status, CreatedAt: f.CreatedAt,
+		SourceDecisionIDs: f.SourceDecisionIDs, ExecutionReceipts: f.ExecutionReceipts,
 	}
 }
 
@@ -71,6 +83,9 @@ type verifyStore interface {
 	GetFinding(ctx context.Context, id domain.FindingID) (domain.Finding, error)
 	GetEvidence(ctx context.Context, id domain.EvidenceID) (domain.Evidence, error)
 	PutVerification(ctx context.Context, v domain.Verification) error
+	GetReceiptByID(ctx context.Context, id string) (domain.ExecutionReceipt, error)
+	GetHumanReview(ctx context.Context, id string) (domain.HumanReview, error)
+	PutHumanReview(ctx context.Context, h domain.HumanReview) error
 }
 
 type repoEvidenceChecker struct {
@@ -86,6 +101,22 @@ func (c repoEvidenceChecker) HasEvidence(ctx context.Context, id domain.Evidence
 		return false, err
 	}
 	return true, nil
+}
+
+type repoReceiptChecker struct {
+	store verifyStore
+}
+
+func (c repoReceiptChecker) GetReceiptByID(ctx context.Context, id string) (domain.ExecutionReceipt, error) {
+	return c.store.GetReceiptByID(ctx, id)
+}
+
+type repoHumanReviewLookup struct {
+	store verifyStore
+}
+
+func (c repoHumanReviewLookup) GetHumanReview(ctx context.Context, id string) (domain.HumanReview, error) {
+	return c.store.GetHumanReview(ctx, id)
 }
 
 type verifyOutput struct {
@@ -148,6 +179,15 @@ func loadVerifyFile(path string) (verifyFile, error) {
 	return in, nil
 }
 
+func appendUniqueReceipt(ids []domain.ReceiptID, id domain.ReceiptID) []domain.ReceiptID {
+	for _, x := range ids {
+		if x == id {
+			return ids
+		}
+	}
+	return append(ids, id)
+}
+
 func executeVerify(ctx context.Context, store verifyStore, in verifyFile, persist bool, now time.Time) (verifyOutput, error) {
 	finding := in.Finding.toDomain()
 	programID := in.ProgramID
@@ -170,6 +210,28 @@ func executeVerify(ctx context.Context, store verifyStore, in verifyFile, persis
 		}
 		finding = stored
 	}
+	// Receipt IDs named in the file are resolution hints only: the verifier
+	// loads each stored receipt and re-checks program/asset/action/decision/
+	// evidence, so naming a receipt cannot fabricate execution.
+	for _, id := range in.ExecutionReceipts {
+		if id = strings.TrimSpace(id); id != "" {
+			finding.ExecutionReceipts = appendUniqueReceipt(finding.ExecutionReceipts, domain.ReceiptID(id))
+		}
+	}
+	humanReviewID := strings.TrimSpace(in.HumanReviewID)
+	if in.HumanReview != nil {
+		if strings.TrimSpace(in.HumanReview.ID) == "" {
+			return verifyOutput{}, errors.New("verify: human_review.id is required")
+		}
+		if humanReviewID == "" {
+			humanReviewID = in.HumanReview.ID
+		}
+		if persist {
+			if err := store.PutHumanReview(ctx, *in.HumanReview); err != nil {
+				return verifyOutput{}, fmt.Errorf("verify: persist human review: %w", err)
+			}
+		}
+	}
 	var decision *domain.ActionDecision
 	if in.DecisionID != "" {
 		d, err := store.GetDecision(ctx, in.DecisionID)
@@ -178,10 +240,16 @@ func executeVerify(ctx context.Context, store verifyStore, in verifyFile, persis
 		}
 		decision = &d
 	}
-	v, err := verify.NewRuleVerifier(verify.Options{Now: func() time.Time { return now }}).Verify(ctx, verify.Input{
+	v, err := verify.NewRuleVerifier(verify.Options{
+		Now: func() time.Time { return now }, Evidence: repoEvidenceChecker{store: store},
+	}).Verify(ctx, verify.Input{
 		Finding: finding, Program: program, Decision: decision,
-		Evidence:   repoEvidenceChecker{store: store},
-		Reproduced: in.Reproduced, ReproductionEvidence: in.ReproductionEvidence,
+		Evidence:          repoEvidenceChecker{store: store},
+		ReceiptChecker:    repoReceiptChecker{store: store},
+		HumanReview:       in.HumanReview,
+		HumanReviewID:     humanReviewID,
+		HumanReviewLookup: repoHumanReviewLookup{store: store},
+		Reproduced:        in.Reproduced, ReproductionEvidence: in.ReproductionEvidence,
 		ImpactVerified: in.ImpactVerified, ImpactEvidence: in.ImpactEvidence,
 		DataMinimized:    in.DataMinimized,
 		DuplicateChecked: in.DuplicateChecked, DuplicateRisk: in.DuplicateRisk,

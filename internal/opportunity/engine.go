@@ -61,13 +61,41 @@ func NewEngine() Engine {
 	return Engine{Weights: DefaultWeights(), Costs: DefaultCosts(), NoDataConf: 0.2}
 }
 
+// History is the ledger-measured outcome for a program. It lets the score use
+// actual acceptance/payout instead of only advertised bounty ranges.
+type History struct {
+	Submitted   int
+	Accepted    int
+	Paid        int
+	AvgAccepted domain.Money
+	AvgPaid     domain.Money
+	ActualCost  domain.Money
+}
+
+func (h *History) AcceptanceRate() (float64, bool) {
+	if h == nil || h.Submitted <= 0 {
+		return 0, false
+	}
+	rate := float64(h.Accepted) / float64(h.Submitted)
+	return clamp01(rate), true
+}
+
 type Input struct {
 	Program     domain.Program
 	Status      domain.ProgramStatus
 	Account     domain.Account
 	Competition *domain.CompetitionSnapshot
+	History     *History
 	Now         time.Time
 }
+
+const (
+	// historyPriorWeight shrinks a small sample toward the base P(valid) instead
+	// of letting one accepted/rejected report dominate the score.
+	historyPriorWeight = 5.0
+	// rewardPriorWeight does the same for observed cash versus advertised range.
+	rewardPriorWeight = 3.0
+)
 
 func (e Engine) Evaluate(in Input) (domain.Opportunity, error) {
 	now := in.Now
@@ -112,9 +140,37 @@ func (e Engine) Evaluate(in Input) (domain.Opportunity, error) {
 	penalty = math.Min(penalty, 0.95)
 
 	pValid := e.Weights.PValid
+	historyNote := "history=none"
+	if rate, ok := in.History.AcceptanceRate(); ok {
+		// Shrink toward the base prior: one report must not set P(valid) to 0 or 1.
+		pValid = (rate*float64(in.History.Submitted) + e.Weights.PValid*historyPriorWeight) /
+			(float64(in.History.Submitted) + historyPriorWeight)
+		historyNote = fmt.Sprintf("history_submitted=%d history_accepted=%d history_p_valid=%.2f",
+			in.History.Submitted, in.History.Accepted, pValid)
+	}
+	observedReward := int64(0)
+	if in.History != nil {
+		if in.History.AvgPaid.Amount > 0 {
+			observedReward = in.History.AvgPaid.Amount
+		} else if in.History.AvgAccepted.Amount > 0 {
+			observedReward = in.History.AvgAccepted.Amount
+		}
+	}
+	if observedReward > 0 && in.History.Submitted > 0 {
+		// Blend advertised reward with observed cash. Advertised ranges are
+		// marketing numbers; a program that consistently pays far below its max
+		// should lose score.
+		n := float64(in.History.Submitted)
+		weighted = (weighted*rewardPriorWeight + float64(observedReward)*n) / (rewardPriorWeight + n)
+		historyNote += fmt.Sprintf(" history_observed_reward=%.0f", float64(observedReward))
+	}
 	expectedReward := pValid * weighted * e.Weights.AssetTier * e.Weights.Campaign * (1 - dup)
 	humanCost := e.Costs.HumanHours*e.Costs.HourlyRate + e.Costs.ReviewHours*e.Costs.ReviewRate
 	cost := humanCost + e.Costs.Compute + e.Costs.Tool + e.Costs.Risk
+	if in.History != nil && in.History.ActualCost.Amount > 0 {
+		cost = float64(in.History.ActualCost.Amount)
+		historyNote += fmt.Sprintf(" history_actual_cost=%.0f", cost)
+	}
 	if cost <= 0 {
 		cost = 1
 	}
@@ -127,6 +183,7 @@ func (e Engine) Evaluate(in Input) (domain.Opportunity, error) {
 
 	inputs := []string{
 		fmt.Sprintf("p_valid=%.2f", pValid),
+		historyNote,
 		fmt.Sprintf("reward_min=%.0f", min),
 		fmt.Sprintf("reward_median=%.0f", median),
 		fmt.Sprintf("reward_max=%.0f", max),

@@ -89,7 +89,12 @@ type Input struct {
     PubliclyKnown bool
     AIAssisted bool
     HumanVerified bool
-    HumanVerificationRef string
+    HumanReviewID string          // resolved from human_reviews
+    HumanReviewLookup HumanReviewChecker
+    HumanVerificationRef string   // legacy text, not sufficient alone
+    Receipts []domain.ExecutionReceipt
+    ReceiptChecker ReceiptChecker // resolves Finding.ExecutionReceipts
+    Evidence EvidenceChecker      // required; nil fails closed
     VerifiedBy string
     Now time.Time
 }
@@ -101,7 +106,7 @@ type Verifier interface {
 
 验证器可以是规则 + 人工，不得由模型单独判定 `VERIFIED`。
 
-**当前实现（2026-11-01）**：`internal/verify.RuleVerifier` 实现规则验证，接受 `Finding + Program + ActionDecision + 复现/影响证据 + 数据最小化 + 重复风险 + AI 披露`。判定顺序：Finding 完整性 → Program 一致性 → Scope（`ResolveAsset` + `CheckAsset`，conditional 为 `NEEDS_MORE_EVIDENCE`）→ 授权决策（必须 ALLOW、Context 完整、动作属于 scope 执行类）→ 数据最小化/公开已知 → 重复检查 → AI 人工验证 → 复现/影响证据。`VERIFIED` 必须同时满足 `Reproduced/InScope/ImpactVerified/DataMinimized` 且有 Evidence；模型无法单独产生。`bountygrid verify -file <json> [-persist]` 从 PostgreSQL 加载 Program/Decision，写 `verifications`。
+**当前实现（2026-11-01）**：`internal/verify.RuleVerifier` 实现规则验证，接受 `Finding + Program + ActionDecision + 复现/影响证据 + 数据最小化 + 重复风险 + AI 披露`。判定顺序：Finding 完整性 → Program 一致性 → Scope（`ResolveAsset` + `CheckAsset`，conditional 为 `NEEDS_MORE_EVIDENCE`）→ 授权决策（必须 ALLOW、Context 完整、动作属于 scope 执行类）→ 数据最小化/公开已知 → 重复检查 → AI 人工复核 → 复现/影响证据 → 执行回执。`VERIFIED` 必须同时满足 `Reproduced/InScope/ImpactVerified/DataMinimized` 且有 Evidence、`DuplicateChecked`、至少一个 `COMPLETED` `ExecutionReceipt`（program/asset/action/decision/evidence 与 Finding 匹配）；AI 辅助时必须从 `human_reviews` 解析 `HumanReviewID`（APPROVED、finding 匹配、非未来、证据存在）。没有 `EvidenceChecker` 时 fail closed。模型无法单独产生 `VERIFIED`。`bountygrid verify -file <json> [-persist]` 从 PostgreSQL 加载 Program/Decision/Receipts/HumanReview；`-persist` 先写 `human_reviews`，再写 append-only `verifications`（同 ID 同内容 no-op，不同内容 `ErrConflict`）。
 
 ## 4. ReportDraft
 
@@ -145,7 +150,7 @@ type Verifier interface {
 - 三平台都要求人工验证；补天 GROW AI 赛道还要求模型/工具字段。
 - AI 未验证报告 >3/>5 有处罚；Policy Engine 在提交前检查披露完整性。
 
-**当前实现（2026-11-01）**：`internal/report.Build` 只接受 `VERIFIED` 的 Verification，组装 `ReportDraft`（`DRAFT`）并返回 `Missing/Ready`。通用必填：`title/asset_url/vuln_type/severity/summary/steps/poc/impact/remediation`；Xianzhi 额外要求 `account_name`（`task_id` 默认 Program.NativeID）；Butian 额外要求 `vendor/category/asset_scope/weight/activity/task_id/industry/region/contact`（`vendor` 默认 Program.Name）。`contact` 是联系方式引用（如“账号资料”），不是原始手机号/邮箱；DB 不存完整联系方式，真实值在平台表单由人工填写。AI 披露要求 `human_verification`，Butian GROW 还要求 `model_name/model_version/tool_name`。附件按平台校验扩展名（Vulbox 文档/压缩包；Butian 只收 zip/rar）。report 文本中的 cookie/token/密码/证件/银行卡/完整手机号/邮箱会被拒绝；裸卡号用卡前缀/Luhn 识别，普通长时间戳/订单号不误杀。`bountygrid report -file [-persist]` 从 PostgreSQL 加载 Program/Finding/Verification，`-persist` 写 `report_drafts`。本步骤不提交、不勾选协议、不代签 NDA。
+**当前实现（2026-11-01）**：`internal/report.Build` 只接受 `VERIFIED` 的 Verification，组装 `ReportDraft`（`DRAFT`）并返回 `Missing/Ready`。通用必填：`title/asset_url/vuln_type/severity/summary/steps/poc/impact/remediation`；Xianzhi 额外要求 `account_name`（`task_id` 默认 Program.NativeID）；Butian 额外要求 `vendor/category/asset_scope/weight/activity/task_id/industry/region/contact`（`vendor` 默认 Program.Name）。`contact` 是联系方式引用（如“账号资料”），不是原始手机号/邮箱；DB 不存完整联系方式，真实值在平台表单由人工填写。AI 披露要求 `human_verification`，Butian GROW 还要求 `model_name/model_version/tool_name`。附件按平台校验扩展名（Vulbox 文档/压缩包；Butian 只收 zip/rar）；提供 `attachments_root` 时还做 workspace 边界、大小、magic bytes、SHA-256 与敏感值扫描，hash 进入 `ContentHash`，提交前由 `submit` 重新校验。report 文本中的 cookie/token/密码/证件/银行卡/完整手机号/邮箱会被拒绝；裸卡号用卡前缀/Luhn 识别，普通长时间戳/订单号不误杀。`bountygrid report -file [-persist]` 从 PostgreSQL 加载 Program/Finding/Verification，`-persist` 写 `report_drafts`。本步骤不提交、不勾选协议、不代签 NDA。
 
 ## 5. Submission
 
@@ -191,7 +196,7 @@ type HumanApproval struct {
 - 需要补充证据时，回到 `ReportDraft`，仍由人工提交补充。
 - 评论/沟通由人工进行；Agent 可起草，不自动发送。
 
-**当前实现（2026-11-01）**：`internal/submit.Service` 加载 `ReportDraft + Program + Finding + Verification`，用 `report.Recheck` 复核完整性，构造 `REPORT_SUBMIT` `ActionRequest`（`request_id=submit/<report>/<approval>`、参数 `{"report_id":...,"report_content_hash":...}`、`ResourceID=report_id`），交给 Action Gateway。content hash 覆盖字段、AI 披露、附件和 VerificationID，审批后修改草稿会使 hash 不匹配。Gateway 返回 `ALLOW` 且 `AuthorizeWith` 消费 single-use approval 之后，才调用 `Submitter`。本仓库只有 `DryRunSubmitter`（本地 receipt，无网络/平台动作）；`PUT /submissions` 持久化 `Submission`，`0006_submission_idempotency.sql` 对 `approval_id` 加唯一索引，`0008_submission_report_unique.sql` 对真实提交的 `report_id` 加部分唯一索引；`submission_intents` 在平台调用前预占 report，异常崩溃后 1 小时（`ReservationTTL`）可回收，接入真实 SubmitAdapter 时需重新评估该 TTL。`bountygrid submit -print-binding` 打印审批必须绑定的 request_id/parameters_hash；`submit -report -account -approval` 执行 dry-run。真实平台 SubmitAdapter 尚未实现，且本仓库禁止真实提交演练。
+**当前实现（2026-11-01）**：`internal/submit.Service` 加载 `ReportDraft + Program + Finding + Verification`，用 `report.Recheck` 复核完整性，构造 `REPORT_SUBMIT` `ActionRequest`（`request_id=submit/<report>/<approval>`、参数 `{"report_id":...,"report_content_hash":...}`、`ResourceID=report_id`），交给 Action Gateway。content hash 覆盖字段、AI 披露、附件和 VerificationID，审批后修改草稿会使 hash 不匹配。Gateway 返回 `ALLOW` 且 `AuthorizeWith` 消费 single-use approval 之后，才调用 `Submitter`。本仓库只有 `DryRunSubmitter`（本地 receipt，无网络/平台动作）；`PUT /submissions` 持久化 `Submission`，`0006_submission_idempotency.sql` 对 `approval_id` 加唯一索引，`0008_submission_report_unique.sql` 对真实提交的 `report_id` 加部分唯一索引；`submission_intents` 在平台调用前预占 report，状态机为 `PENDING/SENT/CONFIRMED/AMBIGUOUS/FAILED_BEFORE_SEND`：只有 `PENDING`（未发送就崩溃）1 小时后可回收，`SENT/AMBIGUOUS` 永不自动重投，必须人工对账。真实 adapter 必须用 `submit.ErrNotSent` 证明未发送，否则错误按 `AMBIGUOUS` 处理。`bountygrid submit -print-binding` 打印审批必须绑定的 request_id/parameters_hash；`submit -report -account -approval` 执行 dry-run。真实平台 SubmitAdapter 尚未实现，且本仓库禁止真实提交演练。
 
 ## 6. Revenue Ledger
 

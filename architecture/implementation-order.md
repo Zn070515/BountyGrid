@@ -23,10 +23,10 @@
 | Phase 2：Facts + State | 已实现并硬化；State TTL 受输入 Fact 年龄限制 |
 | Phase 3：Policy Engine / Gateway | 已实现并硬化：authoritative Asset、ExecutionEnvironment、Authorize 重评估、审批在执行前消费 |
 | Phase 4：Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、唯一 QUEUED 任务、CompetitionSnapshot TTL/decay |
-| Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执已实现；Model Router 路由/数据分级/预算/审计已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
-| Phase 6：Verification / Report / Submission / Ledger | Verification、ReportDraft、Submission dry-run、CNY 现金 Ledger 已实现；真实平台 SubmitAdapter 与 Ledger 反馈闭环未进入 |
+| Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执/逐请求 Egress grant/SSRF 防护已实现；Model Router 路由/派生数据分级/transport 本地性/context+capability/累计预算/model_calls 幂等已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
+| Phase 6：Verification / Report / Submission / Ledger | Verification（receipt provenance + durable human review）、ReportDraft（严格附件）、Submission dry-run（intent 状态机/AMBIGUOUS）、CNY 现金 Ledger 已实现；Ledger Feedback 已回灌 Opportunity；真实平台 SubmitAdapter 未实现 |
 
-> **真实状态：Phase 0 complete; Phase 1–6 partially implemented; active execution remains disabled.**
+> **真实状态：Phase 0 complete; Phase 1–8 control plane implemented; active execution remains disabled.**
 >
 > 当前实现顺序与 canonical 阶段存在交叉：Phase 2/3 的内核先于 Phase 1 Reader 完整落地，这是为了先把安全不变量固定下来；不改变 Phase 1 的定义，也不把 Reader 推迟成“Phase 2”。
 
@@ -205,14 +205,14 @@
 - 模型不能单独判 VERIFIED。
 - 退出条件：未复现 Finding 不能进入报告。
 
-**当前实现（2026-11-01）**：`internal/verify.RuleVerifier` 按 Scope → 授权 → 数据最小化/公开已知 → 重复 → AI 人工验证 → 复现/影响的顺序判定；`VERIFIED` 要求四项 flag 全真、有 Evidence、`DuplicateChecked`，AI 辅助时持久化人工验证 trace。`bountygrid verify -file` 从 PostgreSQL 加载 Program/Decision/Finding、校验证据存在性，`-persist` 写 `verifications`。仍差：Finding 状态机自动推进、人工复核 UI。
+**当前实现（2026-11-01）**：`internal/verify.RuleVerifier` 按 Scope → 授权 → 数据最小化/公开已知 → 重复 → AI 人工复核 → 复现/影响 → 执行回执的顺序判定；`VERIFIED` 要求四项 flag 全真、有 Evidence、`DuplicateChecked`、至少一个 `COMPLETED` 执行回执（program/asset/action/decision/evidence 与 Finding 匹配），AI 辅助时必须有可从 `human_reviews` 解析的 `HumanReviewID`（APPROVED、finding 匹配、时间非未来、证据存在）。EvidenceChecker 缺失时 fail closed，不能产出 `VERIFIED`。`bountygrid verify -file` 从 PostgreSQL 加载 Program/Decision/Finding/Receipts/HumanReview，校验证据存在性，`-persist` 先写 `human_reviews` 再写 `verifications`（append-only：同 ID 同内容 no-op，不同内容冲突）。仍差：Finding 状态机自动推进、人工复核 UI。
 
 ### 6.2 ReportDraft
 
 - 三平台字段映射；必填检查；AI 披露。
 - 退出条件：缺字段返回 REQUIRE_MORE_EVIDENCE；补天 GROW AI 字段完整。
 
-**当前实现（2026-11-01）**：`internal/report.Build` 只接受 `VERIFIED` Verification；通用必填字段 + Xianzhi `account_name` / Butian `vendor/category/asset_scope/weight/activity/task_id/industry/region/contact`；AI 披露要求 `human_verification`，Butian GROW 还要求模型名/版本/工具名；附件按平台校验扩展名；report 文本含 cookie/token/密码/证件/银行卡/完整手机号/邮箱会被拒绝。`bountygrid report -file [-persist]` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`；Submission 见 7.1/7.2。仍差：ReportDraft→READY_FOR_REVIEW 的人工状态推进、附件大小/上传。
+**当前实现（2026-11-01）**：`internal/report.Build` 只接受 `VERIFIED` Verification；通用必填字段 + Xianzhi `account_name` / Butian `vendor/category/asset_scope/weight/activity/task_id/industry/region/contact`；AI 披露要求 `human_verification`，Butian GROW 还要求模型名/版本/工具名；附件按平台校验扩展名；提供 `attachments_root` 时还会校验 workspace 边界、大小、magic bytes、SHA-256 与文本敏感值，hash 进入 `ContentHash`；report 文本含 cookie/token/密码/证件/银行卡/完整手机号/邮箱会被拒绝。`bountygrid report -file [-persist]` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`；Submission 见 7.1/7.2。仍差：ReportDraft→READY_FOR_REVIEW 的人工状态推进、真实上传。
 
 ## 7. Submission（Vulbox 首个）
 
@@ -228,7 +228,7 @@
 - 联想/嘉立创真实表单字段；草稿箱；提交后状态。
 - 退出条件：只读演练（不真正提交）通过；人工确认后可提交一次测试。
 
-**当前实现（2026-11-01）**：`submit.Service` 在 Gateway `ALLOW` + `AuthorizeWith` 消费审批后才调用 `Submitter`。本仓库只有 `DryRunSubmitter`（本地 receipt，状态 `DRY_RUN`，无网络/平台动作）；dry-run 不改变 ReportDraft 状态，也不占用真实提交的唯一名额，因此后续仍可用新审批真实提交。`submissions` 持久化，`approval_id` 唯一索引防止同一审批重复提交，`report_id` 部分唯一索引（排除 `DRY_RUN`）防止同一报告真实提交两次；`submission_intents` 崩溃后 1 小时可回收。真实平台 SubmitAdapter 未实现。
+**当前实现（2026-11-01）**：`submit.Service` 在 Gateway `ALLOW` + `AuthorizeWith` 消费审批后才调用 `Submitter`。本仓库只有 `DryRunSubmitter`（本地 receipt，状态 `DRY_RUN`，无网络/平台动作）；dry-run 不改变 ReportDraft 状态，也不占用真实提交的唯一名额，因此后续仍可用新审批真实提交。`submissions` 持久化，`approval_id` 唯一索引防止同一审批重复提交，`report_id` 部分唯一索引（排除 `DRY_RUN`）防止同一报告真实提交两次；`submission_intents` 使用 `PENDING/SENT/CONFIRMED/AMBIGUOUS/FAILED_BEFORE_SEND` 状态机：只有 `PENDING`（未发送就崩溃）可被 1 小时 TTL 回收；`SENT/AMBIGUOUS` 永不自动重投，必须人工对账。真实平台 SubmitAdapter 未实现；真实 adapter 必须用 `submit.ErrNotSent` 证明“未发送”，否则错误按 `AMBIGUOUS` 处理。
 
 ### 7.3 Xianzhi/Butian Submit
 

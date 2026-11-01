@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/gateway"
+	"github.com/Zn070515/BountyGrid/internal/timeutil"
 )
 
 type ToolSpec struct {
@@ -109,6 +112,13 @@ func (r *Registry) List() []ToolSpec {
 type Sandbox struct {
 	AllowedHosts []string
 	Workspace    string
+	// ApprovedProxy is the only proxy egress may use. An empty value disables
+	// proxy support entirely (http.ProxyFromEnvironment is not consulted), so an
+	// environment variable cannot silently reroute traffic.
+	ApprovedProxy string
+	// AllowLoopback exists only for tests using httptest servers. It must never
+	// be enabled in a production harness.
+	AllowLoopback bool
 }
 
 // CheckURL denies egress unless the host is explicitly allowed. Wildcards match
@@ -143,12 +153,49 @@ func (s *Sandbox) CheckURL(raw string) error {
 // Egress is the harness-controlled network client. A tool never receives raw
 // network capability: every request (and every redirect) is checked against the
 // sandbox allowlist before the connection is made.
-var ErrResponseTooLarge = errors.New("egress: response too large")
+var (
+	ErrResponseTooLarge = errors.New("egress: response too large")
+	ErrNonPublicAddress = errors.New("egress: resolved address is not public")
+	ErrGrantDenied      = errors.New("egress: request is outside the execution grant")
+)
+
+// ExecutionGrant is the per-execution network authority derived from the
+// approved decision. A tool cannot widen it: the approved method, target,
+// rate/concurrency ceiling and daily limit are enforced on every request, not
+// once per tool call.
+type ExecutionGrant struct {
+	DecisionID  domain.DecisionID
+	ProgramID   domain.ProgramID
+	AssetID     *domain.AssetID
+	AssetTarget string
+	// AllowedMethods is empty only for a grant with no bound method, in which
+	// case only GET/HEAD are permitted.
+	AllowedMethods   map[string]struct{}
+	ForbiddenMethods map[string]struct{}
+	// AllowedPathPrefixes restricts a URL asset to the approved path tree. Empty
+	// means the asset did not specify a path.
+	AllowedPathPrefixes []string
+	MaxRPS              *float64
+	MaxConcurrency      *int
+	// DailyLimit is the maximum requests in one business day; 0 means the grant
+	// has no explicit daily ceiling (it still counts requests for audit).
+	DailyLimit int64
+}
+
+type requestGate struct {
+	mu   sync.Mutex
+	last time.Time
+	day  string
+	used int64
+	sem  chan struct{}
+}
 
 type Egress struct {
 	sandbox  *Sandbox
 	client   *http.Client
 	maxBytes int64
+	grant    *ExecutionGrant
+	gate     *requestGate
 }
 
 // DefaultEgressMaxBytes bounds a single response body. Tools must not be able
@@ -161,14 +208,22 @@ func NewEgress(s *Sandbox) *Egress {
 	}
 	e := &Egress{sandbox: s, maxBytes: DefaultEgressMaxBytes}
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		// Proxy is nil unless an operator configured an approved proxy. An
+		// environment variable must not silently reroute execution traffic.
+		Proxy:                 nil,
 		ForceAttemptHTTP2:     true,
+		DialContext:           publicDialContext(s.AllowLoopback),
 		MaxIdleConns:          20,
 		MaxIdleConnsPerHost:   4,
 		IdleConnTimeout:       30 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 20 * time.Second,
 		ExpectContinueTimeout: 2 * time.Second,
+	}
+	if proxy := strings.TrimSpace(s.ApprovedProxy); proxy != "" {
+		if u, err := url.Parse(proxy); err == nil && u.Scheme != "" && u.Host != "" {
+			transport.Proxy = http.ProxyURL(u)
+		}
 	}
 	e.client = &http.Client{
 		Transport: transport,
@@ -183,6 +238,43 @@ func NewEgress(s *Sandbox) *Egress {
 	return e
 }
 
+// WithGrant returns a per-execution client bound to the approved decision. The
+// shared transport is reused, but method/target/path/rate/concurrency/daily
+// checks and the request gate are execution-local.
+func (e *Egress) WithGrant(g ExecutionGrant) *Egress {
+	out := *e
+	grant := g
+	out.grant = &grant
+	gate := &requestGate{day: businessDay(time.Now())}
+	if g.MaxConcurrency != nil && *g.MaxConcurrency > 0 {
+		gate.sem = make(chan struct{}, *g.MaxConcurrency)
+	}
+	out.gate = gate
+	// Redirects must be checked against the grant, not only the sandbox. The
+	// base client's hook captures the original Egress (grant == nil), so a grant
+	// client gets its own redirect policy closure.
+	timeout := 30 * time.Second
+	var transport http.RoundTripper
+	if e.client != nil {
+		timeout = e.client.Timeout
+		transport = e.client.Transport
+	}
+	out.client = &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("egress: too many redirects")
+			}
+			if err := out.CheckURL(req.URL.String()); err != nil {
+				return err
+			}
+			return out.checkGrant(req)
+		},
+	}
+	return &out
+}
+
 // SetMaxBytes overrides the response-body limit (tests or a stricter tool).
 func (e *Egress) SetMaxBytes(n int64) {
 	if n > 0 {
@@ -194,9 +286,9 @@ func (e *Egress) CheckURL(raw string) error {
 	return e.sandbox.CheckURL(raw)
 }
 
-// Do performs one request after the sandbox check. The response body is
-// wrapped so reads beyond the configured limit fail rather than silently
-// pulling unbounded data.
+// Do performs one request after the sandbox and execution-grant checks. The
+// response body is wrapped so reads beyond the configured limit fail rather
+// than silently pulling unbounded data.
 func (e *Egress) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
 	if req == nil || req.URL == nil {
 		return nil, fmt.Errorf("egress: request has no url")
@@ -204,16 +296,245 @@ func (e *Egress) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	if err := e.CheckURL(req.URL.String()); err != nil {
 		return nil, err
 	}
+	if err := e.checkGrant(req); err != nil {
+		return nil, err
+	}
+	release, err := e.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := e.client.Do(req.WithContext(ctx))
 	if err != nil {
+		release()
 		return nil, err
 	}
 	if resp.ContentLength > e.maxBytes {
 		_ = resp.Body.Close()
+		release()
 		return nil, ErrResponseTooLarge
 	}
-	resp.Body = &limitedBody{ReadCloser: resp.Body, remaining: e.maxBytes + 1}
+	resp.Body = &limitedBody{ReadCloser: &releasingBody{ReadCloser: resp.Body, release: release}, remaining: e.maxBytes + 1}
 	return resp, nil
+}
+
+func (e *Egress) checkGrant(req *http.Request) error {
+	g := e.grant
+	if g == nil {
+		return nil
+	}
+	method := strings.ToUpper(strings.TrimSpace(req.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	if _, forbidden := g.ForbiddenMethods[method]; forbidden {
+		return fmt.Errorf("%w: method %s is forbidden", ErrGrantDenied, method)
+	}
+	if len(g.AllowedMethods) > 0 {
+		if _, ok := g.AllowedMethods[method]; !ok {
+			return fmt.Errorf("%w: method %s is not approved", ErrGrantDenied, method)
+		}
+	} else if method != http.MethodGet && method != http.MethodHead {
+		return fmt.Errorf("%w: only GET/HEAD are approved", ErrGrantDenied)
+	}
+	if err := g.allowsTarget(req.URL); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (g *ExecutionGrant) allowsTarget(u *url.URL) error {
+	target := strings.TrimSpace(g.AssetTarget)
+	if target == "" {
+		return nil
+	}
+	// Asset values may be bare host patterns (api.example.com, *.example.com)
+	// or full URLs including a path. A bare pattern is matched against the host;
+	// a URL target additionally pins scheme and path prefix.
+	host := strings.ToLower(u.Hostname())
+	if !strings.Contains(target, "/") && !strings.Contains(target, ":") {
+		if !hostMatches(target, host) {
+			return fmt.Errorf("%w: host %s is not the approved asset %s", ErrGrantDenied, host, target)
+		}
+		return nil
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Hostname() == "" {
+		// A non-URL asset value (a description, CIDR, etc.) cannot be treated as
+		// a network target. Do not widen the grant silently.
+		return fmt.Errorf("%w: asset target %q is not a network target", ErrGrantDenied, target)
+	}
+	if parsed.Scheme != "" && !strings.EqualFold(parsed.Scheme, u.Scheme) {
+		return fmt.Errorf("%w: scheme %s is not approved", ErrGrantDenied, u.Scheme)
+	}
+	if !hostMatches(parsed.Hostname(), host) {
+		return fmt.Errorf("%w: host %s is not the approved asset %s", ErrGrantDenied, host, parsed.Hostname())
+	}
+	if parsed.Port() != "" && parsed.Port() != u.Port() {
+		return fmt.Errorf("%w: port %s is not approved", ErrGrantDenied, u.Port())
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		path := u.EscapedPath()
+		if path == "" {
+			path = "/"
+		}
+		if !strings.HasPrefix(path, parsed.EscapedPath()) {
+			return fmt.Errorf("%w: path %s is outside %s", ErrGrantDenied, path, parsed.Path)
+		}
+	}
+	for _, prefix := range g.AllowedPathPrefixes {
+		if prefix != "" && !strings.HasPrefix(u.EscapedPath(), prefix) {
+			return fmt.Errorf("%w: path %s is outside %s", ErrGrantDenied, u.EscapedPath(), prefix)
+		}
+	}
+	return nil
+}
+
+// hostMatches implements exact host and *.suffix subdomain-only matching.
+func hostMatches(pattern, host string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	host = strings.ToLower(strings.TrimSpace(host))
+	if pattern == "" || host == "" {
+		return false
+	}
+	if pattern == host {
+		return true
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := pattern[1:]
+		return len(host) > len(suffix) && strings.HasSuffix(host, suffix)
+	}
+	return false
+}
+
+func (e *Egress) acquire(ctx context.Context) (func(), error) {
+	g := e.grant
+	if g == nil {
+		return func() {}, nil
+	}
+	if e.gate != nil {
+		if err := e.gate.wait(ctx, g.MaxRPS); err != nil {
+			return nil, err
+		}
+		if err := e.gate.count(time.Now(), g.DailyLimit); err != nil {
+			return nil, err
+		}
+		if e.gate.sem != nil {
+			select {
+			case e.gate.sem <- struct{}{}:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			var once sync.Once
+			return func() { once.Do(func() { <-e.gate.sem }) }, nil
+		}
+	}
+	return func() {}, nil
+}
+
+func (g *requestGate) wait(ctx context.Context, rps *float64) error {
+	if rps == nil || *rps <= 0 {
+		return nil
+	}
+	interval := time.Duration(float64(time.Second) / *rps)
+	g.mu.Lock()
+	now := time.Now()
+	next := g.last.Add(interval)
+	wait := time.Until(next)
+	if wait <= 0 {
+		g.last = now
+		g.mu.Unlock()
+		return nil
+	}
+	g.last = next
+	g.mu.Unlock()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (g *requestGate) count(now time.Time, limit int64) error {
+	day := businessDay(now)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.day != day {
+		g.day = day
+		g.used = 0
+	}
+	if limit > 0 && g.used >= limit {
+		return fmt.Errorf("%w: daily request limit %d reached", ErrGrantDenied, limit)
+	}
+	g.used++
+	return nil
+}
+
+func businessDay(t time.Time) string {
+	return t.In(timeutil.BusinessLocation()).Format("2006-01-02")
+}
+
+// publicDialContext resolves the host, rejects any private/loopback/link-local
+// result, and dials the validated IP. Pinning the resolved IP closes the
+// DNS-rebinding window between the allowlist check and the connection.
+func publicDialContext(allowLoopback bool) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("egress: dial %s: %w", addr, err)
+		}
+		ip, err := resolvePublicIP(ctx, host, allowLoopback)
+		if err != nil {
+			return nil, err
+		}
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	}
+}
+
+func resolvePublicIP(ctx context.Context, host string, allowLoopback bool) (netip.Addr, error) {
+	if literal, err := netip.ParseAddr(host); err == nil {
+		literal = literal.Unmap()
+		if !isPublicAddr(literal) && !(allowLoopback && literal.IsLoopback()) {
+			return netip.Addr{}, fmt.Errorf("%w: %s", ErrNonPublicAddress, literal)
+		}
+		return literal, nil
+	}
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("egress: resolve %s: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return netip.Addr{}, fmt.Errorf("egress: resolve %s: no addresses", host)
+	}
+	var chosen netip.Addr
+	for _, a := range addrs {
+		a = a.Unmap()
+		// If any answer is non-public, fail closed: a mixed answer is exactly
+		// what a rebinding attack uses to pass one check and connect elsewhere.
+		if !isPublicAddr(a) && !(allowLoopback && a.IsLoopback()) {
+			return netip.Addr{}, fmt.Errorf("%w: %s resolves to %s", ErrNonPublicAddress, host, a)
+		}
+		if !chosen.IsValid() {
+			chosen = a
+		}
+	}
+	return chosen, nil
+}
+
+func isPublicAddr(a netip.Addr) bool {
+	if !a.IsValid() {
+		return false
+	}
+	a = a.Unmap()
+	if a.IsLoopback() || a.IsPrivate() || a.IsUnspecified() ||
+		a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
+		a.IsInterfaceLocalMulticast() || a.IsMulticast() {
+		return false
+	}
+	return a.IsGlobalUnicast()
 }
 
 // GetBytes reads a response with the configured limit.
@@ -228,6 +549,17 @@ func (e *Egress) GetBytes(ctx context.Context, raw string) ([]byte, int, error) 
 		return nil, resp.StatusCode, err
 	}
 	return body, resp.StatusCode, nil
+}
+
+type releasingBody struct {
+	io.ReadCloser
+	release func()
+}
+
+func (b *releasingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.release()
+	return err
 }
 
 type limitedBody struct {
@@ -351,6 +683,72 @@ func (b *Budget) Charge(cost domain.Money) {
 	b.Spent.Amount += cost.Amount
 	b.Spent.Currency = cost.Currency
 	b.Requests++
+}
+
+// BudgetReservation is a pre-charged budget slot. Reserving atomically checks
+// and accounts for the cost so two concurrent workers cannot both pass the
+// limit; Commit keeps the reservation, Release returns it.
+type BudgetReservation struct {
+	budget    *Budget
+	cost      domain.Money
+	committed bool
+	released  bool
+}
+
+// Reserve atomically checks the limit and reserves the cost. A failure leaves
+// the budget unchanged.
+func (b *Budget) Reserve(cost domain.Money) (*BudgetReservation, error) {
+	if cost.Amount < 0 {
+		return nil, errors.New("budget: negative cost")
+	}
+	if cost.Currency == "" && cost.Amount > 0 {
+		return nil, errors.New("budget: cost currency is empty")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.MaxRequests > 0 && b.Requests >= b.MaxRequests {
+		return nil, errors.New("budget: request limit reached")
+	}
+	if b.MaxCost.Amount > 0 {
+		if cost.Amount > 0 && cost.Currency != b.MaxCost.Currency {
+			return nil, errors.New("budget: currency mismatch")
+		}
+		if b.Spent.Amount+cost.Amount > b.MaxCost.Amount {
+			return nil, errors.New("budget: cost limit reached")
+		}
+	}
+	b.Spent.Amount += cost.Amount
+	if cost.Currency != "" {
+		b.Spent.Currency = cost.Currency
+	}
+	b.Requests++
+	return &BudgetReservation{budget: b, cost: cost}, nil
+}
+
+// Commit keeps the reserved budget. It is idempotent.
+func (r *BudgetReservation) Commit() {
+	if r == nil || r.released {
+		return
+	}
+	r.committed = true
+}
+
+// Release returns the reserved budget. It is idempotent and never drops below
+// zero even if a caller double-releases.
+func (r *BudgetReservation) Release() {
+	if r == nil || r.released || r.committed {
+		return
+	}
+	r.released = true
+	r.budget.mu.Lock()
+	defer r.budget.mu.Unlock()
+	r.budget.Spent.Amount -= r.cost.Amount
+	if r.budget.Spent.Amount < 0 {
+		r.budget.Spent.Amount = 0
+	}
+	if r.budget.Requests > 0 {
+		r.budget.Requests--
+	}
 }
 
 type Auditor interface {
@@ -487,11 +885,14 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 			case domain.ReceiptStarted:
 				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
 					"harness: execution for key %s is unsettled; refusing to repeat it", key)
+			case domain.ReceiptAmbiguous:
+				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+					"harness: execution for key %s may have reached the target; reconcile manually before retrying", key)
 			case domain.ReceiptFailed:
-				// The tool reported failure before a side-effect receipt; a retry
-				// under the same key is allowed. Re-arm it only after the gate
-				// authorizes, so a denied retry cannot leave a STARTED receipt
-				// that blocks future attempts.
+				// The tool proved the side effect did not start; a retry under the
+				// same key is allowed. Re-arm it only after the gate authorizes, so
+				// a denied retry cannot leave a STARTED receipt that blocks future
+				// attempts.
 				reserved = &rec
 			}
 		case !errors.Is(err, domain.ErrReceiptNotFound):
@@ -506,16 +907,26 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	if decision.Decision != domain.DecisionAllow {
 		return decision, ToolResult{}, DeniedError{Decision: decision}
 	}
-	// Budget is checked before Authorize: a budget rejection must not consume a
-	// single-use approval.
+	// Budget is reserved before Authorize: a budget rejection must not consume a
+	// single-use approval, and the atomic reservation prevents two concurrent
+	// workers from both passing the limit.
 	cost := tool.Cost()
-	if err := h.budget.Check(cost); err != nil {
+	reservation, err := h.budget.Reserve(cost)
+	if err != nil {
 		return decision, ToolResult{}, err
 	}
+	reservationSettled := false
+	defer func() {
+		if !reservationSettled {
+			reservation.Release()
+		}
+	}()
 	if err := h.gate.AuthorizeWith(ctx, decision.ID, gateway.AuthorizeInput{
 		UsageToday: in.UsageToday, BudgetSpent: in.BudgetSpent,
 		Environment: in.Environment, Now: in.Now,
 	}); err != nil {
+		reservation.Release()
+		reservationSettled = true
 		return decision, ToolResult{}, err
 	}
 
@@ -542,6 +953,9 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 				case domain.ReceiptStarted:
 					return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
 						"harness: execution for key %s is unsettled; refusing to repeat it", key)
+				case domain.ReceiptAmbiguous:
+					return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+						"harness: execution for key %s may have reached the target; reconcile manually before retrying", key)
 				case domain.ReceiptFailed:
 					reserved = &existing
 				default:
@@ -566,22 +980,32 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 
 	tc := ToolContext{Request: in.Request, Decision: decision, Budget: h.budget}
 	if spec.NetworkEgress {
-		tc.Egress = h.egress
+		tc.Egress = h.egress.WithGrant(buildGrant(decision, in.Request))
 	}
 	if spec.ReadsFiles || spec.WritesFiles {
 		tc.Workspace = h.workspace
 	}
+	// Past this point the reservation belongs to this execution; the deferred
+	// release must not undo a charge for a tool that actually runs.
+	reservationSettled = true
 	res, err := tool.Execute(ctx, tc)
 	if err != nil {
+		reservation.Release()
 		if reserved != nil {
+			// An error is not proof that a side effect did not happen. Network and
+			// destructive tools default to AMBIGUOUS (manual reconciliation)
+			// unless the tool proves the request never left the process.
 			reserved.Status = domain.ReceiptFailed
+			if (spec.NetworkEgress || spec.Destructive) && !errors.Is(err, domain.ErrNotSent) {
+				reserved.Status = domain.ReceiptAmbiguous
+			}
 			reserved.Error = err.Error()
 			reserved.UpdatedAt = h.now().UTC()
 			_ = h.receipts.UpdateReceipt(ctx, *reserved)
 		}
 		return decision, ToolResult{}, err
 	}
-	h.budget.Charge(cost)
+	reservation.Commit()
 
 	if reserved != nil {
 		reserved.DecisionID = decision.ID
@@ -606,6 +1030,61 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 		}
 	}
 	return decision, res, nil
+}
+
+// buildGrant derives the network authority for one execution from the approved
+// decision. The approved method is the only method a network tool may use; the
+// program's allowed/forbidden lists and rate/concurrency/daily constraints are
+// enforced per request by Egress.
+func buildGrant(decision domain.ActionDecision, req domain.ActionRequest) ExecutionGrant {
+	g := ExecutionGrant{
+		DecisionID:       decision.ID,
+		ProgramID:        decision.ProgramID,
+		AssetID:          decision.Request.AssetID,
+		AssetTarget:      decision.AssetTarget,
+		AllowedMethods:   map[string]struct{}{},
+		ForbiddenMethods: map[string]struct{}{},
+	}
+	method := strings.ToUpper(strings.TrimSpace(req.Method))
+	if method == "" {
+		method = strings.ToUpper(strings.TrimSpace(decision.Request.Method))
+	}
+	if method != "" {
+		g.AllowedMethods[method] = struct{}{}
+	}
+	if c := decision.Constraints; c != nil {
+		if method == "" {
+			for _, m := range c.AllowedMethods {
+				if m = strings.ToUpper(strings.TrimSpace(m)); m != "" {
+					g.AllowedMethods[m] = struct{}{}
+				}
+			}
+		}
+		for _, m := range c.ForbiddenMethods {
+			if m = strings.ToUpper(strings.TrimSpace(m)); m != "" {
+				g.ForbiddenMethods[m] = struct{}{}
+			}
+		}
+		g.MaxRPS = c.MaxRPS
+		g.MaxConcurrency = c.MaxConcurrency
+		// A per-interface HTTP/ACTIVE_HTTP daily limit applies to network
+		// requests. Other interfaces (e.g. an API quota) cannot be attributed to
+		// one request by this layer.
+		for _, l := range c.PerInterfaceDailyLimits {
+			key := strings.ToUpper(strings.TrimSpace(l.Interface))
+			if key == "HTTP" || key == "ACTIVE_HTTP" {
+				if g.DailyLimit == 0 || l.Amount < g.DailyLimit {
+					g.DailyLimit = l.Amount
+				}
+			}
+		}
+	}
+	if target := strings.TrimSpace(g.AssetTarget); target != "" {
+		if u, err := url.Parse(target); err == nil && u.Path != "" && u.Path != "/" {
+			g.AllowedPathPrefixes = append(g.AllowedPathPrefixes, u.EscapedPath())
+		}
+	}
+	return g
 }
 
 func newReceipt(key string, decision domain.ActionDecision, in gateway.EvaluateInput, toolName string, now time.Time) domain.ExecutionReceipt {

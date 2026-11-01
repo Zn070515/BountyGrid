@@ -2,6 +2,8 @@ package report
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,7 +36,8 @@ func reportVerification() domain.Verification {
 		Reproduced: true, InScope: true, ImpactVerified: true, DataMinimized: true,
 		DuplicateChecked: true, DuplicateRisk: 0.1,
 		VerifiedBy: "rule/verify@0.1.0", VerifiedAt: testNow,
-		Evidence: []domain.EvidenceID{"ev-finding", "ev-repro", "ev-impact"},
+		Evidence:   []domain.EvidenceID{"ev-finding", "ev-repro", "ev-impact"},
+		ReceiptIDs: []domain.ReceiptID{"rcpt/1"},
 	}
 }
 
@@ -137,6 +140,7 @@ func TestButianGrowRequiresAIModelAndTool(t *testing.T) {
 	in.Verification.AIAssisted = true
 	in.Verification.HumanVerified = true
 	in.Verification.HumanVerificationRef = "manually reproduced"
+	in.Verification.HumanReviewID = "hr1"
 	res, err := Build(in)
 	if err != nil {
 		t.Fatal(err)
@@ -214,6 +218,7 @@ func TestAIAssistedVerificationRequiresDisclosure(t *testing.T) {
 	in.Verification.AIAssisted = true
 	in.Verification.HumanVerified = true
 	in.Verification.HumanVerificationRef = "human reviewed"
+	in.Verification.HumanReviewID = "hr1"
 	res, err := Build(in)
 	if err != nil {
 		t.Fatal(err)
@@ -294,4 +299,79 @@ func contains(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func strictAttachmentInput(t *testing.T) (string, Input) {
+	t.Helper()
+	dir := t.TempDir()
+	in := validInput()
+	in.Attachments = []string{"evidence.zip"}
+	in.AttachmentsRoot = dir
+	in.AttachmentEvidence = map[string][]domain.EvidenceID{
+		"evidence.zip": {"ev-finding"},
+	}
+	return dir, in
+}
+
+func TestStrictAttachmentValidationAcceptsMatchingMagic(t *testing.T) {
+	dir, in := strictAttachmentInput(t)
+	if err := os.WriteFile(filepath.Join(dir, "evidence.zip"), []byte("PK\x03\x04hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AttachmentHashes["evidence.zip"] == "" {
+		t.Fatal("attachment hash missing")
+	}
+	if err := VerifyAttachmentHashes(res.Draft, dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Changing the file after approval invalidates the hash.
+	if err := os.WriteFile(filepath.Join(dir, "evidence.zip"), []byte("PK\x03\x04changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyAttachmentHashes(res.Draft, dir, 0); !errors.Is(err, ErrInvalidAttachment) {
+		t.Fatalf("changed attachment err = %v", err)
+	}
+}
+
+func TestStrictAttachmentValidationRejectsWrongMagic(t *testing.T) {
+	dir, in := strictAttachmentInput(t)
+	if err := os.WriteFile(filepath.Join(dir, "evidence.zip"), []byte("not a zip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Build(in); !errors.Is(err, ErrInvalidAttachment) {
+		t.Fatalf("err = %v, want ErrInvalidAttachment", err)
+	}
+}
+
+func TestStrictAttachmentValidationRejectsTraversalAndMissingProvenance(t *testing.T) {
+	dir, in := strictAttachmentInput(t)
+	in.Attachments = []string{"../outside.zip"}
+	if _, err := Build(in); !errors.Is(err, ErrInvalidAttachment) {
+		t.Fatalf("traversal err = %v", err)
+	}
+
+	dir, in = strictAttachmentInput(t)
+	if err := os.WriteFile(filepath.Join(dir, "evidence.zip"), []byte("PK\x03\x04hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in.AttachmentEvidence = nil
+	if _, err := Build(in); !errors.Is(err, ErrInvalidAttachment) {
+		t.Fatalf("missing provenance err = %v", err)
+	}
+}
+
+func TestStrictAttachmentValidationScansText(t *testing.T) {
+	dir, in := strictAttachmentInput(t)
+	in.Attachments = []string{"note.pdf"}
+	in.AttachmentEvidence = map[string][]domain.EvidenceID{"note.pdf": {"ev-finding"}}
+	if err := os.WriteFile(filepath.Join(dir, "note.pdf"), []byte("%PDF-1.4 contact a@b.com"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Build(in); !errors.Is(err, ErrInvalidAttachment) {
+		t.Fatalf("sensitive attachment err = %v", err)
+	}
 }

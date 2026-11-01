@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/ledger"
 	"github.com/Zn070515/BountyGrid/internal/opportunity"
 	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 )
@@ -29,6 +30,7 @@ type scheduleStore interface {
 	LatestResearchTaskTimes(ctx context.Context, platform domain.Platform) (map[domain.ProgramID]time.Time, error)
 	PutOpportunity(ctx context.Context, o domain.Opportunity) error
 	PutResearchTask(ctx context.Context, t domain.ResearchTask) error
+	ListLedgerEntries(ctx context.Context, platform domain.Platform, programID domain.ProgramID, since, until *time.Time) ([]domain.LedgerEntry, error)
 }
 
 type scheduleOutput struct {
@@ -140,6 +142,10 @@ func executeSchedule(ctx context.Context, store scheduleStore, opts scheduleOpti
 	if err != nil {
 		return out, err
 	}
+	history, err := loadHistory(ctx, store, domain.Platform(opts.Platform))
+	if err != nil {
+		return out, err
+	}
 
 	var candidates []opportunity.Candidate
 	for _, p := range progs {
@@ -150,7 +156,8 @@ func executeSchedule(ctx context.Context, store scheduleStore, opts scheduleOpti
 			continue
 		}
 		candidates = append(candidates, opportunity.Candidate{
-			Program: p, Status: domain.ProgramStatus(st.State), Account: acct, Competition: comp,
+			Program: p, Status: domain.ProgramStatus(st.State), Account: acct,
+			Competition: comp, History: history[p.ID],
 		})
 	}
 	res := opportunity.Schedule(opportunity.NewEngine(), candidates, opportunity.Options{
@@ -185,6 +192,31 @@ func executeSchedule(ctx context.Context, store scheduleStore, opts scheduleOpti
 			if err := persistScheduled(ctx, store, s, "HUMAN_ACTION_REQUIRED", now, runID); err != nil {
 				return out, err
 			}
+		}
+	}
+	return out, nil
+}
+
+// loadHistory closes the ledger -> opportunity loop: actual acceptance and
+// payout history for each program is fed back into the score. An empty ledger
+// yields an empty map (no fabricated history).
+func loadHistory(ctx context.Context, store scheduleStore, platform domain.Platform) (map[domain.ProgramID]*opportunity.History, error) {
+	entries, err := store.ListLedgerEntries(ctx, platform, "", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return map[domain.ProgramID]*opportunity.History{}, nil
+	}
+	feedback, err := ledger.Feedback(entries)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[domain.ProgramID]*opportunity.History, len(feedback))
+	for _, f := range feedback {
+		out[f.ProgramID] = &opportunity.History{
+			Submitted: f.Submitted, Accepted: f.Accepted, Paid: f.PaidCount,
+			AvgAccepted: f.AvgAccepted, AvgPaid: f.AvgPaid,
 		}
 	}
 	return out, nil

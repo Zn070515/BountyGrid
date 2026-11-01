@@ -204,7 +204,7 @@ func (s *Service) checkSubmission(ctx context.Context, e domain.LedgerEntry) err
 	if err != nil {
 		return fmt.Errorf("ledger: load submission %s: %w", *e.SubmissionID, err)
 	}
-	if sub.Status == "DRY_RUN" {
+	if sub.Status == domain.SubmissionDryRun {
 		return fmt.Errorf("%w: %s", ErrDryRunSubmission, sub.ID)
 	}
 	if sub.ProgramID != e.ProgramID {
