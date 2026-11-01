@@ -574,9 +574,13 @@ func (l LedgerEntry) Validate() error {
 		return fmt.Errorf("ledger %s: invalid platform %q", l.ID, l.Platform)
 	}
 	switch l.Kind {
-	case LedgerExpected, LedgerSubmitted, LedgerAccepted, LedgerPaid, LedgerFee, LedgerTax, LedgerRefund:
+	case LedgerExpected, LedgerSubmitted, LedgerAccepted, LedgerPaid,
+		LedgerFee, LedgerTax, LedgerRefund, LedgerReversal:
 	default:
 		return fmt.Errorf("ledger %s: invalid kind %q", l.ID, l.Kind)
+	}
+	if !LedgerStatusValid(l.Status) {
+		return fmt.Errorf("ledger %s: invalid status %q", l.ID, l.Status)
 	}
 	if l.Amount.Amount < 0 {
 		return fmt.Errorf("ledger %s: negative amount", l.ID)
@@ -586,6 +590,32 @@ func (l LedgerEntry) Validate() error {
 	}
 	if l.OccurredAt.IsZero() {
 		return fmt.Errorf("ledger %s: occurred_at is zero", l.ID)
+	}
+	// Cash events must carry an external reference so a re-import cannot create
+	// a second identical payment under a new ID.
+	switch l.Kind {
+	case LedgerPaid, LedgerRefund, LedgerReversal:
+		if strings.TrimSpace(l.ExternalRef) == "" {
+			return fmt.Errorf("ledger %s: %s requires external_ref", l.ID, l.Kind)
+		}
+	}
+	switch l.Kind {
+	case LedgerSubmitted:
+		if l.SubmissionID == nil || *l.SubmissionID == "" {
+			return fmt.Errorf("ledger %s: SUBMITTED requires submission_id", l.ID)
+		}
+	case LedgerAccepted, LedgerFee, LedgerTax:
+		if (l.FindingID == nil || *l.FindingID == "") &&
+			(l.SubmissionID == nil || *l.SubmissionID == "") {
+			return fmt.Errorf("ledger %s: %s requires finding_id or submission_id", l.ID, l.Kind)
+		}
+	case LedgerReversal:
+		if strings.TrimSpace(l.ReversesID) == "" {
+			return fmt.Errorf("ledger %s: REVERSAL requires reverses_id", l.ID)
+		}
+		if l.ReversesID == l.ID {
+			return fmt.Errorf("ledger %s: REVERSAL cannot reverse itself", l.ID)
+		}
 	}
 	return nil
 }

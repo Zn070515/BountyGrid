@@ -126,7 +126,25 @@ const (
 	LedgerFee       LedgerKind = "FEE"
 	LedgerTax       LedgerKind = "TAX"
 	LedgerRefund    LedgerKind = "REFUND"
+	// LedgerReversal is a cash clawback/correction of an earlier PAID/REFUND
+	// entry. The amount is non-negative and reduces net cash.
+	LedgerReversal LedgerKind = "REVERSAL"
 )
+
+const (
+	LedgerStatusRecorded   = "RECORDED"
+	LedgerStatusReconciled = "RECONCILED"
+	LedgerStatusDisputed   = "DISPUTED"
+)
+
+func LedgerStatusValid(s string) bool {
+	switch s {
+	case LedgerStatusRecorded, LedgerStatusReconciled, LedgerStatusDisputed:
+		return true
+	default:
+		return false
+	}
+}
 
 type LedgerEntry struct {
 	ID           string
@@ -138,5 +156,12 @@ type LedgerEntry struct {
 	Amount       Money
 	Status       string
 	OccurredAt   time.Time
-	Evidence     []EvidenceID
+	// ExternalRef is the platform payout/statement/bank reference. It is the
+	// idempotency key for imported cash events (unique per platform+kind when
+	// non-empty).
+	ExternalRef string
+	// ReversesID is required for REVERSAL and points at the original entry.
+	ReversesID string
+	Notes      string
+	Evidence   []EvidenceID
 }

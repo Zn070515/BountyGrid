@@ -121,7 +121,7 @@ bash probes/butian/grow-dates.sh
 | Phase 2/3 | Facts/State/Policy | 已实现并硬化；Fact 年龄限制 State TTL，运行环境约束进入 Policy |
 | Phase 4 | Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、CompetitionSnapshot TTL/decay |
 | Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 的路由/数据分级/预算/审计已实现（仅本地 dry-run，**无真实 Provider**）；**无 ACTIVE_HTTP 工具** |
-| Phase 6 | Verification / Report / Submission / Ledger | Verification 规则引擎、`verifications`、ReportDraft 组装/校验与 `report_drafts`、Submission dry-run 控制层与 `submissions` 已实现；**真实平台 SubmitAdapter 未实现**；Ledger 仍以领域类型为主 |
+| Phase 6 | Verification / Report / Submission / Ledger | Verification 规则引擎、ReportDraft、Submission dry-run 控制层、CNY 现金 Ledger（append-only/ExternalRef/REVERSAL/Summary/Reconcile/Feedback）已实现；**真实平台 SubmitAdapter 未实现**；非现金奖励仅留接口 |
 
 ### Phase 1 progress · Browser Sidecar + Vulbox Reader
 
@@ -343,7 +343,11 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - `go run ./cmd/bountygrid report -file <json> -persist` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`；不提交、不勾选协议。
 - `internal/submit.Service`：`report.Recheck` → `REPORT_SUBMIT` ActionRequest（绑定 `report_id + report_content_hash`）→ Gateway `ALLOW` → `AuthorizeWith` 消费 single-use approval → `Submitter`。本仓库只有 `DryRunSubmitter`，**不触达平台**；审批后修改草稿会使 content hash 不匹配。
 - `go run ./cmd/bountygrid submit -print-binding -report <id> -approval-id <id>` 打印审批必须绑定的 `request_id/parameters_hash`（含内容 hash）；`submit -report -account -approval <json>` 执行 dry-run 并写 `submissions`。`approval_id` 有唯一索引，防止同一审批提交两次。
-- 未实现：真实平台 SubmitAdapter、Ledger、人工复核 UI。
+- `internal/ledger`：v1 只记 CNY 现金；`PAID` 是到账净额，`FEE/TAX` 仅展示；`EXPECTED/SUBMITTED` 不计净收入。
+- `ExternalRef` 对 `PAID/REFUND/REVERSAL` 必填，`(platform,kind,external_ref)` 唯一；`REVERSAL` 只能冲 `PAID/REFUND` 且不得超过目标金额；同 ID 同内容幂等、不同内容报错。
+- `go run ./cmd/bountygrid ledger -file <json> [-persist]` 追加；`ledger -summary -platform <p> [-program <id>] [-since/-until]` 汇总；`ledger -reconcile -file <json>` 只报平台/银行差异，不自动改账。
+- 非现金奖励（KB/RYB/积分/荣誉/实物/优惠券）留 `ledger.NonCashRecorder` 接口，v1 不混入金额账本。
+- 未实现：真实平台 SubmitAdapter、非现金奖励记录器、`ReconciliationIssue` 持久化、人工复核 UI。
 
 ## 文档入口 · Docs
 
