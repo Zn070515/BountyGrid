@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
+	"github.com/Zn070515/BountyGrid/internal/authz"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/gateway"
 	"github.com/Zn070515/BountyGrid/internal/report"
@@ -373,11 +374,11 @@ func checkScope(program domain.Program, finding domain.Finding) error {
 	if finding.AssetID == nil || *finding.AssetID == "" {
 		return fmt.Errorf("%w: finding has no asset", ErrInvalidInput)
 	}
-	asset, _, ok := program.Scope.ResolveAsset(*finding.AssetID)
-	if !ok {
+	_, match, err := authz.ResolveInScopeAsset(program, *finding.AssetID)
+	if err != nil {
 		return fmt.Errorf("%w: asset is no longer in the program scope", ErrInvalidInput)
 	}
-	switch program.Scope.CheckAsset(asset) {
+	switch match {
 	case domain.ScopeMatchIncluded:
 		return nil
 	case domain.ScopeMatchConditional:

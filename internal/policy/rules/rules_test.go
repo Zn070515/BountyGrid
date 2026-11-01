@@ -302,12 +302,11 @@ func TestExampleRuleFileLoads(t *testing.T) {
 	if rs.Version == "" || len(rs.Rules) == 0 {
 		t.Fatalf("example = %+v", rs)
 	}
-	platform, err := LoadFile("../../../rules/platform-evidence.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(platform.Rules) != 1 || platform.Rules[0].Source != SourcePlatformEvidence {
-		t.Fatalf("platform example = %+v", platform)
+	// The platform-evidence sample is a negative fixture: platform authority is
+	// never loaded from JSON, even when the file looks complete.
+	if _, err := LoadFile("../../../rules/platform-evidence.example.json"); err == nil ||
+		!strings.Contains(err.Error(), "platform_evidence") || !strings.Contains(err.Error(), "internal/authz") {
+		t.Fatalf("platform evidence file was not rejected clearly: %v", err)
 	}
 }
 
@@ -341,42 +340,127 @@ func TestOperatorAllowCannotRelax(t *testing.T) {
 	}
 }
 
-func TestPlatformEvidenceAllowCanRelax(t *testing.T) {
-	rs := mustParse(t, platformRuleJSON("2026-11-02T00:00:00Z"))
-	res, err := rs.Evaluate(Request{
-		Action: domain.ActionActiveHTTP, Asset: "https://api.example.com/v1", Method: "GET", Now: testNow,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Decision != DecisionAllow || !res.CanRelax {
-		t.Fatalf("platform allow = %+v", res)
-	}
-}
-
-func TestExpiredPlatformEvidenceDoesNotMatch(t *testing.T) {
-	rs := mustParse(t, platformRuleJSON("2026-11-01T00:30:00Z"))
-	res, err := rs.Evaluate(Request{
-		Action: domain.ActionActiveHTTP, Asset: "https://api.example.com/v1", Method: "GET", Now: testNow,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Decision != DecisionNone || res.CanRelax {
-		t.Fatalf("expired platform rule = %+v", res)
-	}
-}
-
-func TestPlatformEvidenceRequiresProvenance(t *testing.T) {
-	cases := []string{
+func TestRuleFileRejectsPlatformEvidence(t *testing.T) {
+	for _, raw := range []string{
+		platformRuleJSON("2026-11-02T00:00:00Z"),
 		`{"rules":[{"id":"p","actions":["ACTIVE_HTTP"],"decision":"allow","source":"platform_evidence","justification":"x"}]}`,
-		`{"rules":[{"id":"p","actions":["ACTIVE_HTTP"],"decision":"allow","source":"platform_evidence","evidence_refs":["ev"],"justification":"x"}]}`,
-		`{"rules":[{"id":"p","actions":["ACTIVE_HTTP"],"decision":"allow","source":"platform_evidence","evidence_refs":["ev"],"observed_at":"2026-11-01T00:00:00Z","justification":"x"}]}`,
-		`{"rules":[{"id":"p","actions":["ACTIVE_HTTP"],"decision":"allow","source":"platform_evidence","evidence_refs":["ev"],"observed_at":"2026-11-01T00:00:00Z","valid_until":"2026-11-02T00:00:00Z","justification":"x"}]}`,
+		`{"rules":[{"id":"p","actions":["ACTIVE_HTTP"],"decision":"allow","source":"platform_evidence","evidence_refs":["ev"],"observed_at":"2026-11-01T00:00:00Z","valid_until":"2026-11-02T00:00:00Z","policy_revision":"sha256:rev","justification":"x"}]}`,
+	} {
+		if _, err := Parse([]byte(raw)); err == nil ||
+			!strings.Contains(err.Error(), "platform_evidence") ||
+			!strings.Contains(err.Error(), "internal/authz") {
+			t.Fatalf("platform rule loaded or unclear error: %v\n%s", err, raw)
+		}
 	}
-	for _, raw := range cases {
-		if _, err := Parse([]byte(raw)); err == nil {
-			t.Fatalf("platform rule without provenance loaded: %s", raw)
+}
+
+func platformSpec() PlatformRuleSpec {
+	return PlatformRuleSpec{
+		ID:             "platform-allow",
+		Actions:        []domain.Action{domain.ActionActiveHTTP},
+		Programs:       []domain.ProgramID{"p1"},
+		Hosts:          []string{"api.example.com"},
+		Methods:        []string{"GET"},
+		EvidenceRefs:   []domain.EvidenceID{"ev-1"},
+		ObservedAt:     testNow.Add(-time.Hour),
+		ValidUntil:     testNow.Add(time.Hour),
+		PolicyRevision: "sha256:rev",
+		Justification:  "platform evidence explicitly permits this endpoint",
+	}
+}
+
+func TestPlatformRuleMatchesWithinWindow(t *testing.T) {
+	rule, err := NewPlatformRule(platformSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.BindsProgram("p1") || rule.BindsProgram("p2") {
+		t.Fatalf("program binding = %v", rule.BindsProgram("p1"))
+	}
+	ok, matchedOn, err := rule.Matches(Request{
+		Action: domain.ActionActiveHTTP, Program: "p1",
+		Asset: "https://api.example.com/v1", Method: "GET", Now: testNow,
+	})
+	if err != nil || !ok {
+		t.Fatalf("match = %v, %v, %v; matched_on=%v", ok, err, err, matchedOn)
+	}
+	if mr := rule.MatchedRule(matchedOn); mr.Source != SourcePlatformEvidence || mr.Decision != DecisionAllow {
+		t.Fatalf("matched rule = %+v", mr)
+	}
+}
+
+func TestPlatformRuleExpiredOrFutureDoesNotMatch(t *testing.T) {
+	expired := platformSpec()
+	expired.ObservedAt = testNow.Add(-2 * time.Hour)
+	expired.ValidUntil = testNow.Add(-time.Minute)
+	rule, err := NewPlatformRule(expired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := rule.Matches(Request{Action: domain.ActionActiveHTTP, Program: "p1", Asset: "https://api.example.com/v1", Method: "GET", Now: testNow}); err != nil || ok {
+		t.Fatalf("expired rule matched: %v %v", ok, err)
+	}
+
+	future := platformSpec()
+	future.ObservedAt = testNow.Add(2 * time.Minute)
+	future.ValidUntil = testNow.Add(time.Hour)
+	rule, err = NewPlatformRule(future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := rule.Matches(Request{Action: domain.ActionActiveHTTP, Program: "p1", Asset: "https://api.example.com/v1", Method: "GET", Now: testNow}); err != nil || ok {
+		t.Fatalf("future rule matched: %v %v", ok, err)
+	}
+}
+
+func TestPlatformRuleRequiresProvenance(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*PlatformRuleSpec)
+	}{
+		{"no evidence", func(s *PlatformRuleSpec) { s.EvidenceRefs = nil }},
+		{"no observed_at", func(s *PlatformRuleSpec) { s.ObservedAt = time.Time{} }},
+		{"no valid_until", func(s *PlatformRuleSpec) { s.ValidUntil = time.Time{} }},
+		{"valid before observed", func(s *PlatformRuleSpec) { s.ValidUntil = s.ObservedAt.Add(-time.Minute) }},
+		{"no revision", func(s *PlatformRuleSpec) { s.PolicyRevision = " " }},
+		{"no justification", func(s *PlatformRuleSpec) { s.Justification = "" }},
+		{"no program", func(s *PlatformRuleSpec) { s.Programs = nil; s.ProgramID = "" }},
+		{"program_id not in programs", func(s *PlatformRuleSpec) { s.ProgramID = "p2" }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			spec := platformSpec()
+			c.mutate(&spec)
+			if _, err := NewPlatformRule(spec); err == nil {
+				t.Fatalf("spec loaded without %s", c.name)
+			}
+		})
+	}
+}
+
+func TestPlatformRuleFingerprintIncludesProvenance(t *testing.T) {
+	base, err := NewPlatformRule(platformSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Fingerprint() == "" {
+		t.Fatal("empty fingerprint")
+	}
+	changes := []func(*PlatformRuleSpec){
+		func(s *PlatformRuleSpec) { s.EvidenceRefs = []domain.EvidenceID{"ev-2"} },
+		func(s *PlatformRuleSpec) { s.ObservedAt = s.ObservedAt.Add(-time.Minute) },
+		func(s *PlatformRuleSpec) { s.ValidUntil = s.ValidUntil.Add(time.Minute) },
+		func(s *PlatformRuleSpec) { s.PolicyRevision = "sha256:other" },
+	}
+	for i, mutate := range changes {
+		spec := platformSpec()
+		mutate(&spec)
+		r, err := NewPlatformRule(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Fingerprint() == base.Fingerprint() {
+			t.Fatalf("change %d did not affect fingerprint", i)
 		}
 	}
 }

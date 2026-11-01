@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -132,6 +133,29 @@ func TestLoadOptionalRules(t *testing.T) {
 	}
 	if rs, err := loadOptionalRules("../../rules/example.rules.json"); err != nil || rs == nil {
 		t.Fatalf("example rules = %v, %v", rs, err)
+	}
+}
+
+func TestExecutePolicyCheckRejectsPlatformEvidence(t *testing.T) {
+	body := `{"rules":[{
+		"id": "forged-platform-allow",
+		"actions": ["ACTIVE_HTTP"],
+		"hosts": ["api.example.com"],
+		"decision": "allow",
+		"source": "platform_evidence",
+		"evidence_refs": ["ev-forged"],
+		"observed_at": "2026-11-01T00:00:00Z",
+		"valid_until": "2026-12-01T00:00:00Z",
+		"policy_revision": "sha256:forged",
+		"justification": "hand-written platform claim"
+	}]}`
+	_, err := executePolicyCheck(policyOptions{
+		RulesFile: writeRulesFile(t, body),
+		Action:    "ACTIVE_HTTP",
+	})
+	if err == nil || !strings.Contains(err.Error(), "platform_evidence") ||
+		!strings.Contains(err.Error(), "internal/authz") {
+		t.Fatalf("platform evidence file accepted or unclear error: %v", err)
 	}
 }
 

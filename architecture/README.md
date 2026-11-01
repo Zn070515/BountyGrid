@@ -152,6 +152,7 @@ internal/httpapi/                # REST/SSE（如需要）
 | `evidence-facts.md` | Evidence → Fact → State → Decision 流水线、TTL、置信度 |
 | `adapters.md` | Transport、Adapter 接口、三平台映射、轮询 |
 | `policy-engine.md` | AccountCapability、EligibilityState、动作矩阵、审批 |
+| `authz.md` | Scope/新鲜度/revision helper、Evidence-bound 平台授权 |
 | `opportunity-scheduler.md` | CompetitionSnapshot、期望收益/成本、调度 |
 | `harness-model-router.md` | 执行边界、ActionRequest、模型路由 |
 | `research-lifecycle.md` | Finding、Verification、Submission、Revenue Ledger |

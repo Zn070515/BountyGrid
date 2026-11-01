@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
+	"github.com/Zn070515/BountyGrid/internal/authz"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy"
 )
@@ -260,20 +261,14 @@ func (g *Gateway) consumeApproval(ctx context.Context, d domain.ActionDecision, 
 // nil result means the requested ID is not in the scope; the policy layer turns
 // that into ASSET_UNKNOWN rather than trusting any caller-supplied value.
 func resolveAsset(p domain.Program, id *domain.AssetID) *domain.Asset {
-	if id == nil || *id == "" {
+	if id == nil {
 		return nil
 	}
-	a, _, ok := p.Scope.ResolveAsset(*id)
-	if !ok {
+	a, _, err := authz.ResolveInScopeAsset(p, *id)
+	if err != nil {
 		return nil
 	}
-	if a.ProgramID == "" {
-		a.ProgramID = p.ID
-	}
-	if a.Platform == "" {
-		a.Platform = p.Platform
-	}
-	return &a
+	return a
 }
 
 func (g *Gateway) denyDecision(req domain.ActionRequest, reason string, now time.Time) domain.ActionDecision {

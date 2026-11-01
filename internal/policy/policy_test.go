@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/authz"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 )
@@ -1016,26 +1017,44 @@ func ruleSet(t *testing.T, decision, justification string) *rules.RuleSet {
 	return rs
 }
 
-func platformRuleSet(t *testing.T) *rules.RuleSet {
+// fakeEvidenceStore is a minimal authz.EvidenceStore for policy tests.
+type fakeEvidenceStore struct {
+	evidence map[domain.EvidenceID]domain.Evidence
+	err      error
+}
+
+func (f fakeEvidenceStore) GetEvidence(_ context.Context, id domain.EvidenceID) (domain.Evidence, error) {
+	if f.err != nil {
+		return domain.Evidence{}, f.err
+	}
+	ev, ok := f.evidence[id]
+	if !ok {
+		return domain.Evidence{}, domain.ErrNotFound
+	}
+	return ev, nil
+}
+
+func platformPolicy(t *testing.T, prog domain.Program, action domain.Action) *authz.PlatformPolicy {
 	t.Helper()
-	rs, err := rules.Parse([]byte(`{"rules":[{
-		"id":"platform-rule",
-		"actions":["ACTIVE_HTTP"],
-		"hosts":["api.example.com"],
-		"methods":["GET"],
-		"decision":"allow",
-		"source":"platform_evidence",
-		"evidence_refs":["ev-1"],
-		"observed_at":"2026-10-31T00:00:00Z",
-		"valid_until":"2026-11-01T00:00:00Z",
-		"policy_revision":"sha256:rev",
-		"justification":"platform evidence explicitly permits this endpoint",
-		"match":[{"action":"ACTIVE_HTTP","asset":"https://api.example.com/v1/items","method":"GET"}]
-	}]}`))
+	store := fakeEvidenceStore{evidence: map[domain.EvidenceID]domain.Evidence{
+		"ev-1": {ID: "ev-1", Platform: prog.Platform, CapturedAt: testNow},
+	}}
+	pp, err := authz.BuildPlatformPolicy(context.Background(), prog, []rules.PlatformRuleSpec{{
+		ID:             "platform-rule",
+		Actions:        []domain.Action{action},
+		Programs:       []domain.ProgramID{prog.ID},
+		Hosts:          []string{"api.example.com"},
+		Methods:        []string{"GET"},
+		EvidenceRefs:   []domain.EvidenceID{"ev-1"},
+		ObservedAt:     testNow.Add(-time.Hour),
+		ValidUntil:     testNow.Add(time.Hour),
+		PolicyRevision: prog.PolicyRevision(),
+		Justification:  "platform evidence explicitly permits this endpoint",
+	}}, store, testNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return rs
+	return pp
 }
 
 func TestOperatorRulesCannotLoosenConditionalAutomation(t *testing.T) {
@@ -1056,8 +1075,9 @@ func TestOperatorRulesCannotLoosenConditionalAutomation(t *testing.T) {
 }
 
 func TestPlatformEvidenceRuleCanLoosenConditionalAutomation(t *testing.T) {
-	e := NewEngineWithRules(platformRuleSet(t))
-	d, err := e.Decide(context.Background(), executionRuleContext(domain.ActionActiveHTTP, domain.CapConditional))
+	dc := executionRuleContext(domain.ActionActiveHTTP, domain.CapConditional)
+	e := NewEngine().WithPlatformAuthority(platformPolicy(t, dc.Program, domain.ActionActiveHTTP))
+	d, err := e.Decide(context.Background(), dc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1066,6 +1086,35 @@ func TestPlatformEvidenceRuleCanLoosenConditionalAutomation(t *testing.T) {
 	}
 	if len(d.RuleIDs) != 1 || d.RuleIDs[0] != "platform-rule" {
 		t.Fatalf("rule ids = %v", d.RuleIDs)
+	}
+	if d.RuleSetFingerprint == "" {
+		t.Fatal("platform authority fingerprint was not recorded")
+	}
+}
+
+func TestPlatformAuthorityDoesNotOverrideOperatorGuardrail(t *testing.T) {
+	dc := executionRuleContext(domain.ActionActiveHTTP, domain.CapConditional)
+	e := NewEngineWithRules(ruleSet(t, "require_human", "manual approval needed")).
+		WithPlatformAuthority(platformPolicy(t, dc.Program, domain.ActionActiveHTTP))
+	d, err := e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireHuman {
+		t.Fatalf("platform authority overrode an operator guardrail: %s %v", d.Decision, d.Reasons)
+	}
+}
+
+func TestStaleProgramPolicyCannotRelax(t *testing.T) {
+	dc := executionRuleContext(domain.ActionActiveHTTP, domain.CapConditional)
+	e := NewEngine().WithPlatformAuthority(platformPolicy(t, dc.Program, domain.ActionActiveHTTP))
+	dc.Program.PolicyObservedAt = testNow.Add(-domain.PolicyMaxAge - time.Hour)
+	d, err := e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireMoreEvidence || len(d.Reasons) == 0 || d.Reasons[0] != "STALE_AUTOMATION_POLICY" {
+		t.Fatalf("stale policy decision = %s %v", d.Decision, d.Reasons)
 	}
 }
 
@@ -1081,26 +1130,10 @@ func TestOperatorAllowKeepsExistingAllow(t *testing.T) {
 }
 
 func TestPlatformEvidenceCannotOverrideHardDeny(t *testing.T) {
-	rs, err := rules.Parse([]byte(`{"rules":[{
-		"id":"platform-dos",
-		"actions":["DOS"],
-		"hosts":["api.example.com"],
-		"methods":["GET"],
-		"decision":"allow",
-		"source":"platform_evidence",
-		"evidence_refs":["ev-1"],
-		"observed_at":"2026-10-31T00:00:00Z",
-		"valid_until":"2026-11-01T00:00:00Z",
-		"policy_revision":"sha256:rev",
-		"justification":"platform evidence for this endpoint",
-		"match":[{"action":"DOS","asset":"https://api.example.com/v1/items","method":"GET"}]
-	}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
 	dc := executionRuleContext(domain.ActionDoS, domain.CapAllowed)
 	dc.Program.Automation.DoS = domain.CapAllowed
-	d, err := NewEngineWithRules(rs).Decide(context.Background(), dc)
+	e := NewEngine().WithPlatformAuthority(platformPolicy(t, dc.Program, domain.ActionDoS))
+	d, err := e.Decide(context.Background(), dc)
 	if err != nil {
 		t.Fatal(err)
 	}

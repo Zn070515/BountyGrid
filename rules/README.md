@@ -39,15 +39,15 @@ after every domain gate has passed.
 
 - `decision`: `allow`, `require_human`, or `forbidden`.
   `prompt`/`deny` are accepted as aliases and normalized.
-- `source`: `operator` (default) or `platform_evidence`.
+- `source`: only `operator` (the default) is loadable from a file.
   - Operator guardrails may only tighten. An operator `allow` never raises a
     `REQUIRE_HUMAN` or `DENY`; it can only keep an existing `ALLOW`.
-  - `platform_evidence` may relax a platform-conditional action, but only when
-    it carries `evidence_refs`, `observed_at`, `valid_until` and
-    `policy_revision`, and the rule is still valid at decision time. It can
-    never override a hard `DENY`.
-  - `platform_evidence` rules must not be hand-written as ordinary operator
-    JSON; they are derived from platform Evidence.
+  - `source=platform_evidence` in a JSON file is **rejected**. Platform
+    authority is not a hand-written rule: it is compiled from Evidence by
+    `internal/authz`, using the separate `rules.PlatformRule` type, and only a
+    verified `authz.PlatformPolicy` may relax a platform `CONDITIONAL` action.
+    `rules/platform-evidence.example.json` is kept as a negative fixture; the
+    loader must reject it.
 - `actions` / `programs`: exact match.
 - `hosts`: exact host, `*.example.com` (subdomains only, never the apex), or
   `**.example.com` (apex and subdomains). `*` alone is rejected. Ports, schemes
@@ -67,16 +67,25 @@ after every domain gate has passed.
 
 ## Evaluation semantics
 
-- All rules are evaluated; **the strictest decision wins**
+- Operator rules and verified platform authority are evaluated separately, then
+  combined by the policy engine. This separation is what stops an operator
+  `allow` from impersonating platform authority.
+- All operator rules are evaluated; **the strictest decision wins**
   (`forbidden > require_human > allow`).
-- `allow` can loosen a project-conditional action only for actions explicitly
-  marked overridable by the matrix (`ACTIVE_HTTP`, scanning, upload, etc.). It
-  can never loosen a hard `DENY` (`DoS`, internal network, lateral movement,
-  credential stuffing).
+- An operator `allow` never raises the ceiling: it can only keep an existing
+  `ALLOW`. It can never loosen a hard `DENY` (`DoS`, internal network, lateral
+  movement, credential stuffing) or a `CONDITIONAL` automation gate.
+- A verified `authz.PlatformPolicy` rule may relax a platform `CONDITIONAL`
+  action for an overridable action, but only when the rule is evidence-backed,
+  fresh, bound to the current `Program.PolicyRevision()`, and no operator rule
+  tightened the decision. It still cannot override a hard `DENY`,
+  `AUTOMATION_UNKNOWN`/`FORBIDDEN`, scope/eligibility/freshness or runtime
+  constraints.
 - `forbidden` always produces `DENY`.
-- The effective decision records `RuleIDs` and `RuleSetFingerprint`. The Action
-  Gateway rejects `Authorize` if the active rule set's fingerprint differs from
-  the one bound to the persisted decision.
+- The effective decision records `RuleIDs` and `RuleSetFingerprint`. The
+  fingerprint covers operator rules and platform authority provenance. The
+  Action Gateway rejects `Authorize` if the active fingerprint differs from the
+  one bound to the persisted decision.
 
 ## URL canonicalization
 
@@ -114,7 +123,39 @@ Output is JSON:
 ```
 
 The command validates the rule file on load, including every `match`/`not_match`
-example. It does not touch PostgreSQL.
+example. It does not touch PostgreSQL. Because files are operator-only,
+`can_relax` is always `false` for `policy check`; platform authority is never
+loaded from a file.
+
+## Platform authority (not a rule file)
+
+Platform evidence rules exist in Go, not JSON:
+
+```go
+store := postgres.NewEvidenceStore(pool) // implements authz.EvidenceStore
+pp, err := authz.BuildPlatformPolicy(ctx, program, []rules.PlatformRuleSpec{{
+    ID:             "vulbox-444-read-only",
+    Actions:        []domain.Action{domain.ActionActiveHTTP},
+    Programs:       []domain.ProgramID{program.ID},
+    Hosts:          []string{"api.example.com"},
+    Methods:        []string{"GET"},
+    EvidenceRefs:   []domain.EvidenceID{"ev-platform-policy-..."},
+    ObservedAt:     observedAt,
+    ValidUntil:     validUntil,
+    PolicyRevision: program.PolicyRevision(),
+    Justification:  "the platform policy page explicitly permits this endpoint",
+}}, store, now)
+if err != nil {
+    // reject: missing/wrong-platform evidence, wrong revision, expired, stale
+}
+
+engine := policy.NewEngineWithRules(operatorRules).WithPlatformAuthority(pp)
+```
+
+`authz.VerifyPlatformEvidence` checks the evidence store, evidence platform,
+program binding, `policy_revision`, observation window and
+`Program.PolicyFreshAt`. Only a rule that passes all of them can set
+`CanRelax`. See [`architecture/authz.md`](../architecture/authz.md).
 
 ## Using rules in decisions
 
@@ -125,9 +166,10 @@ optional `-rules <file>` flag:
 go run ./cmd/bountygrid decide -rules rules/example.rules.json -request req.json
 ```
 
-Without `-rules`, behavior is unchanged. The rule-set fingerprint is persisted
-with the decision; a later `decide -authorize -rules <same-file>` re-evaluates
-against the active rules and rejects a fingerprint mismatch.
+These flags load **operator** rules only; passing a platform_evidence file is an
+error. Without `-rules`, behavior is unchanged. The rule-set fingerprint is
+persisted with the decision; a later `decide -authorize -rules <same-file>`
+re-evaluates against the active rules and rejects a fingerprint mismatch.
 
 ## What this layer deliberately does not do
 
