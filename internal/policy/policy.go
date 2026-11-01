@@ -112,6 +112,7 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 			Environment:       dc.Environment,
 			RequestParameters: string(dc.Request.Parameters),
 			ScopeRevision:     dc.Program.Scope.Revision(),
+			PolicyRevision:    dc.Program.PolicyRevision(),
 		}
 		if dc.Asset != nil {
 			out.AssetTarget = dc.Asset.Value

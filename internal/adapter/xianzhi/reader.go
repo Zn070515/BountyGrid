@@ -329,6 +329,7 @@ func (r *Reader) SyncPolicy(ctx context.Context, id domain.ProgramID) (adapter.P
 	return adapter.PolicySnapshot{
 		Automation:  conservativeAutomation(),
 		Constraints: domain.Constraints{},
+		ObservedAt:  at,
 		Facts:       fs,
 		Evidence:    []domain.Evidence{ev},
 	}, nil

@@ -108,12 +108,13 @@ func testProgram(status domain.ProgramStatus) domain.Program {
 	}
 	return domain.Program{
 		ID: "p1", Platform: domain.PlatformButian, Name: "test", Type: domain.TypeBrandSRC,
-		Status:      domain.ProgramState{Status: status, ObservedAt: testNow, ValidUntil: testNow.Add(time.Hour), Confidence: 1},
-		Eligibility: domain.EligibilityState{Decision: domain.Eligible, EvaluatedAt: testNow, PolicyVersion: "test"},
-		Scope:       domain.Scope{Visibility: domain.ScopePublic, Access: domain.ScopeAccessGranted, ContentsKnown: true, ObservedAt: testNow},
-		Reward:      domain.RewardPolicy{TaxBasis: domain.TaxUnknown},
-		Automation:  automation,
-		ObservedAt:  testNow,
+		Status:           domain.ProgramState{Status: status, ObservedAt: testNow, ValidUntil: testNow.Add(time.Hour), Confidence: 1},
+		Eligibility:      domain.EligibilityState{Decision: domain.Eligible, EvaluatedAt: testNow, PolicyVersion: "test"},
+		Scope:            domain.Scope{Visibility: domain.ScopePublic, Access: domain.ScopeAccessGranted, ContentsKnown: true, ObservedAt: testNow},
+		Reward:           domain.RewardPolicy{TaxBasis: domain.TaxUnknown},
+		Automation:       automation,
+		ObservedAt:       testNow,
+		PolicyObservedAt: testNow,
 	}
 }
 

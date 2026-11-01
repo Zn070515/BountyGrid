@@ -6,6 +6,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
@@ -75,8 +76,11 @@ type ScopeSnapshot struct {
 type PolicySnapshot struct {
 	Automation  domain.AutomationPolicy
 	Constraints domain.Constraints
-	Facts       []domain.ObservedFact
-	Evidence    []domain.Evidence
+	// ObservedAt timestamps this policy read. It is stored separately from the
+	// program row so a later list sync cannot make an old policy look fresh.
+	ObservedAt time.Time
+	Facts      []domain.ObservedFact
+	Evidence   []domain.Evidence
 }
 
 // Reader is the canonical Phase 1 subset of the platform Adapter: it only

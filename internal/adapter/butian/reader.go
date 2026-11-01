@@ -510,7 +510,7 @@ func (r *Reader) SyncPolicy(ctx context.Context, id domain.ProgramID) (adapter.P
 	fs := []domain.ObservedFact{cardFact(ev.ID, id, "butian.policy.source", projectHallURL, "", at)}
 	return adapter.PolicySnapshot{
 		Automation: conservativeAutomation(), Constraints: domain.Constraints{},
-		Facts: fs, Evidence: []domain.Evidence{ev},
+		ObservedAt: at, Facts: fs, Evidence: []domain.Evidence{ev},
 	}, nil
 }
 

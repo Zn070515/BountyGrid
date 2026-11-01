@@ -79,6 +79,8 @@ type ActionDecision struct {
 	// against. A later scope edit changes the revision and invalidates the
 	// approval path.
 	ScopeRevision string
+	// PolicyRevision is a digest of the automation/constraints snapshot.
+	PolicyRevision string
 	// RequestParameters preserves the exact parameter bytes supplied by the
 	// caller. PostgreSQL JSONB normalizes JSON whitespace/key order, so the
 	// nested Request.Parameters cannot be used to re-validate an approval hash.
