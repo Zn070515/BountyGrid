@@ -18,10 +18,11 @@ import (
 )
 
 var (
-	ErrInvalidInput     = errors.New("submit: invalid input")
-	ErrNotReady         = errors.New("submit: report is not ready")
-	ErrAlreadySubmitted = errors.New("submit: report already submitted")
-	ErrPlatformSubmit   = errors.New("submit: platform submit failed")
+	ErrInvalidInput         = errors.New("submit: invalid input")
+	ErrNotReady             = errors.New("submit: report is not ready")
+	ErrAlreadySubmitted     = errors.New("submit: report already submitted")
+	ErrSubmissionInProgress = errors.New("submit: another submission for this report is in progress")
+	ErrPlatformSubmit       = errors.New("submit: platform submit failed")
 )
 
 type Store interface {
@@ -30,6 +31,8 @@ type Store interface {
 	GetFinding(ctx context.Context, id domain.FindingID) (domain.Finding, error)
 	GetVerification(ctx context.Context, id string) (domain.Verification, error)
 	GetSubmissionByReport(ctx context.Context, reportID string) (domain.Submission, bool, error)
+	ReserveSubmissionIntent(ctx context.Context, reportID, approvalID string, now time.Time) (bool, error)
+	ReleaseSubmissionIntent(ctx context.Context, reportID string) error
 	RecordSubmission(ctx context.Context, s domain.Submission, d domain.ReportDraft) error
 }
 
@@ -163,6 +166,23 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 	if !res.Ready {
 		return domain.Submission{}, fmt.Errorf("%w: missing %v", ErrNotReady, res.Missing)
 	}
+	// Claim the single in-flight slot before the gateway consumes the approval.
+	// If another submit already holds it, do not consume an approval or call the
+	// platform.
+	reserved, err := s.store.ReserveSubmissionIntent(ctx, draft.ID, in.Approval.ID, now)
+	if err != nil {
+		return domain.Submission{}, fmt.Errorf("submit: reserve submission: %w", err)
+	}
+	if !reserved {
+		return domain.Submission{}, fmt.Errorf("%w: %s", ErrSubmissionInProgress, draft.ID)
+	}
+	keepIntent := false
+	defer func() {
+		if keepIntent {
+			return
+		}
+		_ = s.store.ReleaseSubmissionIntent(context.WithoutCancel(ctx), draft.ID)
+	}()
 
 	requestID := fmt.Sprintf("submit/%s/%s", draft.ID, in.Approval.ID)
 	contentHash, err := report.ContentHash(draft)
@@ -202,6 +222,10 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 		return domain.Submission{}, fmt.Errorf("submit: gateway authorize: %w", err)
 	}
 
+	// From here on the platform may receive the report; a pre-submit failure
+	// releases the intent, but a submitter error keeps it so a retry cannot
+	// submit twice. Reconciliation is required.
+	keepIntent = true
 	result, err := s.submitter.Submit(ctx, Request{
 		Report: draft, Program: program, Decision: decision,
 		Approval: in.Approval,
@@ -221,17 +245,22 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 		return domain.Submission{}, perr
 	}
 
+	// A dry run must not consume the report's real-submission slot or flip the
+	// draft to SUBMITTED; it leaves a DRY_RUN receipt for audit only. Accept
+	// either signal from a Submitter so the status and the unique index agree.
+	dryRun := result.DryRun || result.Status == "DRY_RUN"
+	if dryRun {
+		result.Status = "DRY_RUN"
+	}
+	if !dryRun {
+		draft.Status = domain.ReportStatusSubmitted
+	}
 	sub := domain.Submission{
 		ID:       domain.SubmissionID(fmt.Sprintf("sub/%s/%s/%s", draft.ID, in.Approval.ID, now.UTC().Format("20060102T150405.000000000"))),
 		ReportID: draft.ID, ProgramID: program.ID, SubmittedAt: now,
 		PlatformURL: result.PlatformURL, Receipt: result.Receipt, Status: result.Status,
 		ApprovalID: in.Approval.ID, ContentHash: contentHash,
 		Evidence: append([]domain.EvidenceID{}, verification.Evidence...),
-	}
-	// A dry run must not consume the report's real-submission slot or flip the
-	// draft to SUBMITTED; it leaves a DRY_RUN receipt for audit only.
-	if !result.DryRun {
-		draft.Status = domain.ReportStatusSubmitted
 	}
 	if err := s.store.RecordSubmission(ctx, sub, draft); err != nil {
 		perr := fmt.Errorf("submit: platform submit may have succeeded but recording failed; do not retry without reconciliation: %w", err)

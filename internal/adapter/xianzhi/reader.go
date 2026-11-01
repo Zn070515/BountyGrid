@@ -2,6 +2,7 @@ package xianzhi
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -193,32 +194,18 @@ func (r *Reader) syncPage(ctx context.Context, page int) (taskChunk, error) {
 	return combined, nil
 }
 
+//go:embed scripts/extract_cards.js
+var extractCardsTemplate string
+
 func extractCardsJS(offset, limit int) string {
-	return fmt.Sprintf(`(() => {
-  const cards=[...document.querySelectorAll('.card-item')];
-  const out=cards.slice(%d,%d).map(c=>{
-    const parts=(c.innerText||'').replace(/\n+/g,'|').split('|');
-    const val=k=>{const i=parts.indexOf(k+'：'); return (i>=0 && i+1<parts.length)?parts[i+1].trim():''};
-    const k=Object.keys(c).find(x=>x.startsWith('__reactFiber'));
-    let f=k?c[k]:null,p=null;
-    for(let i=0;i<8&&f;i++){const mp=f.memoizedProps||{};if(mp.task){p=mp.task;break;}f=f.return;}
-    if(!p) return {missing:true,title:parts[0]||''};
-    return {id:p.id,name:p.name||'',status:p.status,type:p.type,registrationBegin:p.registrationBegin||0,registrationEnd:p.registrationEnd||0,taskBegin:p.taskBegin||0,taskEnd:p.taskEnd||0,registrationLimit:p.registrationLimit||0,bounty:val('赏金范围'),buttons:[...c.querySelectorAll('button')].map(b=>(b.innerText||'').trim()),title:parts[0]||''};
-  });
-  const pages=[...document.querySelectorAll('.cs-pagination-item')].map(x=>parseInt((x.innerText||'').trim(),10)).filter(Number.isFinite);
-  return JSON.stringify({cards:out,maxPage:pages.length?Math.max(...pages):0});
-})()`, offset, offset+limit)
+	return fmt.Sprintf(extractCardsTemplate, offset, offset+limit)
 }
 
+//go:embed scripts/click_page.js
+var clickPageTemplate string
+
 func clickPageJS(page int) string {
-	return fmt.Sprintf(`(async()=>{
-  const b=[...document.querySelectorAll('.cs-pagination-item')].find(x=>(x.innerText||'').trim()===String(%d));
-  if(!b) return JSON.stringify({ok:false});
-  const before=(document.querySelector('.card-item')||{}).innerText||'';
-  b.click();
-  for(let i=0;i<80;i++){await new Promise(r=>setTimeout(r,100)); const now=(document.querySelector('.card-item')||{}).innerText||''; if(now&&now!==before) break;}
-  return JSON.stringify({ok:true});
-})()`, page)
+	return fmt.Sprintf(clickPageTemplate, page)
 }
 
 func (r *Reader) SyncAccount(ctx context.Context) (adapter.AccountSnapshot, error) {

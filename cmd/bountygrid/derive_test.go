@@ -26,11 +26,18 @@ func (f *fakeDeriveStore) ListPrograms(ctx context.Context, platform domain.Plat
 func (f *fakeDeriveStore) ListFactsByProgram(ctx context.Context, id domain.ProgramID) ([]domain.ObservedFact, error) {
 	return f.facts[id], nil
 }
-func (f *fakeDeriveStore) PutState(ctx context.Context, s domain.DerivedState) error {
+func (f *fakeDeriveStore) ListFactsByPlatform(ctx context.Context, platform domain.Platform) ([]domain.ObservedFact, error) {
+	var out []domain.ObservedFact
+	for _, fs := range f.facts {
+		out = append(out, fs...)
+	}
+	return out, nil
+}
+func (f *fakeDeriveStore) PutStates(ctx context.Context, states []domain.DerivedState) error {
 	if f.putErr != nil {
 		return f.putErr
 	}
-	f.states = append(f.states, s)
+	f.states = append(f.states, states...)
 	return nil
 }
 
@@ -110,6 +117,40 @@ func TestExecuteDeriveFiltersProgram(t *testing.T) {
 	}
 	if out.Programs != 1 {
 		t.Fatalf("programs = %d, want 1", out.Programs)
+	}
+}
+
+func TestExecuteDeriveWorkersDeterministic(t *testing.T) {
+	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
+	pid := domain.ProgramID("vulbox/444")
+	p := domain.Program{ID: pid, Platform: domain.PlatformVulbox}
+	fact := domain.ObservedFact{
+		ID: "f1", Subject: domain.SubjectProgram, Platform: domain.PlatformVulbox,
+		ProgramID: &pid, Predicate: facts.PredProgramStatus, Value: "RUNNING",
+		ObservedAt: now, EvidenceRefs: []domain.EvidenceID{"e1"},
+		Confidence: 1, ExtractorVersion: "test",
+	}
+	run := func(workers int) []domain.DerivedState {
+		store := &fakeDeriveStore{
+			programs: []domain.Program{p},
+			facts:    map[domain.ProgramID][]domain.ObservedFact{pid: {fact}},
+		}
+		if _, err := executeDerive(context.Background(), store, deriveOptions{
+			Platform: "vulbox", TTL: time.Hour, Workers: workers,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+		return store.states
+	}
+	one := run(1)
+	many := run(4)
+	if len(one) != len(many) {
+		t.Fatalf("state counts differ: %d vs %d", len(one), len(many))
+	}
+	for i := range one {
+		if one[i].ID != many[i].ID || one[i].State != many[i].State {
+			t.Fatalf("state %d differs: %+v vs %+v", i, one[i], many[i])
+		}
 	}
 }
 

@@ -2,10 +2,12 @@ package policy
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/timeutil"
 )
 
 // effectiveEligibility recomputes eligibility only when the program carries
@@ -49,7 +51,7 @@ func checkExecutionEnvironment(dc DecisionContext, now time.Time) (domain.Decisi
 		for _, w := range c.AllowedTimeWindows {
 			at := now
 			if w.TZ != "" {
-				if loc, err := time.LoadLocation(w.TZ); err == nil {
+				if loc, err := timeutil.LoadLocation(w.TZ); err == nil {
 					at = now.In(loc)
 				}
 			}
@@ -116,9 +118,18 @@ func checkExecutionEnvironment(dc DecisionContext, now time.Time) (domain.Decisi
 		if env == nil || env.EgressIP == "" {
 			return domain.DecisionRequireMoreEvidence, "EGRESS_IP_UNKNOWN"
 		}
+		actual, err := netip.ParseAddr(strings.TrimSpace(env.EgressIP))
+		if err != nil {
+			return domain.DecisionRequireMoreEvidence, "EGRESS_IP_UNKNOWN"
+		}
+		actual = actual.Unmap()
 		allowed := false
 		for _, ip := range c.AllowedEgressIPs {
-			if strings.EqualFold(strings.TrimSpace(ip), strings.TrimSpace(env.EgressIP)) {
+			parsed, err := netip.ParseAddr(strings.TrimSpace(ip))
+			if err != nil {
+				continue
+			}
+			if parsed.Unmap() == actual {
 				allowed = true
 				break
 			}

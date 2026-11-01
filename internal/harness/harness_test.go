@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -79,6 +81,13 @@ func testHarness(tool *fakeTool, gate *fakeGate, aud *fakeAuditor, budget *Budge
 		panic(err)
 	}
 	h := New(reg, gate, aud, &Sandbox{}, budget)
+	dir, err := os.MkdirTemp("", "bounty-harness-*")
+	if err != nil {
+		panic(err)
+	}
+	if err := h.SetWorkspace(dir); err != nil {
+		panic(err)
+	}
 	h.SetClock(func() time.Time { return testNow })
 	return h
 }
@@ -383,6 +392,62 @@ func TestEgressGuardsEveryRequest(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "https://evil.test", nil)
 	if _, err := e.Do(context.Background(), req); err == nil {
 		t.Fatal("Do must apply the same check as CheckURL")
+	}
+}
+
+func TestWorkspaceConfinesTraversal(t *testing.T) {
+	dir := t.TempDir()
+	ws, err := OpenWorkspace(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ws.Close() }()
+	if err := ws.WriteFile("note.txt", []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ws.ReadFile("note.txt")
+	if err != nil || string(got) != "ok" {
+		t.Fatalf("read = %q %v", got, err)
+	}
+	if _, err := ws.ReadFile("../escape.txt"); err == nil {
+		t.Fatal("workspace must reject paths outside the root")
+	}
+	if err := ws.WriteFile("../escape.txt", []byte("x"), 0o600); err == nil {
+		t.Fatal("workspace must reject writes outside the root")
+	}
+}
+
+func TestHarnessFileToolRequiresWorkspace(t *testing.T) {
+	tool := &fakeTool{spec: ToolSpec{Name: "file", RequiredAction: domain.ActionViewRules, ReadsFiles: true}}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	reg := NewRegistry()
+	if err := reg.Register(tool); err != nil {
+		t.Fatal(err)
+	}
+	h := New(reg, gate, &fakeAuditor{}, &Sandbox{}, nil)
+	h.SetClock(func() time.Time { return testNow })
+	if _, _, err := h.Execute(context.Background(), "file", gateway.EvaluateInput{Request: testRequest(domain.ActionViewRules), Now: testNow}); err == nil {
+		t.Fatal("file tool without a workspace must be rejected")
+	}
+	if tool.calls != 0 || gate.evaluated != 0 {
+		t.Fatal("file tool ran without a workspace")
+	}
+}
+
+func TestEgressResponseLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("0123456789"))
+	}))
+	defer srv.Close()
+	e := NewEgress(&Sandbox{AllowedHosts: []string{"127.0.0.1"}})
+	e.SetMaxBytes(4)
+	if _, _, err := e.GetBytes(context.Background(), srv.URL); !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("oversize body err = %v, want ErrResponseTooLarge", err)
+	}
+	e.SetMaxBytes(10)
+	body, status, err := e.GetBytes(context.Background(), srv.URL)
+	if err != nil || status != 200 || len(body) != 10 {
+		t.Fatalf("exact-size body = %q/%d/%v", body, status, err)
 	}
 }
 

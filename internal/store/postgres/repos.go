@@ -1,19 +1,23 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/redact"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = errors.New("postgres: not found")
+// ErrNotFound aliases the store-neutral sentinel for callers that already use
+// the postgres package; new code should check domain.ErrNotFound.
+var ErrNotFound = domain.ErrNotFound
 
 type Repo struct {
 	Pool *pgxpool.Pool
@@ -241,6 +245,8 @@ func (r *Repo) PutFacts(ctx context.Context, fs []domain.ObservedFact) error {
 		return fmt.Errorf("postgres: begin facts: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	batch := &pgx.Batch{}
 	for _, f := range fs {
 		value, err := mustJSON(f.Value)
 		if err != nil {
@@ -250,7 +256,7 @@ func (r *Repo) PutFacts(ctx context.Context, fs []domain.ObservedFact) error {
 		if err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `
+		batch.Queue(`
 			INSERT INTO observed_facts
 				(id, subject, platform, account_id, program_id, asset_id, predicate,
 				 value, unit, observed_at, evidence_refs, confidence, extractor_version)
@@ -259,22 +265,88 @@ func (r *Repo) PutFacts(ctx context.Context, fs []domain.ObservedFact) error {
 			f.ID, f.Subject, f.Platform, f.AccountID, f.ProgramID, f.AssetID,
 			f.Predicate, value, f.Unit, f.ObservedAt, refs, f.Confidence, f.ExtractorVersion,
 		)
+	}
+	results := tx.SendBatch(ctx, batch)
+	var unchanged []domain.FactID
+	for _, f := range fs {
+		tag, err := results.Exec()
 		if err != nil {
+			_ = results.Close()
 			return fmt.Errorf("postgres: put fact %s: %w", f.ID, err)
 		}
 		if tag.RowsAffected() == 0 {
-			// Re-running an extractor is idempotent; reusing an ID for different
-			// content is a conflict and must not overwrite immutable facts.
-			existing, err := getFact(ctx, tx, f.ID)
+			unchanged = append(unchanged, f.ID)
+		}
+	}
+	if err := results.Close(); err != nil {
+		return fmt.Errorf("postgres: close fact batch: %w", err)
+	}
+	if len(unchanged) > 0 {
+		// Re-running an extractor is idempotent; reusing an ID for different
+		// content is a conflict and must not overwrite immutable facts.
+		ids := make([]string, 0, len(unchanged))
+		for _, id := range unchanged {
+			ids = append(ids, string(id))
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT id, subject, platform, account_id, program_id, asset_id, predicate,
+			       value, unit, observed_at, evidence_refs, confidence, extractor_version
+			FROM observed_facts WHERE id = ANY($1)`, ids)
+		if err != nil {
+			return fmt.Errorf("postgres: read unchanged facts: %w", err)
+		}
+		existing := make(map[domain.FactID]domain.ObservedFact, len(unchanged))
+		for rows.Next() {
+			f, err := scanFact(rows)
 			if err != nil {
+				rows.Close()
 				return err
 			}
-			if !existing.Equal(f) {
-				return fmt.Errorf("postgres: fact %s: id exists with different content", f.ID)
+			existing[f.ID] = f
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		wanted := make(map[domain.FactID]domain.ObservedFact, len(fs))
+		for _, f := range fs {
+			wanted[f.ID] = f
+		}
+		for _, id := range unchanged {
+			prev, ok := existing[id]
+			if !ok {
+				return fmt.Errorf("postgres: fact %s: insert skipped but row is missing", id)
+			}
+			if !prev.Equal(wanted[id]) {
+				return fmt.Errorf("postgres: fact %s: id exists with different content", id)
 			}
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// ListFactsByPlatform returns all non-superseded facts for a platform in one
+// query (empty platform means all), ordered so callers can group by program.
+func (r *Repo) ListFactsByPlatform(ctx context.Context, platform domain.Platform) ([]domain.ObservedFact, error) {
+	rows, err := r.Pool.Query(ctx, `
+		SELECT id, subject, platform, account_id, program_id, asset_id, predicate,
+		       value, unit, observed_at, evidence_refs, confidence, extractor_version
+		FROM observed_facts
+		WHERE ($1 = '' OR platform = $1) AND superseded_by IS NULL
+		ORDER BY program_id ASC, observed_at ASC, id ASC`, string(platform))
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list facts by platform: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.ObservedFact
+	for rows.Next() {
+		f, err := scanFact(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
 }
 
 func (r *Repo) ListFactsByProgram(ctx context.Context, id domain.ProgramID) ([]domain.ObservedFact, error) {
@@ -297,21 +369,6 @@ func (r *Repo) ListFactsByProgram(ctx context.Context, id domain.ProgramID) ([]d
 		out = append(out, f)
 	}
 	return out, rows.Err()
-}
-
-func getFact(ctx context.Context, tx pgx.Tx, id domain.FactID) (domain.ObservedFact, error) {
-	row := tx.QueryRow(ctx, `
-		SELECT id, subject, platform, account_id, program_id, asset_id, predicate,
-		       value, unit, observed_at, evidence_refs, confidence, extractor_version
-		FROM observed_facts WHERE id=$1`, id)
-	f, err := scanFact(row)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ObservedFact{}, ErrNotFound
-		}
-		return domain.ObservedFact{}, err
-	}
-	return f, nil
 }
 
 func scanFact(row pgx.Row) (domain.ObservedFact, error) {
@@ -409,33 +466,60 @@ func (r *Repo) SupersedeFact(ctx context.Context, id, by domain.FactID) error {
 // ---------- Derived state ----------
 
 func (r *Repo) PutState(ctx context.Context, s domain.DerivedState) error {
-	if err := s.Validate(); err != nil {
-		return err
+	return r.PutStates(ctx, []domain.DerivedState{s})
+}
+
+// PutStates writes derived states in one transaction using a pgx batch. The
+// upsert is idempotent for a given state ID.
+func (r *Repo) PutStates(ctx context.Context, states []domain.DerivedState) error {
+	if len(states) == 0 {
+		return nil
 	}
-	state, err := mustJSON(s.State)
+	tx, err := r.Pool.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("postgres: begin states: %w", err)
 	}
-	inputs, err := mustJSON(s.Inputs)
-	if err != nil {
-		return err
+	defer func() { _ = tx.Rollback(ctx) }()
+	batch := &pgx.Batch{}
+	for _, s := range states {
+		if err := s.Validate(); err != nil {
+			return err
+		}
+		state, err := mustJSON(s.State)
+		if err != nil {
+			return err
+		}
+		inputs, err := mustJSON(s.Inputs)
+		if err != nil {
+			return err
+		}
+		batch.Queue(`
+			INSERT INTO derived_states
+				(id, subject, platform, account_id, program_id, state, inputs,
+				 observed_at, derived_at, valid_until, confidence, rule_version)
+			VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12)
+			ON CONFLICT (id) DO UPDATE SET
+				subject=EXCLUDED.subject, platform=EXCLUDED.platform,
+				account_id=EXCLUDED.account_id, program_id=EXCLUDED.program_id,
+				state=EXCLUDED.state, inputs=EXCLUDED.inputs,
+				observed_at=EXCLUDED.observed_at, derived_at=EXCLUDED.derived_at,
+				valid_until=EXCLUDED.valid_until, confidence=EXCLUDED.confidence,
+				rule_version=EXCLUDED.rule_version`,
+			s.ID, s.Subject, s.Platform, s.AccountID, s.ProgramID, state, inputs,
+			s.ObservedAt, s.DerivedAt, s.ValidUntil, s.Confidence, s.RuleVersion)
 	}
-	_, err = r.Pool.Exec(ctx, `
-		INSERT INTO derived_states
-			(id, subject, platform, account_id, program_id, state, inputs,
-			 observed_at, derived_at, valid_until, confidence, rule_version)
-		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12)
-		ON CONFLICT (id) DO UPDATE SET
-			subject=EXCLUDED.subject, platform=EXCLUDED.platform,
-			account_id=EXCLUDED.account_id, program_id=EXCLUDED.program_id,
-			state=EXCLUDED.state, inputs=EXCLUDED.inputs,
-			observed_at=EXCLUDED.observed_at, derived_at=EXCLUDED.derived_at,
-			valid_until=EXCLUDED.valid_until, confidence=EXCLUDED.confidence,
-			rule_version=EXCLUDED.rule_version`,
-		s.ID, s.Subject, s.Platform, s.AccountID, s.ProgramID, state, inputs,
-		s.ObservedAt, s.DerivedAt, s.ValidUntil, s.Confidence, s.RuleVersion)
-	if err != nil {
-		return fmt.Errorf("postgres: put state: %w", err)
+	results := tx.SendBatch(ctx, batch)
+	for range states {
+		if _, err := results.Exec(); err != nil {
+			_ = results.Close()
+			return fmt.Errorf("postgres: put state: %w", err)
+		}
+	}
+	if err := results.Close(); err != nil {
+		return fmt.Errorf("postgres: close state batch: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: commit states: %w", err)
 	}
 	return nil
 }
@@ -661,12 +745,12 @@ func putReportDraft(ctx context.Context, ex queryExecer, d domain.ReportDraft) e
 	// or full phone/email values. Raw evidence stays local; report text must use
 	// placeholders.
 	for key, value := range d.Fields {
-		if findings := redact.Scan(value); len(findings) > 0 {
+		if findings := redact.ScanReport(value); len(findings) > 0 {
 			return fmt.Errorf("postgres: report draft field %s contains sensitive value (%s)", key, findings[0].Kind)
 		}
 	}
 	for key, value := range d.AIDisclosure {
-		if findings := redact.Scan(value); len(findings) > 0 {
+		if findings := redact.ScanReport(value); len(findings) > 0 {
 			return fmt.Errorf("postgres: report draft disclosure %s contains sensitive value (%s)", key, findings[0].Kind)
 		}
 	}
@@ -741,6 +825,9 @@ func (r *Repo) RecordSubmission(ctx context.Context, s domain.Submission, d doma
 	if err := putReportDraft(ctx, tx, d); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM submission_intents WHERE report_id=$1`, s.ReportID); err != nil {
+		return fmt.Errorf("postgres: release submission intent: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("postgres: commit submission: %w", err)
 	}
@@ -748,14 +835,19 @@ func (r *Repo) RecordSubmission(ctx context.Context, s domain.Submission, d doma
 }
 
 func (r *Repo) PutLedgerEntry(ctx context.Context, e domain.LedgerEntry) error {
+	_, err := putLedgerEntry(ctx, r.Pool, e)
+	return err
+}
+
+func putLedgerEntry(ctx context.Context, ex queryExecer, e domain.LedgerEntry) (bool, error) {
 	if err := e.Validate(); err != nil {
-		return err
+		return false, err
 	}
 	data, err := mustJSON(e)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = r.Pool.Exec(ctx, `
+	tag, err := ex.Exec(ctx, `
 		INSERT INTO ledger_entries
 			(id, platform, program_id, finding_id, submission_id, kind, amount_cents,
 			 currency, status, occurred_at, external_ref, reverses_id, notes, data)
@@ -764,7 +856,90 @@ func (r *Repo) PutLedgerEntry(ctx context.Context, e domain.LedgerEntry) error {
 		e.ID, e.Platform, e.ProgramID, e.FindingID, e.SubmissionID, e.Kind,
 		e.Amount.Amount, e.Amount.Currency, e.Status, e.OccurredAt,
 		e.ExternalRef, e.ReversesID, e.Notes, data)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RecordLedgerEntryWithAudit writes the entry and its audit event in one
+// transaction. Reversals take an advisory lock on the target and re-check the
+// remaining amount under that lock, so concurrent appends cannot over-reverse.
+func (r *Repo) RecordLedgerEntryWithAudit(ctx context.Context, e domain.LedgerEntry, ev audit.Event) error {
+	if err := e.Validate(); err != nil {
+		return err
+	}
+	if err := ev.Validate(); err != nil {
+		return err
+	}
+	data, err := mustJSON(e)
+	if err != nil {
+		return err
+	}
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: begin ledger entry: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if e.Kind == domain.LedgerReversal {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, e.ReversesID); err != nil {
+			return fmt.Errorf("postgres: lock reversal target: %w", err)
+		}
+		var targetAmount int64
+		var targetKind domain.LedgerKind
+		var targetPlatform domain.Platform
+		var targetProgram domain.ProgramID
+		err := tx.QueryRow(ctx, `
+			SELECT amount_cents, kind, platform, program_id
+			FROM ledger_entries WHERE id=$1`, e.ReversesID,
+		).Scan(&targetAmount, &targetKind, &targetPlatform, &targetProgram)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: reversal target %s", domain.ErrNotFound, e.ReversesID)
+		}
+		if err != nil {
+			return fmt.Errorf("postgres: load reversal target: %w", err)
+		}
+		if targetKind != domain.LedgerPaid && targetKind != domain.LedgerRefund {
+			return fmt.Errorf("postgres: reversal target %s is %s", e.ReversesID, targetKind)
+		}
+		if targetPlatform != e.Platform || targetProgram != e.ProgramID {
+			return fmt.Errorf("postgres: reversal target entity mismatch")
+		}
+		var already int64
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(amount_cents),0) FROM ledger_entries
+			WHERE kind=$1 AND reverses_id=$2`, domain.LedgerReversal, e.ReversesID,
+		).Scan(&already); err != nil {
+			return fmt.Errorf("postgres: sum reversals: %w", err)
+		}
+		if already+e.Amount.Amount > targetAmount {
+			return fmt.Errorf("postgres: reversals exceed target %s", e.ReversesID)
+		}
+	}
+
+	inserted, err := putLedgerEntry(ctx, tx, e)
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		var existing []byte
+		if err := tx.QueryRow(ctx, `SELECT data FROM ledger_entries WHERE id=$1`, e.ID).Scan(&existing); err != nil {
+			return fmt.Errorf("postgres: read existing ledger entry: %w", err)
+		}
+		if !bytes.Equal(existing, []byte(data)) {
+			return fmt.Errorf("postgres: ledger entry %s exists with different content", e.ID)
+		}
+		// The original transaction already wrote the audit event.
+		return tx.Commit(ctx)
+	}
+	if _, err := appendAudit(ctx, tx, ev); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: commit ledger entry: %w", err)
+	}
+	return nil
 }
 
 func (r *Repo) GetLedgerEntry(ctx context.Context, id string) (domain.LedgerEntry, error) {

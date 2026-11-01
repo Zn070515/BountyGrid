@@ -21,6 +21,7 @@ type fakeStore struct {
 	finding      domain.Finding
 	verification domain.Verification
 	submissions  []domain.Submission
+	intents      map[string]string
 }
 
 func (s *fakeStore) GetReportDraft(ctx context.Context, id string) (domain.ReportDraft, error) {
@@ -56,6 +57,21 @@ func (s *fakeStore) GetSubmissionByReport(ctx context.Context, reportID string) 
 	return domain.Submission{}, false, nil
 }
 
+func (s *fakeStore) ReserveSubmissionIntent(ctx context.Context, reportID, approvalID string, now time.Time) (bool, error) {
+	if s.intents == nil {
+		s.intents = map[string]string{}
+	}
+	if _, ok := s.intents[reportID]; ok {
+		return false, nil
+	}
+	s.intents[reportID] = approvalID
+	return true, nil
+}
+func (s *fakeStore) ReleaseSubmissionIntent(ctx context.Context, reportID string) error {
+	delete(s.intents, reportID)
+	return nil
+}
+
 func (s *fakeStore) RecordSubmission(ctx context.Context, sub domain.Submission, d domain.ReportDraft) error {
 	if err := sub.Validate(); err != nil {
 		return err
@@ -72,6 +88,7 @@ func (s *fakeStore) RecordSubmission(ctx context.Context, sub domain.Submission,
 	}
 	s.submissions = append(s.submissions, sub)
 	s.draft = d
+	delete(s.intents, sub.ReportID)
 	return nil
 }
 
@@ -368,6 +385,75 @@ func TestDryRunDoesNotBlockRealSubmission(t *testing.T) {
 	}
 	if len(store.submissions) != 2 {
 		t.Fatalf("submissions = %+v", store.submissions)
+	}
+}
+
+func TestSubmitDryRunInferredFromStatus(t *testing.T) {
+	draft := draftFixture(t, true)
+	store := &fakeStore{draft: draft, program: programFixture(), finding: findingFixture(), verification: verificationFixture()}
+	sub := &fakeSubmitter{result: Result{Receipt: "dry", Status: "DRY_RUN"}}
+	s := newService(t, store, &fakeGate{decision: allowDecision()}, sub, nil)
+	out, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixture(t, draft), Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "DRY_RUN" || store.draft.Status != domain.ReportStatusDraft {
+		t.Fatalf("dry-run inference failed: sub=%s draft=%s", out.Status, store.draft.Status)
+	}
+}
+
+func TestSubmitDryRunFlagWinsOverStatus(t *testing.T) {
+	draft := draftFixture(t, true)
+	store := &fakeStore{draft: draft, program: programFixture(), finding: findingFixture(), verification: verificationFixture()}
+	sub := &fakeSubmitter{result: Result{Receipt: "dry", Status: "SUBMITTED", DryRun: true}}
+	s := newService(t, store, &fakeGate{decision: allowDecision()}, sub, nil)
+	out, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixture(t, draft), Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "DRY_RUN" || store.draft.Status != domain.ReportStatusDraft {
+		t.Fatalf("dry-run flag not authoritative: sub=%s draft=%s", out.Status, store.draft.Status)
+	}
+}
+
+func TestSubmitRejectsConcurrentIntent(t *testing.T) {
+	draft := draftFixture(t, true)
+	store := &fakeStore{
+		draft: draft, program: programFixture(), finding: findingFixture(),
+		verification: verificationFixture(),
+		intents:      map[string]string{draft.ID: "other"},
+	}
+	gate := &fakeGate{decision: allowDecision()}
+	sub := &fakeSubmitter{result: Result{Receipt: "r", Status: "SUBMITTED"}}
+	s := newService(t, store, gate, sub, nil)
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixture(t, draft), Now: testNow}); !errors.Is(err, ErrSubmissionInProgress) {
+		t.Fatalf("err = %v, want ErrSubmissionInProgress", err)
+	}
+	if gate.evaluated != 0 || sub.calls != 0 {
+		t.Fatal("concurrent intent reached the gate/submitter")
+	}
+}
+
+func TestSubmitReleasesIntentOnPreSubmitFailure(t *testing.T) {
+	draft := draftFixture(t, true)
+	store := &fakeStore{draft: draft, program: programFixture(), finding: findingFixture(), verification: verificationFixture()}
+	sub := &fakeSubmitter{result: Result{Receipt: "r", Status: "SUBMITTED"}}
+	s := newService(t, store, &fakeGate{decision: allowDecision(), authErr: errors.New("expired")}, sub, nil)
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixture(t, draft), Now: testNow}); err == nil {
+		t.Fatal("authorize failure should surface")
+	}
+	if _, ok := store.intents[draft.ID]; ok {
+		t.Fatal("pre-submit failure must release the intent")
+	}
+
+	store = &fakeStore{draft: draft, program: programFixture(), finding: findingFixture(), verification: verificationFixture()}
+	sub = &fakeSubmitter{err: errors.New("platform down")}
+	s = newService(t, store, &fakeGate{decision: allowDecision()}, sub, nil)
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixture(t, draft), Now: testNow}); err == nil {
+		t.Fatal("submitter failure should surface")
+	}
+	if _, ok := store.intents[draft.ID]; !ok {
+		t.Fatal("submitter failure must keep the intent to prevent a double submit")
 	}
 }
 

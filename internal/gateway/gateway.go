@@ -14,7 +14,6 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy"
-	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 )
 
 type Store interface {
@@ -100,14 +99,14 @@ func (g *Gateway) Evaluate(ctx context.Context, in EvaluateInput) (domain.Action
 	}
 	acct, err := g.store.GetAccount(ctx, in.Request.AccountID)
 	if err != nil {
-		if errors.Is(err, postgres.ErrNotFound) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return g.record(ctx, g.denyDecision(in.Request, "CONTEXT_NOT_FOUND", now), in.Request, now)
 		}
 		return domain.ActionDecision{}, fmt.Errorf("gateway: load account: %w", err)
 	}
 	prog, err := g.store.GetProgram(ctx, in.Request.ProgramID)
 	if err != nil {
-		if errors.Is(err, postgres.ErrNotFound) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return g.record(ctx, g.denyDecision(in.Request, "CONTEXT_NOT_FOUND", now), in.Request, now)
 		}
 		return domain.ActionDecision{}, fmt.Errorf("gateway: load program: %w", err)

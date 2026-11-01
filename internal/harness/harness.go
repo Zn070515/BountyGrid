@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,10 +46,11 @@ type ToolResult struct {
 // only for tools that declare NetworkEgress; every request through it is
 // re-checked against the sandbox, including redirects.
 type ToolContext struct {
-	Request  domain.ActionRequest
-	Decision domain.ActionDecision
-	Egress   *Egress
-	Budget   *Budget
+	Request   domain.ActionRequest
+	Decision  domain.ActionDecision
+	Egress    *Egress
+	Workspace *Workspace
+	Budget    *Budget
 }
 
 type Tool interface {
@@ -141,18 +143,36 @@ func (s *Sandbox) CheckURL(raw string) error {
 // Egress is the harness-controlled network client. A tool never receives raw
 // network capability: every request (and every redirect) is checked against the
 // sandbox allowlist before the connection is made.
+var ErrResponseTooLarge = errors.New("egress: response too large")
+
 type Egress struct {
-	sandbox *Sandbox
-	client  *http.Client
+	sandbox  *Sandbox
+	client   *http.Client
+	maxBytes int64
 }
+
+// DefaultEgressMaxBytes bounds a single response body. Tools must not be able
+// to pull unbounded data through the harness.
+const DefaultEgressMaxBytes = 8 << 20
 
 func NewEgress(s *Sandbox) *Egress {
 	if s == nil {
 		s = &Sandbox{}
 	}
-	e := &Egress{sandbox: s}
+	e := &Egress{sandbox: s, maxBytes: DefaultEgressMaxBytes}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          20,
+		MaxIdleConnsPerHost:   4,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
+	}
 	e.client = &http.Client{
-		Timeout: 30 * time.Second,
+		Transport: transport,
+		Timeout:   30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return fmt.Errorf("egress: too many redirects")
@@ -163,11 +183,20 @@ func NewEgress(s *Sandbox) *Egress {
 	return e
 }
 
+// SetMaxBytes overrides the response-body limit (tests or a stricter tool).
+func (e *Egress) SetMaxBytes(n int64) {
+	if n > 0 {
+		e.maxBytes = n
+	}
+}
+
 func (e *Egress) CheckURL(raw string) error {
 	return e.sandbox.CheckURL(raw)
 }
 
-// Do performs one request after the sandbox check.
+// Do performs one request after the sandbox check. The response body is
+// wrapped so reads beyond the configured limit fail rather than silently
+// pulling unbounded data.
 func (e *Egress) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
 	if req == nil || req.URL == nil {
 		return nil, fmt.Errorf("egress: request has no url")
@@ -175,7 +204,52 @@ func (e *Egress) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	if err := e.CheckURL(req.URL.String()); err != nil {
 		return nil, err
 	}
-	return e.client.Do(req.WithContext(ctx))
+	resp, err := e.client.Do(req.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	if resp.ContentLength > e.maxBytes {
+		_ = resp.Body.Close()
+		return nil, ErrResponseTooLarge
+	}
+	resp.Body = &limitedBody{ReadCloser: resp.Body, remaining: e.maxBytes + 1}
+	return resp, nil
+}
+
+// GetBytes reads a response with the configured limit.
+func (e *Egress) GetBytes(ctx context.Context, raw string) ([]byte, int, error) {
+	resp, err := e.Get(ctx, raw)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return body, resp.StatusCode, nil
+}
+
+type limitedBody struct {
+	io.ReadCloser
+	remaining int64
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.remaining <= 0 {
+		return 0, ErrResponseTooLarge
+	}
+	if int64(len(p)) > b.remaining {
+		p = p[:b.remaining]
+	}
+	n, err := b.ReadCloser.Read(p)
+	b.remaining -= int64(n)
+	if b.remaining <= 0 {
+		// We allowed exactly maxBytes+1 bytes; consuming all of them means the
+		// body is over the limit.
+		return n, ErrResponseTooLarge
+	}
+	return n, err
 }
 
 // Get is a convenience wrapper for read-only tools.
@@ -304,6 +378,7 @@ type Harness struct {
 	egress           *Egress
 	budget           *Budget
 	receipts         ReceiptStore
+	workspace        *Workspace
 	allowDestructive bool
 	now              func() time.Time
 }
@@ -322,6 +397,30 @@ func New(reg *Registry, gate Gate, auditor Auditor, sandbox *Sandbox, budget *Bu
 }
 
 func (h *Harness) SetAllowDestructive(v bool) { h.allowDestructive = v }
+
+// SetWorkspace confines file tools with os.Root. It replaces any previous
+// workspace and closes it.
+func (h *Harness) SetWorkspace(dir string) error {
+	ws, err := OpenWorkspace(dir)
+	if err != nil {
+		return err
+	}
+	if h.workspace != nil {
+		_ = h.workspace.Close()
+	}
+	h.workspace = ws
+	return nil
+}
+
+func (h *Harness) Close() error {
+	if h.workspace == nil {
+		return nil
+	}
+	err := h.workspace.Close()
+	h.workspace = nil
+	return err
+}
+
 func (h *Harness) SetReceiptStore(s ReceiptStore) {
 	if s != nil {
 		h.receipts = s
@@ -359,6 +458,10 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	if spec.NetworkEgress && (h.sandbox == nil || len(h.sandbox.AllowedHosts) == 0) {
 		return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
 			"harness: network tool %s requires a non-empty egress allowlist", toolName)
+	}
+	if (spec.ReadsFiles || spec.WritesFiles) && h.workspace == nil {
+		return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+			"harness: file tool %s requires a workspace", toolName)
 	}
 
 	key := strings.TrimSpace(in.Request.IdempotencyKey)
@@ -464,6 +567,9 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	tc := ToolContext{Request: in.Request, Decision: decision, Budget: h.budget}
 	if spec.NetworkEgress {
 		tc.Egress = h.egress
+	}
+	if spec.ReadsFiles || spec.WritesFiles {
+		tc.Workspace = h.workspace
 	}
 	res, err := tool.Execute(ctx, tc)
 	if err != nil {

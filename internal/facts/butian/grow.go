@@ -10,6 +10,7 @@ import (
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/facts"
+	"github.com/Zn070515/BountyGrid/internal/timeutil"
 )
 
 // GrowExtractor parses the GROW AI-track rules modal and the activity-center
@@ -106,10 +107,7 @@ func makeFact(in facts.Input, pred string, v any) domain.ObservedFact {
 // matches how Chinese platforms display "截止到 11 月 30 日".
 func parseDate(s string, endOfDay bool) (time.Time, error) {
 	s = strings.TrimSpace(s)
-	loc, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		loc = time.FixedZone("CST", 8*60*60)
-	}
+	loc := timeutil.BusinessLocation()
 	layouts := []string{"2006.1.2", "2006.01.02", "2006/1/2", "2006/01/02"}
 	for _, l := range layouts {
 		if t, err := time.ParseInLocation(l, s, loc); err == nil {

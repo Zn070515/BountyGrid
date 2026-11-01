@@ -14,6 +14,7 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/adapter/butian"
 	"github.com/Zn070515/BountyGrid/internal/adapter/vulbox"
 	"github.com/Zn070515/BountyGrid/internal/adapter/xianzhi"
+	"github.com/Zn070515/BountyGrid/internal/collections"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/sidecar"
 	"github.com/Zn070515/BountyGrid/internal/store/postgres"
@@ -388,7 +389,7 @@ func mergeJoinedPrograms(ctx context.Context, w snapshotWriter, platform domain.
 		}
 		acct = domain.Account{ID: accountID, Platform: platform}
 	}
-	acct.JoinedProgramIDs = unionProgramIDs(acct.JoinedProgramIDs, ids)
+	acct.JoinedProgramIDs = collections.Union(acct.JoinedProgramIDs, ids)
 	acct.ObservedAt = time.Now().UTC()
 	if err := w.UpsertAccount(ctx, acct); err != nil {
 		return fmt.Errorf("sync: persist joined programs for %s: %w", accountID, err)
@@ -419,7 +420,7 @@ func persistAccount(ctx context.Context, w snapshotWriter, snap adapter.AccountS
 	// usually does not repeat it. Union with the stored list so account sync
 	// never erases what the program-list sync observed.
 	if existing, err := w.GetAccount(ctx, acct.ID); err == nil {
-		acct.JoinedProgramIDs = unionProgramIDs(existing.JoinedProgramIDs, acct.JoinedProgramIDs)
+		acct.JoinedProgramIDs = collections.Union(existing.JoinedProgramIDs, acct.JoinedProgramIDs)
 	} else if !errors.Is(err, postgres.ErrNotFound) {
 		return fmt.Errorf("sync: load account %s: %w", acct.ID, err)
 	}
@@ -427,21 +428,6 @@ func persistAccount(ctx context.Context, w snapshotWriter, snap adapter.AccountS
 		return fmt.Errorf("sync: persist account %s: %w", acct.ID, err)
 	}
 	return nil
-}
-
-func unionProgramIDs(a, b []domain.ProgramID) []domain.ProgramID {
-	seen := make(map[domain.ProgramID]struct{}, len(a)+len(b))
-	out := make([]domain.ProgramID, 0, len(a)+len(b))
-	for _, ids := range [][]domain.ProgramID{a, b} {
-		for _, id := range ids {
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			out = append(out, id)
-		}
-	}
-	return out
 }
 
 func persistEvidenceFacts(ctx context.Context, w snapshotWriter, evs []domain.Evidence, fs []domain.ObservedFact) error {

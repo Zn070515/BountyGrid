@@ -3,6 +3,8 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -52,6 +54,11 @@ func (e ExecutionEnvironment) Validate() error {
 	}
 	if e.VPNConnected != "" && !e.VPNConnected.Valid() {
 		return fmt.Errorf("execution environment: invalid vpn state %q", e.VPNConnected)
+	}
+	if strings.TrimSpace(e.EgressIP) != "" {
+		if _, err := netip.ParseAddr(strings.TrimSpace(e.EgressIP)); err != nil {
+			return fmt.Errorf("execution environment: invalid egress ip %q", e.EgressIP)
+		}
 	}
 	return nil
 }

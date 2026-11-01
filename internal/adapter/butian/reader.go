@@ -2,6 +2,7 @@ package butian
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -471,16 +472,11 @@ func (r *Reader) extractCards(ctx context.Context) ([]srcCard, int, bool, error)
 	return all, total, noData, nil
 }
 
+//go:embed scripts/extract_cards.js
+var extractCardsTemplate string
+
 func extractCardsJS(offset, limit int) string {
-	return fmt.Sprintf(`(() => {
-  const cards=[...document.querySelectorAll('.plan-exclusive-src .company-card')];
-  const out=cards.slice(%d,%d).map(c=>{
-    const name=((c.querySelector('.name')||{}).textContent||'').trim();
-    const text=(c.textContent||'').replace(/\s+/g,' ').trim();
-    return {name,text:text.slice(0,220),buttons:[...c.querySelectorAll('button')].map(b=>(b.textContent||'').trim())};
-  });
-  return JSON.stringify({cards:out,total:cards.length,noData:(document.body.textContent||'').includes('暂无数据')});
-})()`, offset, offset+limit)
+	return fmt.Sprintf(extractCardsTemplate, offset, offset+limit)
 }
 
 func (r *Reader) SyncScope(ctx context.Context, id domain.ProgramID) (adapter.ScopeSnapshot, error) {

@@ -1,11 +1,12 @@
 package model
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -116,12 +117,11 @@ func (r *Router) Candidates(req ModelRequest) []ProviderInfo {
 		}
 		out = append(out, info)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		si, sj := routeScore(req, out[i]), routeScore(req, out[j])
-		if si != sj {
-			return si < sj
+	slices.SortStableFunc(out, func(a, b ProviderInfo) int {
+		if c := cmp.Compare(routeScore(req, a), routeScore(req, b)); c != 0 {
+			return c
 		}
-		return out[i].Name < out[j].Name
+		return cmp.Compare(a.Name, b.Name)
 	})
 	return out
 }

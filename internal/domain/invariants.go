@@ -2,7 +2,10 @@ package domain
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
+
+	"github.com/Zn070515/BountyGrid/internal/timeutil"
 )
 
 func (e Evidence) Validate() error {
@@ -347,10 +350,18 @@ func (c Constraints) Validate() error {
 		if w.Start.IsZero() || w.End.IsZero() || !w.End.After(w.Start) {
 			return fmt.Errorf("constraints: invalid allowed time window")
 		}
+		if w.TZ != "" {
+			if _, err := timeutil.LoadLocation(w.TZ); err != nil {
+				return fmt.Errorf("constraints: invalid time window tz %q", w.TZ)
+			}
+		}
 	}
 	for _, ip := range c.AllowedEgressIPs {
 		if strings.TrimSpace(ip) == "" {
 			return fmt.Errorf("constraints: allowed egress ip is empty")
+		}
+		if _, err := netip.ParseAddr(strings.TrimSpace(ip)); err != nil {
+			return fmt.Errorf("constraints: invalid allowed egress ip %q", ip)
 		}
 	}
 	return nil

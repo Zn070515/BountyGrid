@@ -23,6 +23,7 @@ type harnessOptions struct {
 	RequestFile  string
 	BudgetCNY    int64
 	AllowedHosts string
+	Workspace    string
 	Destructive  bool
 }
 
@@ -34,6 +35,7 @@ func parseHarnessOptions(args []string) (harnessOptions, error) {
 	fs.StringVar(&o.RequestFile, "request", "", "JSON file with the ActionRequest and context")
 	fs.Int64Var(&o.BudgetCNY, "budget", 100, "maximum tool cost in CNY")
 	fs.StringVar(&o.AllowedHosts, "allowed-hosts", "", "comma-separated egress allowlist")
+	fs.StringVar(&o.Workspace, "workspace", "", "directory root for file tools (os.Root-confined)")
 	fs.BoolVar(&o.Destructive, "allow-destructive", false, "allow tools marked destructive")
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -88,6 +90,12 @@ func runHarness(ctx context.Context, args []string) error {
 		&harness.Budget{MaxCost: domain.Money{Amount: opts.BudgetCNY, Currency: "CNY"}})
 	h.SetAllowDestructive(opts.Destructive)
 	h.SetReceiptStore(repo)
+	if opts.Workspace != "" {
+		if err := h.SetWorkspace(opts.Workspace); err != nil {
+			return err
+		}
+		defer func() { _ = h.Close() }()
+	}
 
 	decision, res, err := h.Execute(ctx, opts.Tool, gateway.EvaluateInput{
 		Request: in.Request, ResourceID: in.ResourceID,

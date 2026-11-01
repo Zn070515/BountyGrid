@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -252,6 +253,55 @@ func TestSummaryResolvesReversalTargetOutsidePeriod(t *testing.T) {
 	}
 }
 
+func TestReversalRetryIsIdempotent(t *testing.T) {
+	store := newFakeStore()
+	ev := &fakeEvidence{ids: map[domain.EvidenceID]bool{"ev1": true}}
+	s, _ := testService(t, store, &fakeSubs{}, ev)
+	if _, err := s.Append(context.Background(), paidEntry("l-paid", 10000)); err != nil {
+		t.Fatal(err)
+	}
+	rev := baseEntry("l-rev", domain.LedgerReversal, 10000)
+	rev.ReversesID = "l-paid"
+	if _, err := s.Append(context.Background(), rev); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(context.Background(), rev); err != nil {
+		t.Fatalf("idempotent reversal retry: %v", err)
+	}
+}
+
+func TestEntryIDsDistinguishExternalRefs(t *testing.T) {
+	a := paidEntry("", 100)
+	a.ExternalRef = "bank-a"
+	b := paidEntry("", 100)
+	b.ExternalRef = "bank-b"
+	if entryID(a) == entryID(b) {
+		t.Fatal("different external refs produced the same generated ID")
+	}
+	c := a
+	if entryID(a) != entryID(c) {
+		t.Fatal("identical entries must be idempotent")
+	}
+}
+
+func TestPlatformWideSummary(t *testing.T) {
+	store := newFakeStore()
+	ev := &fakeEvidence{ids: map[domain.EvidenceID]bool{"ev1": true}}
+	a := paidEntry("a-paid", 1000)
+	b := paidEntry("b-paid", 2000)
+	b.ProgramID = "p2"
+	store.entries[a.ID] = a
+	store.entries[b.ID] = b
+	s, _ := testService(t, store, &fakeSubs{}, ev)
+	out, err := s.Summary(context.Background(), domain.PlatformVulbox, "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Programs != 2 || out.PaidNet.Amount != 3000 || out.PaidCount != 2 {
+		t.Fatalf("platform summary = %+v", out)
+	}
+}
+
 func TestReconcile(t *testing.T) {
 	summary := Summary{Currency: "CNY", PaidNet: cny(6000)}
 	platform := cny(6000)
@@ -291,5 +341,21 @@ func TestSummarizeRejectsMixedPrograms(t *testing.T) {
 	entries[1].ProgramID = "p2"
 	if _, err := Summarize(entries); !errors.Is(err, ErrInvalidEntry) {
 		t.Fatalf("err = %v, want ErrInvalidEntry", err)
+	}
+}
+
+func BenchmarkSummarize(b *testing.B) {
+	entries := make([]domain.LedgerEntry, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		e := paidEntry(fmt.Sprintf("e-%d", i), 100)
+
+		e.ExternalRef = fmt.Sprintf("bank-%d", i)
+		entries = append(entries, e)
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := Summarize(entries); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

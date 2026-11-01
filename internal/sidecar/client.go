@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -201,10 +202,15 @@ func (c *Client) run(ctx context.Context, stdin string, capture bool, args ...st
 	full := append(c.baseArgs(), args...)
 	callCtx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
 	defer cancel()
+	started := time.Now()
 	out, err := c.runner.Run(callCtx, stdin, capture, full...)
 	if err != nil {
+		slog.Debug("sidecar.run", "session", c.cfg.Session, "command", args[0],
+			"duration_ms", time.Since(started).Milliseconds(), "error", true)
 		return nil, fmt.Errorf("sidecar: %s: %w", args[0], err)
 	}
+	slog.Debug("sidecar.run", "session", c.cfg.Session, "command", args[0],
+		"duration_ms", time.Since(started).Milliseconds(), "error", false)
 	return bytes.TrimSpace(out), nil
 }
 
