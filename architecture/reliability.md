@@ -198,7 +198,8 @@ type Executor interface {
   - `NeedsAsset()` 动作必须有 authorization 提供的权威 asset，且 proposal 的 asset 必须一致；模型不能自带 asset；
   - proposal 参数必须是合法 JSON 且不含敏感值（普通扫描 + JSON 去引号扫描，覆盖 `"token":"..."` 形态）。
   - 排序：confidence 降序 → estimated cost 升序 → 原始顺序。
-- `Loop.Run` 每轮：`Compile` → `Propose`（若实现 `UsageProposer`，同时返回输入/输出 token）→ 把 usage 计入 `session.Budget`（即使 proposer 同时返回 error，已报告的 usage 也先入账，避免超时计费漏记），若达到 `MaxTokens` 立即停止且不执行本轮提案 → `RankProposals` → 过滤“同 tool+args 已 `INTERRUPTED`”的提案 → 取第 1 个 → 消耗 step/tool-call → **写 `STARTED` attempt 并 checkpoint** → `Executor.Execute` → 用 `ReplaceAttempt` 记录 observation/fact/failure → `LoopDetector.Observe` → 下一轮重新编译。
+- `internal/reliability.ModelProposer` 把 `model.Router` 适配成 `Proposer`/`UsageProposer`：固定 `Purpose=PLAN`、默认 `DataClass=INTERNAL`、按 `step` 生成 worker-safe 稳定 `CallID`，并把 Router 返回的 token 用量、实际成本、`CallID` 和 model 名称回填到 `ProposerUsage`。模型输出先经 `ParseProposals` 严格解析；解析失败是“没有提案”，但已付费的 usage 仍会入账。Router 的 `ModelCall/ModelCallAttempt` 仍是成本权威账本，`ProposerUsage.CallID` 是可靠性步骤与它的关联键。
+- `Loop.Run` 每轮：`Compile` → `Propose`（若实现 `UsageProposer`，同时返回输入/输出 token、成本与 `CallID`）→ 把 usage 计入 `session.Budget`（即使 proposer 同时返回 error，已报告的 usage 也先入账，避免超时计费漏记），若达到 `MaxTokens` 立即停止且不执行本轮提案 → `RankProposals` → 过滤“同 tool+args 已 `INTERRUPTED`”的提案 → 取第 1 个 → 消耗 step/tool-call → **写 `STARTED` attempt 并 checkpoint** → `Executor.Execute` → 用 `ReplaceAttempt` 记录 observation/fact/failure → `LoopDetector.Observe` → 下一轮重新编译。
 - 进入新一轮 `Run`（或 `Resume`）时，任何残留 `STARTED` 会先转为 `INTERRUPTED`；上下文在 `FAILED APPROACHES` 中显示 `outcome_unknown do_not_repeat`。重放被阻止是 fail-safe：崩溃可能发生在工具已产生副作用之后。
 - 不存在“模型一次返回长程 plan 并自行执行”的路径；plan 只能体现为每步 1–3 个候选。
 - 执行错误不会中止循环：错误被转成 `FailureSignature`，写入 attempt，并进入下一轮上下文；只有 context/配置/状态校验错误才返回 error。
@@ -282,7 +283,7 @@ CandidateFinding.ToFinding()
 - 状态中不保存原始页面、cookie/token/密码/证件/银行卡/完整手机号/邮箱。
 - 检测器只在有证据/事实进展时重置；没有进展的重复调用不能无限消耗预算。
 - 工具执行前必须存在可恢复的 `STARTED` attempt；残留的 `STARTED` 只能转为 `INTERRUPTED`，不能自动重放同一 tool+args。
-- 每次 Proposer 推理的 token 必须计入会话预算；达到上限后不得执行本轮提案。
+- 每次 Proposer 推理的 token 必须计入会话预算；达到上限后不得执行本轮提案。成本与 `ModelCall` 关联（`ProposerUsage.CallID`）随执行步骤返回，供上层与模型账本对账。
 - 持久化保存必须是 revision CAS；旧快照不能覆盖新快照。Store 默认必需，只有显式 `AllowEphemeral` 才能省略。
 
 ## 9. 当前实现与测试
@@ -295,7 +296,9 @@ CandidateFinding.ToFinding()
 - `internal/reliability/planner.go`：`ActionProposal`、`Proposer`/`Planner`、`Executor`、`RankProposals`、`Loop`。
 - `internal/reliability/detector.go`：`FailureSignature`、`LoopDetector`/`StallDetector`、阈值、进展重置。
 - `internal/reliability/failure.go`：`FailureReport` 与安全渲染。
-- `internal/reliability/store.go`：`SessionStore`、原子 `FileSessionStore`、`Resume` 支持的 checkpoint。
+- `internal/reliability/store.go`：`SessionStore`、原子 `FileSessionStore`、OS advisory lock、revision CAS、`Resume` 支持的 checkpoint。
+- `internal/reliability/model_proposer.go`：`ModelProposer` 把 `model.Router` 适配为 `Proposer`/`UsageProposer`，回填 token/成本/`CallID`/model。
+- `internal/reliability/proposal_parse.go`：`ParseProposals` 严格解析模型输出（对象/数组/围栏/正文包裹），只取 action/tool 的裸 token。
 
 测试覆盖：
 
@@ -306,10 +309,11 @@ CandidateFinding.ToFinding()
 - 3/5 阈值、可配置阈值、不同 args 不计重复、无进展检测、新 evidence/fact 恢复、重复 error/hypothesis 升级、token/tool 预算、Reset；
 - FailureSignature 规范化与大小写/参数顺序；FailureReport 不含原始参数、去重、稳定排序。
 - 执行前 `STARTED` checkpoint、执行后 `ReplaceAttempt`（身份不可改写）、崩溃残留转 `INTERRUPTED`、同 tool+args 不重放、`Resume` 标记 in-flight、上下文显示 `outcome_unknown`。
+- `ModelProposer` 的请求构造（PLAN/INTERNAL、Program/Task/Step、稳定 CallID）、Router usage/cost/CallID 回填、模型输出解析失败时 no-proposal 但仍计费、`ParseProposals` 的对象/数组/围栏/正文/suffix 变体；Loop 联合作账测试断言 token 预算、步骤 `Usage` 与 `ModelCall` 关联键。
 
 ## 10. 残余限制
 
-- 没有真实模型适配器；`Proposer`/`Executor` 由调用方实现。模型身份、量化、chat template、tool protocol 等 serving metadata 仍属于 `internal/model`/trace 的后续工作。
+- 已有 `ModelProposer` 把 `model.Router` 适配为 `Proposer`/`UsageProposer`，但仍无真实模型 Provider（Router 侧只有测试/dry-run provider）；模型身份、量化、chat template、tool protocol 等 serving metadata 仍属于 `internal/model`/trace 的后续工作。
 - `EvidenceView` 由调用方策展；本包不负责从 `Evidence`/`ObservedFact` 自动生成视图，也不做 LLM summarization。它保证“视图有界、ID 稳定、无 raw 页面字段”。
 - 检测器是启发式：阈值和“无进展”定义可由上层配置；它不替代人工复核，也不产生 `VERIFIED`。
 - 研究状态默认是内存结构；`FileSessionStore` 提供单机 JSON 持久化、revision CAS 与 checkpoint，但尚未接入 PostgreSQL/跨进程 trace。文件锁是单机 advisory lock：NFS/多主机共享目录不保证单写者；跨主机长期应迁移到 PostgreSQL 行锁/租约。

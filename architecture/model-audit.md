@@ -112,6 +112,12 @@ req.CallID = model.StableCallID(req.TaskID, req.StepID, req.Purpose, model.Promp
 `Router.Options.RequireStableCallID=true` 会拒绝空 `CallID`，防止 worker 误用
 自动 ID。交互/adhoc 调用可以继续使用自动 ID（带时间戳与序列号）。
 
+`internal/reliability.ModelProposer` 默认按 `(session.TaskID, step-N, PLAN,
+promptHash)` 生成稳定 `CallID`，并把 Router 返回的 usage、实际成本、`CallID`
+与 model 名称回填到 `ProposerUsage`。可靠性步骤因此能和这里的 `ModelCall`
+行对上账；成本权威仍在 `ModelCallAttempt`，`ProposerUsage.CallID` 只是关联键。
+`DisableStableCallID` 只用于交互/测试。
+
 ## 5. 路由策略与 Provider 信任边界
 
 `ModelRequest.ModelEgress`、`Redacted`、`Escalation` 只是 CLI/测试提示，

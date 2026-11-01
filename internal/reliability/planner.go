@@ -69,6 +69,14 @@ type Planner = Proposer
 type ProposerUsage struct {
 	InputTokens  int
 	OutputTokens int
+	// Cost is the actual provider cost the Router reported for this call. It is
+	// informational for the token budget but is persisted on the executed step
+	// so a session can be reconciled with the ModelCall ledger.
+	Cost domain.Money
+	// CallID links this step to the Router's ModelCall / ModelCallAttempt rows.
+	CallID string
+	// Model is the provider-reported model name.
+	Model string
 }
 
 // Total returns the tokens charged to the session budget.
