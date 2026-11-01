@@ -230,6 +230,48 @@ func TestRepoRoundTrip(t *testing.T) {
 		t.Fatalf("decision roundtrip: %+v %v", gotDecision, err)
 	}
 
+	// Decision + audit are atomic.
+	txDecision := d
+	txDecision.ID = domain.DecisionID("it-dec-tx-" + suffix)
+	txDecision.RequestID = "it-req-tx-" + suffix
+	if err := r.RecordDecisionWithAudit(ctx, txDecision, audit.Event{
+		Type: "action.decision", EntityType: "decision", EntityID: string(txDecision.ID),
+		RecordedAt: now, Payload: json.RawMessage(`{"decision":"ALLOW"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewAuditStore(r.Pool).List(ctx, audit.Filter{EntityID: string(txDecision.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM action_decisions WHERE program_id=$1`, progID)
+	})
+
+	// Execution receipts are keyed by idempotency key.
+	rec := domain.ExecutionReceipt{
+		ID: "it-receipt-" + suffix, IdempotencyKey: "it-idem-" + suffix,
+		DecisionID: txDecision.ID, ToolName: "view_rules", Action: domain.ActionViewRules,
+		ProgramID: progID, Status: domain.ReceiptStarted, StartedAt: now, UpdatedAt: now,
+	}
+	if err := r.CreateReceipt(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM execution_receipts WHERE idempotency_key=$1`, rec.IdempotencyKey)
+	})
+	if err := r.CreateReceipt(ctx, rec); !errors.Is(err, domain.ErrReceiptExists) {
+		t.Fatalf("duplicate receipt = %v, want ErrReceiptExists", err)
+	}
+	rec.Status = domain.ReceiptCompleted
+	rec.UpdatedAt = now.Add(time.Second)
+	if err := r.UpdateReceipt(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	gotRec, err := r.GetReceipt(ctx, rec.IdempotencyKey)
+	if err != nil || gotRec.Status != domain.ReceiptCompleted {
+		t.Fatalf("receipt roundtrip = %+v %v", gotRec, err)
+	}
+
 	oppID := domain.OpportunityID("it-opp-" + suffix)
 	taskID := domain.TaskID("it-task-" + suffix)
 	findingID := domain.FindingID("it-finding-" + suffix)
@@ -267,10 +309,61 @@ func TestRepoRoundTrip(t *testing.T) {
 	if gotConfidence != 0.9 || gotPenalty != 0.7 {
 		t.Fatalf("opportunity upsert did not refresh columns: %v/%v", gotConfidence, gotPenalty)
 	}
+	// An expired snapshot must not be returned for its scope.
+	staleComp := domain.CompetitionSnapshot{
+		ID: "it-comp-expired-" + suffix, Platform: domain.PlatformButian, Scope: "EXPIRED",
+		ObservedAt: now.Add(-2 * time.Hour), ValidUntil: now.Add(-time.Hour),
+		Top10Share: floatPtr(0.5), Confidence: 0.5,
+	}
+	if err := r.PutCompetitionSnapshot(ctx, staleComp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM competition_snapshots WHERE id=$1`, staleComp.ID)
+	})
+	if _, err := r.GetLatestCompetitionSnapshot(ctx, domain.PlatformButian, "EXPIRED"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired snapshot returned: %v", err)
+	}
+
 	task := domain.ResearchTask{ID: taskID, OpportunityID: oppID, ProgramID: progID, Status: "CREATED", CreatedAt: now}
 	if err := r.PutResearchTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	// Only one QUEUED task per program; the previous one is superseded.
+	q1 := task
+	q1.ID = taskID + "-q1"
+	q1.Status = "QUEUED"
+	if err := r.PutResearchTask(ctx, q1); err != nil {
+		t.Fatal(err)
+	}
+	q2 := task
+	q2.ID = taskID + "-q2"
+	q2.Status = "QUEUED"
+	q2.CreatedAt = now.Add(time.Second)
+	if err := r.PutResearchTask(ctx, q2); err != nil {
+		t.Fatal(err)
+	}
+	var queuedCount int
+	var q1Status string
+	if err := r.Pool.QueryRow(ctx, `SELECT count(*) FROM research_tasks WHERE program_id=$1 AND status='QUEUED'`, progID).Scan(&queuedCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Pool.QueryRow(ctx, `SELECT status FROM research_tasks WHERE id=$1`, q1.ID).Scan(&q1Status); err != nil {
+		t.Fatal(err)
+	}
+	if queuedCount != 1 || q1Status != "SUPERSEDED" {
+		t.Fatalf("active task uniqueness: queued=%d q1=%s", queuedCount, q1Status)
+	}
+	times, err := r.LatestResearchTaskTimes(ctx, domain.PlatformButian)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if times[progID].IsZero() {
+		t.Fatalf("latest task time missing for %s", progID)
+	}
+	t.Cleanup(func() {
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM research_tasks WHERE program_id=$1`, progID)
+	})
 	finding := domain.Finding{ID: findingID, TaskID: taskID, ProgramID: progID, Title: "it", Status: "CANDIDATE", CreatedAt: now}
 	if err := r.PutFinding(ctx, finding); err != nil {
 		t.Fatal(err)

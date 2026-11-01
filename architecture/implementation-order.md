@@ -19,13 +19,16 @@
 | 阶段 | 状态 |
 |---|---|
 | Phase 0：domain + evidence + PostgreSQL schema/repositories/rollback + CLI | 完成 |
-| Phase 1：Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 进行中：1.1 已完成；1.2 公开列表/账号代码已落地，账号实测待人工登录；1.3/1.4 未开始 |
-| Phase 2：Facts + State | 提前实现并硬化（Reader 接入后回填真实 Fact） |
-| Phase 3：Policy Engine | 提前实现并硬化 |
-| Phase 4：Opportunity / Scheduler | Phase 1 Reader 接入之后 |
-| Phase 5+：Harness / Model Router / Verification / Submission / Ledger | 规划中 |
+| Phase 1：Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 基本完成：三平台主路径已实测并落库；部分 scope/detail 与数据语义仍在收口 |
+| Phase 2：Facts + State | 已实现并硬化；State TTL 受输入 Fact 年龄限制 |
+| Phase 3：Policy Engine / Gateway | 已实现并硬化：authoritative Asset、ExecutionEnvironment、Authorize 重评估、审批在执行前消费 |
+| Phase 4：Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、唯一 QUEUED 任务、CompetitionSnapshot TTL/decay |
+| Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执已实现；Model Router 未实现，无 ACTIVE_HTTP 工具 |
+| Phase 6+：Verification / Submission / Ledger | 领域类型为主，未进入 |
 
-> 当前实现顺序与 canonical 阶段存在交叉：Phase 2/3 的内核先于 Phase 1 Reader 落地，这是为了先把安全不变量固定下来；不改变 Phase 1 的定义，也不把 Reader 推迟成“Phase 2”。
+> **真实状态：Phase 0 complete; Phase 1–5 partially implemented; active execution remains disabled.**
+>
+> 当前实现顺序与 canonical 阶段存在交叉：Phase 2/3 的内核先于 Phase 1 Reader 完整落地，这是为了先把安全不变量固定下来；不改变 Phase 1 的定义，也不把 Reader 推迟成“Phase 2”。
 
 ## 0. 基础层（无业务依赖）
 
@@ -56,7 +59,7 @@
 - 会话保存/恢复；不在日志输出 Cookie。
 - 退出条件：能打开登录页、检测会话、截图、保存 state。
 
-**当前实现**：`internal/sidecar` 包装 `agent-browser` CLI，只暴露 `open/wait/eval/get/screenshot/state save/close`；没有 click/fill。会话检测与 state 保存已由探针验证；产品 Reader 复用 `vbprobe`。剩余：把 CLI 包装升级为长期驻留 RPC（当前每次命令一个进程）时再评估。
+**当前实现**：`internal/sidecar` 包装 `agent-browser` CLI，暴露 `open/wait/reload/eval/get/screenshot/state save/close`；没有 click/fill 命令。它不是安全边界：`Eval` 可执行任意 JS，Reader 只把它用于只读观察与分页/弹窗控制，Harness/Model 不得直接持有。会话检测与 state 保存已由探针验证；产品 Reader 复用 `vbprobe`。剩余：把 CLI 包装升级为长期驻留 RPC（当前每次命令一个进程）时再评估。
 
 ### 1.2 Vulbox Reader
 
@@ -123,6 +126,7 @@
 - 实测 Xianzhi 273 + Vulbox 100 = **373** 条 `derived_states`；`inputs` 为空 0、confidence 越界 0、已过期 0。
 - Fact supersede 已在 PostgreSQL 同一事务内失效下游 State（`valid_until=now()`，`inputs` GIN 索引）；集成测试覆盖。
 - 显式 `RUNNING` 不再覆盖已过的 inclusive end（修复 live 发现的问题）。
+- State 不能比输入 Fact 更新：`ValidUntil = min(now+TTL, oldestSelectedFact+30d)`，`ObservedAt` 记录最旧所选 Fact 的观察时间；超过 30 天的 Fact 不能生成新 State。
 - 仍差：AccountAbility/Competition 状态派生、Adapter 自动触发 re-derive、GROW/Vulbox 暂停重开回归接入 CLI。
 
 ## 3. Policy Engine
@@ -146,11 +150,10 @@
 
 **当前实现（2026-10-31）**：
 
-- `internal/gateway`：`Evaluate` 从 PostgreSQL 加载 Account/Program，调用 Policy Engine，持久化 `ActionDecision` + `action.decision` 审计；缺失上下文持久化 `DENY CONTEXT_NOT_FOUND`。
-- `Authorize`：执行前校验 ALLOW、`ExpiresAt > now`、human-only 审批存在；执行类动作要求 Program `RUNNING` 且状态未过期。Gateway 不执行平台动作。
-- `cmd/bountygrid decide` 已接 PostgreSQL 一次性审批账本；单测覆盖重复审批返回 REQUIRE_HUMAN。
-- 实测：VIEW_RULES ALLOW + authorize=true；REPORT_SUBMIT DENY ACCOUNT_CANNOT_SUBMIT；ACTIVE_HTTP 缺 Asset DENY ASSET_REQUIRED；`action_decisions=3`、审计 3 条。
-- 仍差：人工队列/Decision 缓存、Harness 工具注册（Phase 5）尚未接入。
+- `internal/gateway`：`Evaluate` 从 PostgreSQL 加载 Account/Program，从 `Program.Scope.ResolveAsset` 解析 canonical Asset，调用 Policy Engine，持久化 `ActionDecision` + `action.decision` 审计；缺失上下文/未知资产持久化 DENY。PostgreSQL 使用 `RecordDecisionWithAudit` 把决策与审计写进同一事务。
+- `Authorize`：执行前校验 ALLOW/`ExpiresAt`，然后重新加载 Account/Program、重新解析 Asset 并重跑 Policy；Scope/Automation/Eligibility 变化后旧 ALLOW 直接失败。single-use 审批只在重评估通过后原子消费。Gateway 不执行平台动作。
+- 实测：VIEW_RULES ALLOW + authorize=true；REPORT_SUBMIT DENY ACCOUNT_CANNOT_SUBMIT；ACTIVE_HTTP 缺 Asset DENY ASSET_REQUIRED；未知 AssetID DENY ASSET_UNKNOWN；`action_decisions=3`、审计 3 条。
+- 仍差：人工队列 UI、Decision 缓存、Model Router。
 
 ## 4. Opportunity + Scheduler
 
@@ -159,7 +162,7 @@
 - 三平台榜单/项目数/奖励池；Top1/3/10 share；confidence。
 - 退出条件：先知 70.8%、漏洞盒子 Top10 传说、补天 164,012 元三个样本可复算。
 
-**当前实现（2026-10-31）**：`competition` CLI 从带 Evidence 的 JSON 导入快照，校验 share/confidence，写 `competition_snapshots`；三份审计快照已落库（先知 0.708/0.7、漏洞盒子 0.5/0.5、补天 0.5/0.5，后两者 top10 share 缺失按 0.5 保守估计并在 Evidence 注明）。`schedule` 读取每平台最新 PLATFORM 快照；重调度后 Vulbox confidence 0.5/penalty 0.645、Xianzhi 0.7/0.608。剩余：自动采集榜单（当前是人工导入）、Program-scoped 快照。
+**当前实现（2026-11-01）**：`competition` CLI 从带 Evidence 的 JSON 导入快照，校验 share/confidence 与 `top1 <= top3 <= top10`，写 `competition_snapshots`；导入时设置 `valid_until = observed_at + 30d`。三份审计快照已落库（先知 0.708/0.7、漏洞盒子 0.5/0.5、补天 0.5/0.5，后两者 top10 share 缺失按 0.5 保守估计并在 Evidence 注明）。`schedule` 只读取未过期快照；Opportunity Engine 在 7 天后线性衰减 confidence，30 天后完全忽略，并在 `inputs` 记录 `competition_age_hours`/`competition_decay`。剩余：自动采集榜单（当前是人工导入）、Program-scoped 快照。
 
 ### 4.2 Opportunity Engine
 
@@ -167,14 +170,14 @@
 - 无数据时保守先验。
 - 退出条件：不得用“最高赏金”排序；分数可解释（inputs/weights）。
 
-**当前实现（2026-10-31）**：`internal/opportunity.Engine` 已实现；`Inputs[]` 记录 p_valid、min/median/max 权重、top10/duplicate/saturation 权重、penalty、cost、confidence。缺 CompetitionSnapshot 时 penalty=0.5/0.5/0.5、confidence=0.2。单测覆盖“高最高赏金但高集中度”输给小赏金程序，以及先知 70.8%/漏洞盒子/补天 164,012 元三个竞争样本。
+**当前实现（2026-11-01）**：`internal/opportunity.Engine` 已实现；`Inputs[]` 记录 p_valid、min/median/max 权重、top10/duplicate/saturation 权重、penalty、cost、confidence。缺/过期 CompetitionSnapshot 时 penalty=0.5/0.5/0.5、confidence=0.2。每次评分的 `OpportunityID` 含评估时间（append-only），不会覆盖历史。单测覆盖“高最高赏金但高集中度”输给小赏金程序，以及先知 70.8%/漏洞盒子/补天 164,012 元三个竞争样本。
 
 ### 4.3 Scheduler
 
 - 硬过滤 → 打分 → 配额 → 人工队列 → 冷却 → kill switch。
 - 退出条件：PAUSED/ENDED 不派发；人工队列不自动执行。
 
-**当前实现（2026-10-31）**：`schedule` 从 PostgreSQL 读取 Program + 最新 `PROGRAM_STATE` + Account；RUNNING 才评分；CanSubmit/Eligibility/Scope 不满足只进 HumanActionQueue；Top-K/每平台/每项目配额/企业SRC保留位；Persist 写 `opportunities` 与 `research_tasks`（`QUEUED`/`HUMAN_ACTION_REQUIRED`），不执行。实测 Vulbox 9 human/0 research（账号能力未观测）、40 paused/ended 排除、无平台动作。仍差：CompetitionSnapshot 采集、Harness 执行、人工队列 UI、Ledger 反馈。
+**当前实现（2026-11-01）**：`schedule` 从 PostgreSQL 读取 Program + 最新 `PROGRAM_STATE` + Account；RUNNING 才评分；CanSubmit/Eligibility/Scope 不满足只进 HumanActionQueue；Top-K/每平台/每项目配额/企业SRC保留位；Persist 写 `opportunities` 与 `research_tasks`（`QUEUED`/`HUMAN_ACTION_REQUIRED`），不执行。任务 ID 为 `task/<program>/<schedule-run>`；同一 Program 只保留一个 `QUEUED` 任务（旧任务标 `SUPERSEDED`）；cooldown 从 `research_tasks` 读取，不再依赖调用方传空 `Existing`。仍差：Harness 自动领取、人工队列 UI、Ledger 反馈。
 
 ## 5. Harness + Model Router
 
@@ -184,7 +187,7 @@
 - 沙箱/网络白名单/预算。
 - 退出条件：工具无法绕过 Policy；越权请求被 DENY。
 
-**当前实现（2026-10-31）**：`internal/harness` 的 Registry 校验工具名/动作/重复；Harness 强制 Evaluate→ALLOW→Authorize→Execute，DENY/REQUIRE_HUMAN 不调用工具；Sandbox 默认拒绝 egress（通配符只匹配子域），Budget 在执行前检查；Destructive 默认禁用。内置 `view_rules/read_scope/report_draft` 只读工具；`tool.executed` 审计。实测 ALLOW 执行、缺失账号 DENY 且工具未执行；`action_decisions=5`、`tool.executed=1`。仍差：Model Router、真实执行工具（本仓库禁止真实测试）、ResearchTask 自动领取。
+**当前实现（2026-11-01）**：`internal/harness` 的 Registry 校验工具名/动作/重复；Harness 强制 Evaluate→ALLOW→Budget→Authorize→Execute，DENY/REQUIRE_HUMAN 不调用工具；网络工具只拿到 `harness.Egress`（每次请求/重定向走 `Sandbox.CheckURL`），空 allowlist 直接拒绝；Destructive 默认禁用。`NetworkEgress`/`WritesFiles`/`Destructive` 工具必须有 `IdempotencyKey`，执行前预占 `execution_receipts`，重试回放而不再执行；工具已执行但审计失败时，回执保持 `EXECUTED`，重试只补审计。内置 `view_rules/read_scope/report_draft` 只读工具；`tool.executed` 审计。实测 ALLOW 执行、缺失账号 DENY 且工具未执行；`action_decisions=5`、`tool.executed=1`。仍差：Model Router、真实执行工具（本仓库禁止真实测试）、ResearchTask 自动领取。
 
 ### 5.2 Model Router
 

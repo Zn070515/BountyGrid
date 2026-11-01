@@ -2,17 +2,12 @@ package policy
 
 import (
 	"context"
-	"errors"
 	"regexp"
 	"testing"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
-
-type failingLedger struct{}
-
-func (failingLedger) Consume(context.Context, string) error { return errors.New("ledger unavailable") }
 
 var testNow = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 
@@ -132,7 +127,10 @@ func TestReportSubmitRequiresHumanApproval(t *testing.T) {
 	}
 }
 
-func TestApprovalIsSingleUse(t *testing.T) {
+// Decide validates a single-use approval but does not consume it. The
+// consumption gate lives in Gateway.Authorize so a decision that is never
+// executed does not burn the approval.
+func TestDecisionDoesNotConsumeApproval(t *testing.T) {
 	e := NewEngine()
 	dc := DecisionContext{
 		Request: req(domain.ActionReportSubmit), Account: testAccount(true),
@@ -140,15 +138,14 @@ func TestApprovalIsSingleUse(t *testing.T) {
 		Now:     testNow, ResourceID: "report1",
 		HumanApproval: approval(domain.ActionReportSubmit, "report1"),
 	}
-	if d, err := e.Decide(context.Background(), dc); err != nil || d.Decision != domain.DecisionAllow {
-		t.Fatalf("first decision = %v, %v", d.Decision, err)
-	}
-	d, err := e.Decide(context.Background(), dc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Decision != domain.DecisionRequireHuman {
-		t.Fatalf("reused approval decision = %s, want REQUIRE_HUMAN", d.Decision)
+	for i := 0; i < 2; i++ {
+		d, err := e.Decide(context.Background(), dc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Decision != domain.DecisionAllow {
+			t.Fatalf("decision %d = %s, want ALLOW (approval is consumed at Authorize)", i, d.Decision)
+		}
 	}
 }
 
@@ -631,17 +628,162 @@ func TestViewRulesWithStaleStateGetsLiveExpiry(t *testing.T) {
 	}
 }
 
-func TestApprovalLedgerFailureSurfaces(t *testing.T) {
+func TestProgramSignupRequiresAccountCapabilityAndRunningProgram(t *testing.T) {
 	e := NewEngine()
-	e.SetApprovalLedger(failingLedger{})
-	_, err := e.Decide(context.Background(), DecisionContext{
-		Request: req(domain.ActionReportSubmit), Account: testAccount(true),
+	p := testProgram(domain.StatusRunning, domain.ScopePublic)
+	appr := approval(domain.ActionProgramSignup, "")
+	dc := DecisionContext{
+		Request: req(domain.ActionProgramSignup), Account: testAccount(true),
+		Program: p, Now: testNow, HumanApproval: appr,
+	}
+	d, err := e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow {
+		t.Fatalf("signup = %s %v, want ALLOW", d.Decision, d.Reasons)
+	}
+
+	noJoin := testAccount(true)
+	noJoin.Capability.CanJoinPrograms = false
+	dc.Account = noJoin
+	d, err = e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "ACCOUNT_CANNOT_JOIN_PROGRAMS" {
+		t.Fatalf("signup without capability = %s %v", d.Decision, d.Reasons)
+	}
+
+	dc.Account = testAccount(true)
+	dc.Program = testProgram(domain.StatusEnded, domain.ScopePublic)
+	d, err = e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "PROGRAM_NOT_RUNNING" {
+		t.Fatalf("signup on ended program = %s %v", d.Decision, d.Reasons)
+	}
+}
+
+func TestPayoutRequiresAccountPayoutCapability(t *testing.T) {
+	e := NewEngine()
+	dc := DecisionContext{
+		Request: req(domain.ActionPayout), Account: testAccount(true),
 		Program: testProgram(domain.StatusRunning, domain.ScopePublic),
-		Now:     testNow, ResourceID: "report1",
-		HumanApproval: approval(domain.ActionReportSubmit, "report1"),
-	})
-	if err == nil {
-		t.Fatal("ledger infrastructure failure must surface as an error, not REQUIRE_HUMAN")
+		Now:     testNow, HumanApproval: approval(domain.ActionPayout, ""),
+	}
+	d, err := e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "ACCOUNT_CANNOT_PAYOUT" {
+		t.Fatalf("payout without capability = %s %v, want DENY ACCOUNT_CANNOT_PAYOUT", d.Decision, d.Reasons)
+	}
+}
+
+func TestRuntimeConstraintsFailClosed(t *testing.T) {
+	e := NewEngine()
+	base := func() DecisionContext {
+		p := executableProgram()
+		return DecisionContext{
+			Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+			Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+		}
+	}
+
+	// VPN required: no environment -> more evidence; explicit disconnect -> DENY.
+	dc := base()
+	vpn := domain.TriYes
+	dc.Program.Constraints.VPNRequired = vpn
+	dc.Asset = scopedAsset("a1", "a1.example.com")
+	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionRequireMoreEvidence || d.Reasons[0] != "VPN_STATE_UNKNOWN" {
+		t.Fatalf("vpn unknown = %s %v", d.Decision, d.Reasons)
+	}
+	dc.Environment = &domain.ExecutionEnvironment{VPNConnected: domain.TriNo}
+	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionDeny || d.Reasons[0] != "VPN_REQUIRED" {
+		t.Fatalf("vpn absent = %s %v", d.Decision, d.Reasons)
+	}
+	dc.Environment = &domain.ExecutionEnvironment{VPNConnected: domain.TriYes}
+	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionAllow {
+		t.Fatalf("vpn present = %s %v, want ALLOW", d.Decision, d.Reasons)
+	}
+
+	// RPS: a missing measurement is not proof of compliance.
+	dc = base()
+	maxRPS := 2.0
+	dc.Program.Constraints.MaxRPS = &maxRPS
+	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionRequireMoreEvidence || d.Reasons[0] != "RPS_UNKNOWN" {
+		t.Fatalf("rps unknown = %s %v", d.Decision, d.Reasons)
+	}
+	rps := 3.0
+	dc.Environment = &domain.ExecutionEnvironment{CurrentRPS: &rps}
+	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionDeny || d.Reasons[0] != "RATE_LIMIT_EXCEEDED" {
+		t.Fatalf("rps exceeded = %s %v", d.Decision, d.Reasons)
+	}
+
+	// Method allowlists are request-level, not runtime state.
+	dc = base()
+	dc.Program.Constraints.ForbiddenMethods = []string{"POST"}
+	dc.Request.Method = "POST"
+	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionDeny || d.Reasons[0] != "METHOD_FORBIDDEN" {
+		t.Fatalf("forbidden method = %s %v", d.Decision, d.Reasons)
+	}
+	dc.Request.Method = ""
+	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionRequireMoreEvidence || d.Reasons[0] != "METHOD_UNKNOWN" {
+		t.Fatalf("method unknown = %s %v", d.Decision, d.Reasons)
+	}
+
+	// A program that pins an exact egress IP rejects any other source address.
+	dc = base()
+	dc.Program.Constraints.AllowedEgressIPs = []string{"203.0.113.7"}
+	dc.Environment = &domain.ExecutionEnvironment{EgressIP: "198.51.100.9"}
+	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionDeny || d.Reasons[0] != "EGRESS_IP_NOT_ALLOWED" {
+		t.Fatalf("wrong egress ip = %s %v", d.Decision, d.Reasons)
+	}
+
+	// Time windows are evaluated against decision time.
+	dc = base()
+	dc.Program.Constraints.AllowedTimeWindows = []domain.TimeWindow{{
+		Start: testNow.Add(-time.Hour), End: testNow.Add(-30 * time.Minute),
+	}}
+	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionDeny || d.Reasons[0] != "OUTSIDE_ALLOWED_TIME_WINDOW" {
+		t.Fatalf("outside window = %s %v", d.Decision, d.Reasons)
+	}
+}
+
+func TestProgramGateSatisfiedByAccountState(t *testing.T) {
+	account := testAccount(true)
+	practical := true
+	account.PracticalCertification = &practical
+	pid := domain.ProgramID("p1")
+	p := testProgram(domain.StatusRunning, domain.ScopePublic)
+	p.Gates = []domain.EligibilityGate{{
+		Kind: domain.GatePracticalCertification, ProgramID: &pid,
+		Required: true, Satisfied: domain.GateUnknown, Blocking: true,
+	}}
+	st, err := EvaluateEligibility(account, p, testNow, DefaultPolicyVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Decision != domain.Eligible {
+		t.Fatalf("practical certification true = %s, want ELIGIBLE", st.Decision)
+	}
+
+	// A joined program satisfies its signup gate without re-reading the page.
+	account = testAccount(true)
+	account.JoinedProgramIDs = []domain.ProgramID{"p1"}
+	p = testProgram(domain.StatusRunning, domain.ScopePublic)
+	p.Gates = []domain.EligibilityGate{{
+		Kind: domain.GateProgramSignup, Required: true,
+		Satisfied: domain.GateUnknown, Blocking: true,
+	}}
+	st, err = EvaluateEligibility(account, p, testNow, DefaultPolicyVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Decision != domain.Eligible {
+		t.Fatalf("joined program = %s, want ELIGIBLE", st.Decision)
 	}
 }
 

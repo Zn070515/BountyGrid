@@ -134,7 +134,7 @@ func testApproval(action domain.Action, resource string) *domain.HumanApproval {
 	}
 }
 
-func newGateway(store *fakeStore, auditor Auditor, ledger policy.ApprovalLedger) *Gateway {
+func newGateway(store *fakeStore, auditor Auditor, ledger ApprovalLedger) *Gateway {
 	g := New(store, policy.NewEngine(), auditor, ledger)
 	g.SetClock(func() time.Time { return testNow })
 	return g
@@ -197,7 +197,7 @@ func TestEvaluateMissingContextPersistsDeny(t *testing.T) {
 	}
 }
 
-func TestEvaluateAssetMismatch(t *testing.T) {
+func TestEvaluateResolvesAssetFromStoredScope(t *testing.T) {
 	p := testProgram(domain.StatusRunning)
 	p.Scope.Include = []domain.Asset{{ID: "a1", Value: "a1.example.com", InScope: true}, {ID: "a2", Value: "a2.example.com", InScope: true}}
 	p.Automation.ActiveHTTP = domain.CapAllowed
@@ -207,40 +207,58 @@ func TestEvaluateAssetMismatch(t *testing.T) {
 		decisions: map[domain.DecisionID]domain.ActionDecision{},
 	}
 	g := newGateway(store, &fakeAuditor{}, nil)
+
 	aid := domain.AssetID("a2")
 	req := testRequest(domain.ActionActiveHTTP)
 	req.AssetID = &aid
-	d, err := g.Evaluate(context.Background(), EvaluateInput{
-		Request: req, Asset: &domain.Asset{ID: "a1", ProgramID: "p1", Value: "a1.example.com", InScope: true}, Now: testNow,
-	})
+	d, err := g.Evaluate(context.Background(), EvaluateInput{Request: req, Now: testNow})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "ASSET_MISMATCH" {
-		t.Fatalf("decision = %s %v", d.Decision, d.Reasons)
+	if d.Decision != domain.DecisionAllow {
+		t.Fatalf("decision = %s %v, want ALLOW for the stored a2 asset", d.Decision, d.Reasons)
+	}
+
+	// An ID that is not in the program's scope must never resolve, even if the
+	// caller also supplies a plausible value elsewhere.
+	outID := domain.AssetID("a3")
+	req.AssetID = &outID
+	d, err = g.Evaluate(context.Background(), EvaluateInput{Request: req, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny || d.Reasons[0] != "ASSET_UNKNOWN" {
+		t.Fatalf("unknown asset = %s %v, want DENY ASSET_UNKNOWN", d.Decision, d.Reasons)
 	}
 }
 
-func TestEvaluateSingleUseApproval(t *testing.T) {
+func TestApprovalConsumedAtAuthorizeOnly(t *testing.T) {
 	store := &fakeStore{
 		accounts:  map[domain.AccountID]domain.Account{"acc1": testAccount(true)},
 		programs:  map[domain.ProgramID]domain.Program{"p1": testProgram(domain.StatusRunning)},
 		decisions: map[domain.DecisionID]domain.ActionDecision{},
 	}
-	g := newGateway(store, &fakeAuditor{}, &fakeLedger{})
+	ledger := &fakeLedger{}
+	g := newGateway(store, &fakeAuditor{}, ledger)
 	in := EvaluateInput{
 		Request: testRequest(domain.ActionReportSubmit), ResourceID: "report1", Now: testNow,
 		HumanApproval: testApproval(domain.ActionReportSubmit, "report1"),
 	}
-	if d, err := g.Evaluate(context.Background(), in); err != nil || d.Decision != domain.DecisionAllow {
-		t.Fatalf("first = %v %v", d.Decision, err)
-	}
 	d, err := g.Evaluate(context.Background(), in)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || d.Decision != domain.DecisionAllow {
+		t.Fatalf("evaluate = %v %v", d.Decision, err)
 	}
-	if d.Decision != domain.DecisionRequireHuman {
-		t.Fatalf("second = %s, want REQUIRE_HUMAN", d.Decision)
+	if len(ledger.consumed) != 0 {
+		t.Fatal("a decision must not consume the approval")
+	}
+	if err := g.Authorize(context.Background(), d.ID); err != nil {
+		t.Fatalf("first authorize: %v", err)
+	}
+	if !ledger.consumed["h1"] {
+		t.Fatal("authorize did not consume the single-use approval")
+	}
+	if err := g.Authorize(context.Background(), d.ID); err == nil {
+		t.Fatal("a consumed approval must not authorize a second execution")
 	}
 }
 
@@ -299,6 +317,85 @@ func TestEvaluateAuditFailureSurfaces(t *testing.T) {
 	g := newGateway(store, &fakeAuditor{err: errors.New("audit down")}, nil)
 	if _, err := g.Evaluate(context.Background(), EvaluateInput{Request: testRequest(domain.ActionViewRules), Now: testNow}); err == nil {
 		t.Fatal("audit failure should surface")
+	}
+}
+
+type recordingStore struct {
+	*fakeStore
+	recorded int
+	events   []audit.Event
+	err      error
+}
+
+func (s *recordingStore) RecordDecisionWithAudit(ctx context.Context, d domain.ActionDecision, e audit.Event) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.recorded++
+	s.events = append(s.events, e)
+	s.decisions[d.ID] = d
+	return nil
+}
+
+func TestEvaluateUsesAtomicDecisionAuditRecorder(t *testing.T) {
+	base := &fakeStore{
+		accounts:  map[domain.AccountID]domain.Account{"acc1": testAccount(true)},
+		programs:  map[domain.ProgramID]domain.Program{"p1": testProgram(domain.StatusRunning)},
+		decisions: map[domain.DecisionID]domain.ActionDecision{},
+	}
+	store := &recordingStore{fakeStore: base}
+	g := newGateway(base, &fakeAuditor{}, nil)
+	g.store = store
+	if _, err := g.Evaluate(context.Background(), EvaluateInput{Request: testRequest(domain.ActionViewRules), Now: testNow}); err != nil {
+		t.Fatal(err)
+	}
+	if store.recorded != 1 || len(store.events) != 1 || store.events[0].Type != "action.decision" {
+		t.Fatalf("atomic recorder not used: recorded=%d events=%+v", store.recorded, store.events)
+	}
+	if len(base.decisions) != 1 {
+		t.Fatal("decision was not persisted by the recorder")
+	}
+
+	store.err = errors.New("audit down")
+	if _, err := g.Evaluate(context.Background(), EvaluateInput{
+		Request: domain.ActionRequest{
+			ID: "r2", Actor: domain.ActorRef{Kind: domain.ActorHarness, ID: "h1"},
+			AccountID: "acc1", ProgramID: "p1", Action: domain.ActionViewRules, RequestedAt: testNow,
+		},
+		Now: testNow,
+	}); err == nil {
+		t.Fatal("transaction failure must surface")
+	}
+	if len(base.decisions) != 1 {
+		t.Fatal("a failed transaction must not leave a decision behind")
+	}
+}
+
+func TestAuthorizeRejectsChangedScope(t *testing.T) {
+	p := testProgram(domain.StatusRunning)
+	p.Scope.Include = []domain.Asset{{ID: "a1", Value: "a1.example.com", InScope: true}}
+	p.Automation.ActiveHTTP = domain.CapAllowed
+	store := &fakeStore{
+		accounts:  map[domain.AccountID]domain.Account{"acc1": testAccount(true)},
+		programs:  map[domain.ProgramID]domain.Program{"p1": p},
+		decisions: map[domain.DecisionID]domain.ActionDecision{},
+	}
+	g := newGateway(store, &fakeAuditor{}, nil)
+	aid := domain.AssetID("a1")
+	req := testRequest(domain.ActionActiveHTTP)
+	req.AssetID = &aid
+	d, err := g.Evaluate(context.Background(), EvaluateInput{Request: req, Now: testNow})
+	if err != nil || d.Decision != domain.DecisionAllow {
+		t.Fatalf("evaluate = %v %v", d.Decision, err)
+	}
+
+	// The platform removes the asset between decide and execute. The stored
+	// ALLOW must no longer authorize the action.
+	updated := p
+	updated.Scope.Include = nil
+	store.programs["p1"] = updated
+	if err := g.Authorize(context.Background(), d.ID); err == nil {
+		t.Fatal("authorize must re-evaluate and reject a scope that changed after the decision")
 	}
 }
 

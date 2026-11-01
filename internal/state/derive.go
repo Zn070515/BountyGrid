@@ -23,7 +23,16 @@ type ProgramInput struct {
 	// Confidence is the minimum confidence of the facts used by the derivation.
 	// It is zero when no facts were present, which keeps the result unexecutable.
 	Confidence domain.Confidence
+	// OldestObservedAt is the oldest observed_at among the facts actually
+	// selected for the derivation. A derived state must not outlive its inputs.
+	OldestObservedAt time.Time
 }
+
+// DefaultFactTTL bounds how long a fact may keep driving a derived state. A
+// derived state whose newest relevant fact is older than this cannot be
+// produced at all, which is what stops an old page from being "refreshed" into
+// a fresh-looking state by re-running derive.
+const DefaultFactTTL = 30 * 24 * time.Hour
 
 func ProgramInputFromFacts(fs facts.FactSet) (ProgramInput, error) {
 	var in ProgramInput
@@ -56,12 +65,24 @@ func ProgramInputFromFacts(fs facts.FactSet) (ProgramInput, error) {
 			}
 		}
 	}
-	for _, p := range []string{
+	predicates := []string{
 		facts.PredProgramStatus, facts.PredProgramPaused, facts.PredProgramStart,
 		facts.PredProgramEnd, facts.PredActivityStart, facts.PredActivityEnd,
 		facts.PredRegistrationStart, facts.PredRegistrationEnd, facts.PredScopeVisibility,
-	} {
+	}
+	for _, p := range predicates {
 		record(p)
+	}
+	// Track the age of the facts the derivation will actually read (the latest
+	// observation per predicate), not the age of every historical fact.
+	for _, p := range predicates {
+		f, ok := fs.Fact(p)
+		if !ok {
+			continue
+		}
+		if in.OldestObservedAt.IsZero() || f.ObservedAt.Before(in.OldestObservedAt) {
+			in.OldestObservedAt = f.ObservedAt
+		}
 	}
 	if s, ok := fs.String(facts.PredProgramStatus); ok && s != "" {
 		st := domain.ProgramStatus(s)
@@ -146,11 +167,25 @@ func DeriveProgramState(in ProgramInput, now time.Time, ttl time.Duration) (doma
 	if !status.Valid() {
 		return domain.ProgramState{}, fmt.Errorf("state: invalid derived status %q", status)
 	}
+	// The state may not be fresher than the facts behind it. Re-running derive
+	// with two-month-old facts must not manufacture a new 30-minute window.
+	observed := in.OldestObservedAt
+	validUntil := now.Add(ttl)
+	if !observed.IsZero() {
+		if factUntil := observed.Add(DefaultFactTTL); factUntil.Before(validUntil) {
+			validUntil = factUntil
+		}
+	} else {
+		observed = now
+	}
+	if !validUntil.After(now) {
+		return domain.ProgramState{}, fmt.Errorf("state: input facts are older than the fact TTL (%s)", DefaultFactTTL)
+	}
 	return domain.ProgramState{
 		Status:     status,
 		Reason:     reason,
-		ObservedAt: now,
-		ValidUntil: now.Add(ttl),
+		ObservedAt: observed,
+		ValidUntil: validUntil,
 		Confidence: in.Confidence,
 		Inputs:     in.FactIDs,
 		Evidence:   in.Evidence,

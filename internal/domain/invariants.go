@@ -1,6 +1,9 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 func (e Evidence) Validate() error {
 	if e.ID == "" {
@@ -345,6 +348,11 @@ func (c Constraints) Validate() error {
 			return fmt.Errorf("constraints: invalid allowed time window")
 		}
 	}
+	for _, ip := range c.AllowedEgressIPs {
+		if strings.TrimSpace(ip) == "" {
+			return fmt.Errorf("constraints: allowed egress ip is empty")
+		}
+	}
 	return nil
 }
 
@@ -370,12 +378,69 @@ func (r ActionRequest) Validate() error {
 	return nil
 }
 
+func (s CompetitionSnapshot) Validate() error {
+	if s.ID == "" {
+		return fmt.Errorf("competition snapshot: id is empty")
+	}
+	if !s.Platform.Valid() {
+		return fmt.Errorf("competition snapshot %s: invalid platform %q", s.ID, s.Platform)
+	}
+	if s.Scope == "" {
+		return fmt.Errorf("competition snapshot %s: scope is empty", s.ID)
+	}
+	if s.ObservedAt.IsZero() {
+		return fmt.Errorf("competition snapshot %s: observed_at is zero", s.ID)
+	}
+	if !s.Confidence.Valid() {
+		return fmt.Errorf("competition snapshot %s: confidence %v out of range", s.ID, s.Confidence)
+	}
+	if !s.ValidUntil.IsZero() && !s.ValidUntil.After(s.ObservedAt) {
+		return fmt.Errorf("competition snapshot %s: valid_until must be after observed_at", s.ID)
+	}
+	for name, v := range map[string]*float64{
+		"top1_share": s.Top1Share, "top3_share": s.Top3Share, "top10_share": s.Top10Share,
+		"duplicate_pressure": s.DuplicatePressure, "saturation": s.Saturation,
+	} {
+		if v != nil && (*v < 0 || *v > 1) {
+			return fmt.Errorf("competition snapshot %s: %s out of range", s.ID, name)
+		}
+	}
+	// Concentration shares must be monotonic: top1 cannot exceed top3, and
+	// top3 cannot exceed top10. A violation means the input is corrupt.
+	if s.Top1Share != nil && s.Top3Share != nil && *s.Top1Share > *s.Top3Share {
+		return fmt.Errorf("competition snapshot %s: top1_share > top3_share", s.ID)
+	}
+	if s.Top3Share != nil && s.Top10Share != nil && *s.Top3Share > *s.Top10Share {
+		return fmt.Errorf("competition snapshot %s: top3_share > top10_share", s.ID)
+	}
+	if s.Top1Share != nil && s.Top10Share != nil && *s.Top1Share > *s.Top10Share {
+		return fmt.Errorf("competition snapshot %s: top1_share > top10_share", s.ID)
+	}
+	return nil
+}
+
 func (d ActionDecision) Validate() error {
 	if d.ID == "" {
 		return fmt.Errorf("decision: id is empty")
 	}
 	if d.RequestID == "" {
 		return fmt.Errorf("decision %s: request_id is empty", d.ID)
+	}
+	if d.Request.ID != "" {
+		if d.Request.ID != d.RequestID {
+			return fmt.Errorf("decision %s: request id mismatch", d.ID)
+		}
+		if d.Request.ProgramID != d.ProgramID {
+			return fmt.Errorf("decision %s: request program mismatch", d.ID)
+		}
+		if d.Request.Action != d.Action {
+			return fmt.Errorf("decision %s: request action mismatch", d.ID)
+		}
+	}
+	if d.Environment != nil {
+		if err := d.Environment.Validate(); err != nil {
+			return fmt.Errorf("decision %s: %w", d.ID, err)
+		}
 	}
 	if !d.Decision.Valid() {
 		return fmt.Errorf("decision %s: invalid decision %q", d.ID, d.Decision)

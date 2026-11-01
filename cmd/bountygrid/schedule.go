@@ -26,6 +26,7 @@ type scheduleStore interface {
 	ListStates(ctx context.Context, platform domain.Platform, subject domain.StateSubject) ([]domain.DerivedState, error)
 	GetAccount(ctx context.Context, id domain.AccountID) (domain.Account, error)
 	GetLatestCompetitionSnapshot(ctx context.Context, platform domain.Platform, scope string) (domain.CompetitionSnapshot, error)
+	LatestResearchTaskTimes(ctx context.Context, platform domain.Platform) (map[domain.ProgramID]time.Time, error)
 	PutOpportunity(ctx context.Context, o domain.Opportunity) error
 	PutResearchTask(ctx context.Context, t domain.ResearchTask) error
 }
@@ -135,6 +136,11 @@ func executeSchedule(ctx context.Context, store scheduleStore, opts scheduleOpti
 		return out, err
 	}
 
+	existing, err := store.LatestResearchTaskTimes(ctx, domain.Platform(opts.Platform))
+	if err != nil {
+		return out, err
+	}
+
 	var candidates []opportunity.Candidate
 	for _, p := range progs {
 		st, ok := stateByProgram[p.ID]
@@ -149,7 +155,7 @@ func executeSchedule(ctx context.Context, store scheduleStore, opts scheduleOpti
 	}
 	res := opportunity.Schedule(opportunity.NewEngine(), candidates, opportunity.Options{
 		TopK: opts.Top, MaxPerPlatform: 2, MaxPerProgram: 1,
-		ReserveEnterprise: true, Now: now,
+		Existing: existing, ReserveEnterprise: true, Now: now,
 	})
 	out.Evaluated = res.Evaluated
 	out.Research = res.ResearchCount
@@ -169,13 +175,14 @@ func executeSchedule(ctx context.Context, store scheduleStore, opts scheduleOpti
 		out.HumanQueue = append(out.HumanQueue, summarizeScheduled(s))
 	}
 	if opts.Persist {
+		runID := now.UTC().Format("20060102T150405.000000000")
 		for _, s := range res.ResearchQueue {
-			if err := persistScheduled(ctx, store, s, "QUEUED", now); err != nil {
+			if err := persistScheduled(ctx, store, s, "QUEUED", now, runID); err != nil {
 				return out, err
 			}
 		}
 		for _, s := range res.HumanQueue {
-			if err := persistScheduled(ctx, store, s, "HUMAN_ACTION_REQUIRED", now); err != nil {
+			if err := persistScheduled(ctx, store, s, "HUMAN_ACTION_REQUIRED", now, runID); err != nil {
 				return out, err
 			}
 		}
@@ -183,13 +190,13 @@ func executeSchedule(ctx context.Context, store scheduleStore, opts scheduleOpti
 	return out, nil
 }
 
-func persistScheduled(ctx context.Context, store scheduleStore, s opportunity.Scheduled, status string, now time.Time) error {
+func persistScheduled(ctx context.Context, store scheduleStore, s opportunity.Scheduled, status string, now time.Time, runID string) error {
 	if err := store.PutOpportunity(ctx, s.Opportunity); err != nil {
 		return fmt.Errorf("schedule: persist opportunity %s: %w", s.Opportunity.ID, err)
 	}
 	expires := now.Add(24 * time.Hour)
 	task := domain.ResearchTask{
-		ID:            domain.TaskID("task/" + string(s.Program.ID)),
+		ID:            domain.TaskID(fmt.Sprintf("task/%s/%s", s.Program.ID, runID)),
 		OpportunityID: s.Opportunity.ID,
 		ProgramID:     s.Program.ID,
 		Status:        status,

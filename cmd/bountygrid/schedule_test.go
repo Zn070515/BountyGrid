@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/opportunity"
 	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 )
 
@@ -37,6 +38,15 @@ func (f *fakeScheduleStore) GetLatestCompetitionSnapshot(ctx context.Context, pl
 		return domain.CompetitionSnapshot{}, postgres.ErrNotFound
 	}
 	return *f.comp, nil
+}
+func (f *fakeScheduleStore) LatestResearchTaskTimes(ctx context.Context, platform domain.Platform) (map[domain.ProgramID]time.Time, error) {
+	out := make(map[domain.ProgramID]time.Time)
+	for _, t := range f.tasks {
+		if prev, ok := out[t.ProgramID]; !ok || t.CreatedAt.After(prev) {
+			out[t.ProgramID] = t.CreatedAt
+		}
+	}
+	return out, nil
 }
 func (f *fakeScheduleStore) PutOpportunity(ctx context.Context, o domain.Opportunity) error {
 	f.opps = append(f.opps, o)
@@ -164,6 +174,45 @@ func TestExecuteScheduleMissingAccountFailsClosed(t *testing.T) {
 	}
 	if out.HumanQueue[0].Reason != "ACCOUNT_CAPABILITY" {
 		t.Fatalf("reason = %s", out.HumanQueue[0].Reason)
+	}
+}
+
+func TestScheduleCooldownFromStoredTasks(t *testing.T) {
+	p := schedProgram("release", domain.StatusRunning, true, true)
+	acct := domain.Account{ID: "vulbox/account", Platform: domain.PlatformVulbox, ObservedAt: testNow,
+		Capability: domain.AccountCapability{CanSubmit: true, EvaluatedAt: testNow}}
+	store := &fakeScheduleStore{
+		programs: []domain.Program{p},
+		states:   []domain.DerivedState{schedState(p, "RUNNING")},
+		account:  &acct,
+		tasks: []domain.ResearchTask{{
+			ID: "task/release/old-run", ProgramID: p.ID, Status: "QUEUED",
+			CreatedAt: testNow.Add(-time.Hour),
+		}},
+	}
+	out, err := executeSchedule(context.Background(), store, scheduleOptions{Platform: "vulbox", Top: 5}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Research != 0 || out.ExcludedReasons["COOLDOWN"] != 1 {
+		t.Fatalf("cooldown not applied: research=%d reasons=%v", out.Research, out.ExcludedReasons)
+	}
+}
+
+func TestTaskIDIsUniquePerScheduleRun(t *testing.T) {
+	store := &fakeScheduleStore{}
+	s := opportunity.Scheduled{
+		Program:     schedProgram("release", domain.StatusRunning, true, true),
+		Opportunity: domain.Opportunity{ID: "opp/release/run"},
+	}
+	if err := persistScheduled(context.Background(), store, s, "QUEUED", testNow, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistScheduled(context.Background(), store, s, "QUEUED", testNow, "run-2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.tasks) != 2 || store.tasks[0].ID == store.tasks[1].ID {
+		t.Fatalf("task IDs are not unique per run: %+v", store.tasks)
 	}
 }
 

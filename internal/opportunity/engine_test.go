@@ -103,6 +103,64 @@ func TestEngineDoesNotSortByMaxBounty(t *testing.T) {
 	}
 }
 
+func TestEngineOpportunityIDsAreAppendOnly(t *testing.T) {
+	e := NewEngine()
+	p := scoringProgram("p1", 1000, 10000, domain.TypeBrandSRC)
+	first, err := e.Evaluate(Input{Program: p, Status: domain.StatusRunning, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.Evaluate(Input{Program: p, Status: domain.StatusRunning, Now: testNow.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("two evaluations share an ID: %s", first.ID)
+	}
+}
+
+func TestEngineDropsExpiredCompetition(t *testing.T) {
+	e := NewEngine()
+	comp := testCompetition(0.1, 0.1, 0.1, 1)
+	comp.ObservedAt = testNow.Add(-31 * 24 * time.Hour)
+	comp.ValidUntil = testNow.Add(-time.Hour)
+	opp, err := e.Evaluate(Input{
+		Program: scoringProgram("p1", 1000, 10000, domain.TypeBrandSRC),
+		Status:  domain.StatusRunning, Competition: comp, Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opp.Confidence != e.NoDataConf {
+		t.Fatalf("expired competition confidence = %v, want no-data %v", opp.Confidence, e.NoDataConf)
+	}
+	found := false
+	for _, s := range opp.Inputs {
+		if s == "competition=expired_or_stale" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expiry not explained: %v", opp.Inputs)
+	}
+}
+
+func TestEngineDecaysOldCompetitionConfidence(t *testing.T) {
+	e := NewEngine()
+	comp := testCompetition(0.5, 0.5, 0.5, 0.8)
+	comp.ObservedAt = testNow.Add(-15 * 24 * time.Hour)
+	opp, err := e.Evaluate(Input{
+		Program: scoringProgram("p1", 1000, 10000, domain.TypeBrandSRC),
+		Status:  domain.StatusRunning, Competition: comp, Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opp.Confidence >= comp.Confidence || opp.Confidence <= 0 {
+		t.Fatalf("15-day-old competition confidence = %v, want between 0 and %v", opp.Confidence, comp.Confidence)
+	}
+}
+
 func TestEngineCompetitionSamples(t *testing.T) {
 	e := NewEngine()
 	cases := []struct {

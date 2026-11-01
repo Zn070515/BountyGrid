@@ -48,11 +48,15 @@ type DailyLimit struct {
 }
 
 type Constraints struct {
-	MaxRPS                       *float64
-	MaxConcurrency               *int
-	AllowedTimeWindows           []TimeWindow
-	VPNRequired                  TriState
-	DedicatedIPRequired          TriState
+	MaxRPS              *float64
+	MaxConcurrency      *int
+	AllowedTimeWindows  []TimeWindow
+	VPNRequired         TriState
+	DedicatedIPRequired TriState
+	// AllowedEgressIPs, when non-empty, is the exact set of public source IPs
+	// the program permits. DedicatedIPRequired only says an egress IP must be
+	// observed; this list says which one is acceptable.
+	AllowedEgressIPs             []string
 	ResearcherHeaderRequired     TriState
 	TestAccountRequired          TriState
 	TestAccountReportingRequired *bool

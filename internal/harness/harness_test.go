@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -157,6 +158,118 @@ func TestHarnessDestructiveDisabledByDefault(t *testing.T) {
 	}
 	if gate.evaluated != 0 {
 		t.Fatal("destructive tool reached the gate")
+	}
+}
+
+func TestHarnessRequiresIdempotencyKeyForSideEffects(t *testing.T) {
+	tool := &fakeTool{spec: ToolSpec{Name: "writer", RequiredAction: domain.ActionViewRules, WritesFiles: true}}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	h := testHarness(tool, gate, &fakeAuditor{}, nil)
+	_, _, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: testRequest(domain.ActionViewRules), Now: testNow})
+	if err == nil {
+		t.Fatal("a side-effect tool without an idempotency key must be rejected")
+	}
+	if tool.calls != 0 || gate.evaluated != 0 {
+		t.Fatal("the tool/gate ran before the idempotency check")
+	}
+}
+
+func TestHarnessReplaysCompletedExecution(t *testing.T) {
+	tool := &fakeTool{spec: ToolSpec{Name: "writer", RequiredAction: domain.ActionViewRules, WritesFiles: true}}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	h := testHarness(tool, gate, &fakeAuditor{}, nil)
+	req := testRequest(domain.ActionViewRules)
+	req.IdempotencyKey = "idem-1"
+	if _, _, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow}); err != nil {
+		t.Fatal(err)
+	}
+	_, res, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tool.calls != 1 {
+		t.Fatalf("tool ran %d times, want 1 (replay must not execute)", tool.calls)
+	}
+	if res.Output != "ok" {
+		t.Fatalf("replayed output = %q", res.Output)
+	}
+}
+
+func TestHarnessCompletesAuditWithoutReexecuting(t *testing.T) {
+	tool := &fakeTool{spec: ToolSpec{Name: "writer", RequiredAction: domain.ActionViewRules, WritesFiles: true}}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	aud := &fakeAuditor{err: errors.New("audit down")}
+	h := testHarness(tool, gate, aud, nil)
+	req := testRequest(domain.ActionViewRules)
+	req.IdempotencyKey = "idem-2"
+	if _, _, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow}); err == nil {
+		t.Fatal("audit failure should surface")
+	}
+	if tool.calls != 1 {
+		t.Fatalf("tool calls = %d, want 1", tool.calls)
+	}
+	aud.err = nil
+	if _, res, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow}); err != nil {
+		t.Fatal(err)
+	} else if res.Output != "ok" {
+		t.Fatalf("output = %q", res.Output)
+	}
+	if tool.calls != 1 {
+		t.Fatalf("retry re-executed the tool: calls=%d", tool.calls)
+	}
+	if len(aud.events) != 1 || aud.events[0].Type != "tool.executed" {
+		t.Fatalf("audit events = %+v", aud.events)
+	}
+}
+
+func TestHarnessUnsettledReceiptBlocksRepeat(t *testing.T) {
+	tool := &fakeTool{spec: ToolSpec{Name: "writer", RequiredAction: domain.ActionViewRules, WritesFiles: true}}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	h := testHarness(tool, gate, &fakeAuditor{}, nil)
+	store := NewMemoryReceiptStore()
+	if err := store.CreateReceipt(context.Background(), domain.ExecutionReceipt{
+		ID: "rcpt/idem-3", IdempotencyKey: "idem-3", DecisionID: "d1",
+		ToolName: "writer", Action: domain.ActionViewRules, ProgramID: "p1",
+		Status: domain.ReceiptStarted, StartedAt: testNow, UpdatedAt: testNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.SetReceiptStore(store)
+	req := testRequest(domain.ActionViewRules)
+	req.IdempotencyKey = "idem-3"
+	if _, _, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow}); err == nil {
+		t.Fatal("an unsettled execution must not be repeated")
+	}
+	if tool.calls != 0 {
+		t.Fatal("tool ran for an unsettled receipt")
+	}
+}
+
+func TestHarnessNetworkToolNeedsAllowlist(t *testing.T) {
+	tool := &fakeTool{spec: ToolSpec{Name: "net", RequiredAction: domain.ActionViewRules, NetworkEgress: true}}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	h := testHarness(tool, gate, &fakeAuditor{}, nil) // empty sandbox
+	req := testRequest(domain.ActionViewRules)
+	req.IdempotencyKey = "idem-net"
+	if _, _, err := h.Execute(context.Background(), "net", gateway.EvaluateInput{Request: req, Now: testNow}); err == nil {
+		t.Fatal("network tool without an allowlist must be rejected")
+	}
+	if tool.calls != 0 || gate.evaluated != 0 {
+		t.Fatal("network tool ran without an allowlist")
+	}
+}
+
+func TestEgressGuardsEveryRequest(t *testing.T) {
+	e := NewEgress(&Sandbox{AllowedHosts: []string{"api.example.com"}})
+	if err := e.CheckURL("https://api.example.com/v1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.CheckURL("https://evil.test/v1"); err == nil {
+		t.Fatal("unlisted host must be denied")
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://evil.test", nil)
+	if _, err := e.Do(context.Background(), req); err == nil {
+		t.Fatal("Do must apply the same check as CheckURL")
 	}
 }
 

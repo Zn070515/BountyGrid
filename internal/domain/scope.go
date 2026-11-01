@@ -2,6 +2,33 @@ package domain
 
 import "strings"
 
+// ResolveAsset returns the canonical asset recorded in this scope. Callers may
+// only name an asset ID; the value, kind and program binding must come from the
+// persisted scope, never from the caller. Exclude wins over conditional, and
+// conditional wins over include, so a duplicate ID can never resolve to a more
+// permissive entry.
+func (s Scope) ResolveAsset(id AssetID) (Asset, ScopeMatch, bool) {
+	if id == "" {
+		return Asset{}, ScopeMatchUnknown, false
+	}
+	for _, ex := range s.Exclude {
+		if ex.ID == id {
+			return ex, ScopeMatchExcluded, true
+		}
+	}
+	for _, c := range s.Conditional {
+		if c.ID == id {
+			return c, ScopeMatchConditional, true
+		}
+	}
+	for _, inc := range s.Include {
+		if inc.ID == id {
+			return inc, ScopeMatchIncluded, true
+		}
+	}
+	return Asset{}, ScopeMatchUnknown, false
+}
+
 // CheckAsset returns whether an asset is included, conditional, excluded or
 // unknown for this scope. Access must be GRANTED and contents known; otherwise
 // the answer is UNKNOWN, never "included".

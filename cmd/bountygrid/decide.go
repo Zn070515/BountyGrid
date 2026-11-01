@@ -21,20 +21,20 @@ type decideOptions struct {
 }
 
 type decideInput struct {
-	Request       domain.ActionRequest  `json:"request"`
-	Asset         *domain.Asset         `json:"asset,omitempty"`
-	ResourceID    string                `json:"resource_id,omitempty"`
-	HumanApproval *domain.HumanApproval `json:"human_approval,omitempty"`
-	UsageToday    map[string]int64      `json:"usage_today,omitempty"`
-	BudgetSpent   *domain.Money         `json:"budget_spent,omitempty"`
-	Now           *time.Time            `json:"now,omitempty"`
+	Request       domain.ActionRequest         `json:"request"`
+	ResourceID    string                       `json:"resource_id,omitempty"`
+	HumanApproval *domain.HumanApproval        `json:"human_approval,omitempty"`
+	UsageToday    map[string]int64             `json:"usage_today,omitempty"`
+	BudgetSpent   *domain.Money                `json:"budget_spent,omitempty"`
+	Environment   *domain.ExecutionEnvironment `json:"execution_environment,omitempty"`
+	Now           *time.Time                   `json:"now,omitempty"`
 }
 
 func parseDecideOptions(args []string) (decideOptions, error) {
 	var o decideOptions
 	fs := flag.NewFlagSet("decide", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&o.RequestFile, "request", "", "JSON file with request/asset/approval")
+	fs.StringVar(&o.RequestFile, "request", "", "JSON file with request (AssetID only), approval, usage and execution_environment")
 	fs.StringVar(&o.Authorize, "authorize", "", "re-check an ALLOW decision id before execution")
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -64,8 +64,7 @@ func runDecide(ctx context.Context, args []string) error {
 	defer pool.Close()
 	repo := postgres.NewRepo(pool)
 	engine := policy.NewEngine()
-	engine.SetApprovalLedger(postgres.NewPostgresApprovalLedger(pool))
-	g := gateway.New(repo, engine, postgres.NewAuditStore(pool), nil)
+	g := gateway.New(repo, engine, postgres.NewAuditStore(pool), postgres.NewPostgresApprovalLedger(pool))
 
 	if opts.Authorize != "" {
 		if err := g.Authorize(ctx, domain.DecisionID(opts.Authorize)); err != nil {
@@ -87,9 +86,9 @@ func runDecide(ctx context.Context, args []string) error {
 		now = in.Now.UTC()
 	}
 	decision, err := g.Evaluate(ctx, gateway.EvaluateInput{
-		Request: in.Request, Asset: in.Asset, ResourceID: in.ResourceID,
+		Request: in.Request, ResourceID: in.ResourceID,
 		HumanApproval: in.HumanApproval, UsageToday: in.UsageToday,
-		BudgetSpent: in.BudgetSpent, Now: now,
+		BudgetSpent: in.BudgetSpent, Environment: in.Environment, Now: now,
 	})
 	if err != nil {
 		return err

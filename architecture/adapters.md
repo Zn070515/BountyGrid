@@ -147,9 +147,11 @@ Observed API: vapi.vulbox.com/web/*; vbapi.vulbox.com/v1/user/identity_info
 #### Phase 1 实现记录（2026-10-31）
 
 ```text
-internal/sidecar        agent-browser 只读客户端：
-                        open / wait --load networkidle / eval --stdin / get /
-                        state save / close；不提供 click/fill/submit
+internal/sidecar        agent-browser 传输层（不是安全沙箱）：
+                        open / wait --load networkidle / reload / eval --stdin /
+                        get / state save / close；不提供 click/fill/submit 命令。
+                        Eval 可执行任意 JS；Reader 只用于只读观察与分页/弹窗控制，
+                        Harness/Model 不得直接持有 Client
 internal/adapter        Reader 接口与快照类型
 internal/adapter/vulbox AuthStatus / SyncAccount / SyncPrograms
 cmd/bountygrid sync     -programs / -account / -pages / -page-size / -session
