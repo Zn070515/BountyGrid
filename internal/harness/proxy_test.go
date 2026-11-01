@@ -3,6 +3,7 @@ package harness
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Zn070515/BountyGrid/internal/audit"
+	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 )
 
 type staticNetworkPolicy struct {
@@ -596,5 +601,77 @@ func TestEgressIgnoresEnvironmentProxy(t *testing.T) {
 	}
 	if events := envAudit.recorded(); len(events) != 0 {
 		t.Fatalf("environment proxy was consulted: %+v", events)
+	}
+}
+
+func rulePolicyFixture(t *testing.T, decision, justification string) RulePolicy {
+	t.Helper()
+	rs, err := rules.Parse([]byte(`{"rules":[{
+		"id":"net-rule",
+		"actions":["ACTIVE_HTTP"],
+		"hosts":["api.example.com"],
+		"methods":["GET"],
+		"decision":"` + decision + `",
+		"justification":"` + justification + `",
+		"match":[{"action":"ACTIVE_HTTP","asset":"https://api.example.com/v1","method":"GET"}]
+	}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return RulePolicy{Rules: rs, Action: domain.ActionActiveHTTP, Program: "vulbox/444"}
+}
+
+func TestRulePolicyMapsNetworkDecisions(t *testing.T) {
+	req := Request{Protocol: ProtocolHTTP, Host: "api.example.com", Port: 443, Method: "GET", Path: "/v1"}
+	cases := []struct {
+		decision string
+		want     PolicyDecision
+	}{
+		{"allow", Allow},
+		{"forbidden", Deny},
+		{"require_human", Ask},
+	}
+	for _, c := range cases {
+		got, reason := rulePolicyFixture(t, c.decision, "test reason").Decide(context.Background(), req)
+		if got != c.want || reason == "" {
+			t.Fatalf("%s = %s %q, want %s", c.decision, got, reason, c.want)
+		}
+	}
+	if got, _ := rulePolicyFixture(t, "allow", "test").Decide(context.Background(), Request{Host: "other.example.com", Method: "GET"}); got != Deny {
+		t.Fatalf("no-match = %s, want Deny", got)
+	}
+	if got, _ := (RulePolicy{}).Decide(context.Background(), req); got != Deny {
+		t.Fatalf("nil rules = %s, want Deny", got)
+	}
+}
+
+func TestAuditSinkHashesPathAndRecords(t *testing.T) {
+	store := audit.NewMemoryStore()
+	sink := AuditSink{Auditor: store}
+	err := sink.RecordNetworkDecision(context.Background(), NetworkDecisionAudit{
+		Timestamp: time.Now().UTC(), Protocol: ProtocolHTTP,
+		Host: "api.example.com", Port: 443, Method: "GET",
+		Path:     "/v1/orders/1234567890123456",
+		Decision: Allow, Reason: "allowed", Client: "127.0.0.1:1234", PolicyVersion: "sha256:abc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.List(context.Background(), audit.Filter{Type: "network.policy_decision"})
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events = %+v, %v", events, err)
+	}
+	if strings.Contains(string(events[0].Payload), "1234567890123456") {
+		t.Fatal("raw path leaked into audit payload")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["path_hash"] == "" || payload["host"] != "api.example.com" || payload["decision"] != "allow" {
+		t.Fatalf("payload = %+v", payload)
+	}
+	if err := (AuditSink{}).RecordNetworkDecision(context.Background(), NetworkDecisionAudit{}); err == nil {
+		t.Fatal("nil auditor should fail closed")
 	}
 }
