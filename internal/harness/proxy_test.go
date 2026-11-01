@@ -67,6 +67,9 @@ func (a *recordingNetworkAudit) recorded() []NetworkDecisionAudit {
 
 func newTestProxy(t *testing.T, cfg ProxyConfig) (*Proxy, *httptest.Server) {
 	t.Helper()
+	// Most proxy tests exercise mechanics with a static/RulePolicy; production
+	// grant binding is covered by the dedicated GrantPolicy test.
+	cfg.AllowUngrantedForTests = true
 	p := NewProxy(cfg)
 	srv := httptest.NewServer(p.Handler())
 	t.Cleanup(srv.Close)
@@ -785,6 +788,7 @@ func TestProxyAllowsUnauditedOnlyWhenExplicit(t *testing.T) {
 	if err := NewProxy(ProxyConfig{
 		Policy:                 &staticNetworkPolicy{decision: Allow},
 		AllowUnauditedForTests: true,
+		AllowUngrantedForTests: true,
 	}).Validate(); err != nil {
 		t.Fatalf("explicit test escape hatch was rejected: %v", err)
 	}
@@ -852,5 +856,32 @@ func TestAuditSinkHashesPathAndRecords(t *testing.T) {
 	}
 	if err := (AuditSink{}).RecordNetworkDecision(context.Background(), NetworkDecisionAudit{}); err == nil {
 		t.Fatal("nil auditor should fail closed")
+	}
+}
+
+func TestProxyRequiresGrantPolicyInProduction(t *testing.T) {
+	audit := &recordingNetworkAudit{}
+	ungranted := NewProxy(ProxyConfig{
+		Policy: &staticNetworkPolicy{decision: Allow}, Audit: audit,
+	})
+	if err := ungranted.Validate(); err == nil {
+		t.Fatal("proxy without a GrantPolicy must fail closed in production")
+	}
+	allowedForTests := NewProxy(ProxyConfig{
+		Policy: &staticNetworkPolicy{decision: Allow}, Audit: audit,
+		AllowUngrantedForTests: true,
+	})
+	if err := allowedForTests.Validate(); err != nil {
+		t.Fatalf("explicit test escape hatch = %v", err)
+	}
+	granted := NewProxy(ProxyConfig{
+		Policy: GrantPolicy{
+			Grant: &ExecutionGrant{ExpiresAt: time.Now().Add(time.Hour)},
+			Next:  &staticNetworkPolicy{decision: Allow},
+		},
+		Audit: audit,
+	})
+	if err := granted.Validate(); err != nil {
+		t.Fatalf("GrantPolicy validation = %v", err)
 	}
 }
