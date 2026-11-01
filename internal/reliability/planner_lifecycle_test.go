@@ -158,6 +158,20 @@ func TestInterruptedOnlyProposalsStopTheLoop(t *testing.T) {
 	}
 }
 
+func TestLoopRequiresStoreWhenConfigured(t *testing.T) {
+	cfg := LoopConfig{
+		Proposer: &fakeProposer{}, Executor: &fakeExecutor{},
+		Authorization: loopAuthorization(), RequireStore: true,
+	}
+	if _, err := NewLoop(cfg); !errors.Is(err, ErrSessionStoreRequired) {
+		t.Fatalf("err = %v, want ErrSessionStoreRequired", err)
+	}
+	cfg.Store = &capturingSessionStore{}
+	if _, err := NewLoop(cfg); err != nil {
+		t.Fatalf("loop with store rejected: %v", err)
+	}
+}
+
 func TestRunInterruptsInFlightAttemptsFromACrashedRun(t *testing.T) {
 	store := &capturingSessionStore{}
 	s := loopSession(t)

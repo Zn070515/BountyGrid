@@ -62,6 +62,9 @@ var (
 	ErrInvalidProposal = errors.New("reliability: invalid action proposal")
 	// ErrLoopConfiguration means a Loop was created without proposer/executor.
 	ErrLoopConfiguration = errors.New("reliability: invalid loop configuration")
+	// ErrSessionStoreRequired means a production loop was configured to require
+	// durable checkpoints but no SessionStore was supplied.
+	ErrSessionStoreRequired = errors.New("reliability: durable session store required")
 	// ErrInvalidResume means Resume was called on a session that is not
 	// STALLED or PARKED. A RUNNING/COMPLETED/ABORTED session must not be
 	// reopened implicitly.
@@ -722,8 +725,12 @@ type ResearchSession struct {
 	RecentObservations []Observation
 	Budget             Budget
 	State              ResearchState
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// Revision is the persisted optimistic-concurrency version. A new session
+	// starts at 0; FileSessionStore increments it on every Save and rejects a
+	// save whose in-memory revision no longer matches the file.
+	Revision  uint64
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // NewResearchSession creates a RUNNING session. An empty id is derived from the
