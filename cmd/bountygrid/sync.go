@@ -326,8 +326,14 @@ func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w
 			prog := snap.Program
 			prog.Automation = policy.Automation
 			prog.Constraints = policy.Constraints
-			evs := uniqueEvidence(append(append([]domain.Evidence{}, snap.Evidence...), policy.Evidence...))
-			fs := uniqueFacts(append(append([]domain.ObservedFact{}, snap.Facts...), policy.Facts...))
+			evs, err := uniqueEvidence(append(append([]domain.Evidence{}, snap.Evidence...), policy.Evidence...))
+			if err != nil {
+				return err
+			}
+			fs, err := uniqueFacts(append(append([]domain.ObservedFact{}, snap.Facts...), policy.Facts...))
+			if err != nil {
+				return err
+			}
 			if err := persistEvidenceFacts(ctx, writer, evs, fs); err != nil {
 				return err
 			}
@@ -382,43 +388,62 @@ func persistAccount(ctx context.Context, w snapshotWriter, snap adapter.AccountS
 }
 
 func persistEvidenceFacts(ctx context.Context, w snapshotWriter, evs []domain.Evidence, fs []domain.ObservedFact) error {
-	for _, ev := range uniqueEvidence(evs) {
+	uniqueEvs, err := uniqueEvidence(evs)
+	if err != nil {
+		return err
+	}
+	for _, ev := range uniqueEvs {
 		if err := w.PutEvidence(ctx, ev); err != nil {
 			return fmt.Errorf("sync: persist evidence %s: %w", ev.ID, err)
 		}
 	}
-	if fs = uniqueFacts(fs); len(fs) > 0 {
-		if err := w.PutFacts(ctx, fs); err != nil {
+	uniqueFs, err := uniqueFacts(fs)
+	if err != nil {
+		return err
+	}
+	if len(uniqueFs) > 0 {
+		if err := w.PutFacts(ctx, uniqueFs); err != nil {
 			return fmt.Errorf("sync: persist facts: %w", err)
 		}
 	}
 	return nil
 }
 
-func uniqueEvidence(evs []domain.Evidence) []domain.Evidence {
-	seen := make(map[domain.EvidenceID]struct{}, len(evs))
+// uniqueEvidence deduplicates exact repeats but rejects an ID reused for a
+// different capture. Silently keeping the first would hide an extractor bug.
+func uniqueEvidence(evs []domain.Evidence) ([]domain.Evidence, error) {
+	seen := make(map[domain.EvidenceID]domain.Evidence, len(evs))
 	out := make([]domain.Evidence, 0, len(evs))
 	for _, ev := range evs {
-		if _, ok := seen[ev.ID]; ok {
+		if prev, ok := seen[ev.ID]; ok {
+			if prev.ContentHash != ev.ContentHash || prev.RawRef != ev.RawRef ||
+				!prev.CapturedAt.Truncate(time.Microsecond).Equal(ev.CapturedAt.Truncate(time.Microsecond)) {
+				return nil, fmt.Errorf("sync: evidence %s has conflicting content", ev.ID)
+			}
 			continue
 		}
-		seen[ev.ID] = struct{}{}
+		seen[ev.ID] = ev
 		out = append(out, ev)
 	}
-	return out
+	return out, nil
 }
 
-func uniqueFacts(fs []domain.ObservedFact) []domain.ObservedFact {
-	seen := make(map[domain.FactID]struct{}, len(fs))
+// uniqueFacts mirrors the Fact Store contract: same ID + same content is an
+// idempotent repeat; same ID + different content is an error.
+func uniqueFacts(fs []domain.ObservedFact) ([]domain.ObservedFact, error) {
+	seen := make(map[domain.FactID]domain.ObservedFact, len(fs))
 	out := make([]domain.ObservedFact, 0, len(fs))
 	for _, f := range fs {
-		if _, ok := seen[f.ID]; ok {
+		if prev, ok := seen[f.ID]; ok {
+			if !prev.Equal(f) {
+				return nil, fmt.Errorf("sync: fact %s has conflicting content", f.ID)
+			}
 			continue
 		}
-		seen[f.ID] = struct{}{}
+		seen[f.ID] = f
 		out = append(out, f)
 	}
-	return out
+	return out, nil
 }
 
 func summarizePrograms(b adapter.ProgramBatch) *programsOutput {

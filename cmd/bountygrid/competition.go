@@ -102,8 +102,8 @@ func runCompetition(ctx context.Context, args []string) error {
 	enc.SetEscapeHTML(false)
 	return enc.Encode(map[string]any{
 		"id": snap.ID, "platform": snap.Platform, "scope": snap.Scope,
-		"observed_at": snap.ObservedAt, "confidence": snap.Confidence,
-		"evidence": ev.ID, "persisted": opts.Persist,
+		"observed_at": snap.ObservedAt, "valid_until": snap.ValidUntil,
+		"confidence": snap.Confidence, "evidence": ev.ID, "persisted": opts.Persist,
 	})
 }
 
@@ -152,14 +152,21 @@ func buildCompetitionSnapshot(in competitionInput, now time.Time, rawDir string)
 	if err := os.WriteFile(rawRef, []byte(redacted), 0o600); err != nil {
 		return domain.CompetitionSnapshot{}, domain.Evidence{}, err
 	}
+	observedAt := in.ObservedAt.UTC()
 	snap := domain.CompetitionSnapshot{
-		ID:       fmt.Sprintf("comp/%s/%s/%s", in.Platform, in.Scope, in.ObservedAt.UTC().Format("20060102T150405")),
-		Platform: platform, Scope: in.Scope, ObservedAt: in.ObservedAt.UTC(),
+		ID:       fmt.Sprintf("comp/%s/%s/%s", in.Platform, in.Scope, observedAt.Format("20060102T150405.000000000")),
+		Platform: platform, Scope: in.Scope, ObservedAt: observedAt,
+		// Competition data is only trusted for 30 days; the Opportunity Engine
+		// additionally decays confidence after 7 days.
+		ValidUntil:        observedAt.Add(30 * 24 * time.Hour),
 		ActiveResearchers: in.ActiveResearchers, RewardedResearchers: in.RewardedResearchers,
 		Top1Share: in.Top1Share, Top3Share: in.Top3Share, Top10Share: in.Top10Share,
 		DuplicatePressure: in.DuplicatePressure, Saturation: in.Saturation,
 		RewardPool: in.RewardPool, Confidence: in.Confidence,
 		Evidence: []domain.EvidenceID{prepared.ID},
+	}
+	if err := snap.Validate(); err != nil {
+		return domain.CompetitionSnapshot{}, domain.Evidence{}, fmt.Errorf("competition: %w", err)
 	}
 	return snap, prepared, nil
 }

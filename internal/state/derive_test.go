@@ -17,7 +17,7 @@ func growFacts(t *testing.T) facts.FactSet {
 		Platform:   domain.PlatformButian,
 		ProgramID:  &pid,
 		Text:       "AI 辅助漏洞挖掘规则\n报名时间：2026.8.25~2026.11.30\n活动时间：2026.9.1~2026.11.30\n2026GROW计划漏洞挖掘实战-第二期 2026/10/01 - 2026/10/31",
-		CapturedAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
+		CapturedAt: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC),
 		EvidenceID: "ev-grow",
 	}
 	fs, err := (butianfacts.GrowExtractor{}).Extract(context.Background(), in)
@@ -140,6 +140,37 @@ func TestPracticalCertificationDoesNotBlockGeneralSubmit(t *testing.T) {
 	cap := DeriveAccountCapability(gates, &identity, &compliance, nil, now)
 	if !cap.CanSubmit {
 		t.Fatal("program-scoped practical certification must not block general submit")
+	}
+}
+
+func TestStaleFactsCannotProduceFreshState(t *testing.T) {
+	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
+	running := domain.StatusRunning
+	in := ProgramInput{
+		Status:           &running,
+		OldestObservedAt: now.Add(-DefaultFactTTL - time.Hour),
+	}
+	if _, err := DeriveProgramState(in, now, 30*time.Minute); err == nil {
+		t.Fatal("facts older than the fact TTL must not produce a state")
+	}
+}
+
+func TestStateValidityDoesNotOutliveInputFacts(t *testing.T) {
+	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
+	running := domain.StatusRunning
+	// The fact expires in 10 minutes, which must cap the state before its own
+	// 30-minute TTL.
+	observed := now.Add(-DefaultFactTTL + 10*time.Minute)
+	in := ProgramInput{Status: &running, OldestObservedAt: observed}
+	st, err := DeriveProgramState(in, now, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.ValidUntil.Equal(observed.Add(DefaultFactTTL)) {
+		t.Fatalf("valid_until = %v, want input fact expiry %v", st.ValidUntil, observed.Add(DefaultFactTTL))
+	}
+	if !st.ObservedAt.Equal(observed) {
+		t.Fatalf("observed_at = %v, want input observation %v", st.ObservedAt, observed)
 	}
 }
 

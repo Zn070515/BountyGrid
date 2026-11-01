@@ -87,22 +87,26 @@ func (e Engine) Evaluate(in Input) (domain.Opportunity, error) {
 
 	top10, dup, sat := 0.5, 0.5, 0.5
 	conf := e.NoDataConf
-	if c := in.Competition; c != nil {
-		if c.Top10Share != nil {
-			top10 = clamp01(*c.Top10Share)
+	decay := 1.0
+	comp := competitionAt(in.Competition, now)
+	if comp != nil {
+		if comp.Top10Share != nil {
+			top10 = clamp01(*comp.Top10Share)
 		}
-		if c.DuplicatePressure != nil {
-			dup = clamp01(*c.DuplicatePressure)
+		if comp.DuplicatePressure != nil {
+			dup = clamp01(*comp.DuplicatePressure)
 		}
-		if c.Saturation != nil {
-			sat = clamp01(*c.Saturation)
+		if comp.Saturation != nil {
+			sat = clamp01(*comp.Saturation)
 		}
-		conf = c.Confidence
-		if c.Top10Share == nil {
+		conf = comp.Confidence
+		if comp.Top10Share == nil {
 			// A guessed 0.5 share must not inherit the snapshot's full
 			// confidence; missing top10 share caps confidence at 0.5.
 			conf = minConf(conf, missingShareConf)
 		}
+		decay = competitionDecay(comp, now)
+		conf = domain.Confidence(float64(conf) * decay)
 	}
 	penalty := e.Weights.Top10*top10 + e.Weights.Duplicate*dup + e.Weights.Saturation*sat
 	penalty = math.Min(penalty, 0.95)
@@ -133,9 +137,18 @@ func (e Engine) Evaluate(in Input) (domain.Opportunity, error) {
 		fmt.Sprintf("cost=%.0f", cost),
 		fmt.Sprintf("confidence=%.2f", confidence),
 	}
+	if comp != nil {
+		inputs = append(inputs,
+			fmt.Sprintf("competition_age_hours=%.1f", now.Sub(comp.ObservedAt).Hours()),
+			fmt.Sprintf("competition_decay=%.2f", decay))
+	} else if in.Competition != nil {
+		inputs = append(inputs, "competition=expired_or_stale")
+	}
 	expected := expectedReward
+	// Each evaluation is an append-only record: the history of why a program
+	// ranked the way it did (competition, P(valid), confidence) is the point.
 	return domain.Opportunity{
-		ID:        domain.OpportunityID("opp/" + string(in.Program.ID)),
+		ID:        domain.OpportunityID("opp/" + string(in.Program.ID) + "/" + now.UTC().Format("20060102T150405.000000000")),
 		ProgramID: in.Program.ID,
 		EstimatedReward: domain.Range{
 			Min: in.Program.Reward.Min, Max: in.Program.Reward.Max,
@@ -153,6 +166,44 @@ func (e Engine) Evaluate(in Input) (domain.Opportunity, error) {
 		Inputs:                inputs,
 		EvaluatedAt:           now,
 	}, nil
+}
+
+const (
+	competitionFreshWindow = 7 * 24 * time.Hour
+	competitionMaxAge      = 30 * 24 * time.Hour
+)
+
+// competitionAt drops snapshots that have expired or are older than the hard
+// maximum age. Competition data changes fast; a six-month-old ranking must not
+// influence today's schedule.
+func competitionAt(c *domain.CompetitionSnapshot, now time.Time) *domain.CompetitionSnapshot {
+	if c == nil {
+		return nil
+	}
+	if !c.ValidUntil.IsZero() && !c.ValidUntil.After(now) {
+		return nil
+	}
+	if !c.ObservedAt.IsZero() && now.Sub(c.ObservedAt) >= competitionMaxAge {
+		return nil
+	}
+	return c
+}
+
+// competitionDecay lowers confidence linearly between the fresh window (7
+// days) and the hard maximum age (30 days).
+func competitionDecay(c *domain.CompetitionSnapshot, now time.Time) float64 {
+	if c.ObservedAt.IsZero() {
+		return 1
+	}
+	age := now.Sub(c.ObservedAt)
+	if age <= competitionFreshWindow {
+		return 1
+	}
+	frac := float64(age-competitionFreshWindow) / float64(competitionMaxAge-competitionFreshWindow)
+	if frac >= 1 {
+		return 0
+	}
+	return 1 - frac
 }
 
 func clamp01(v float64) float64 {

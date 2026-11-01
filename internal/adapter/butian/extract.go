@@ -75,9 +75,14 @@ func cardProgram(c srcCard, evID domain.EvidenceID, at time.Time) (domain.Progra
 	}
 
 	pidCopy := pid
+	// The card states that these gates are required; it cannot prove whether
+	// this account satisfies them. Practical certification is resolved at
+	// policy time from Account.PracticalCertification, so it must not be frozen
+	// as UNSATISFIED here. Signup is inferred only from an explicit
+	// "已报名"/"立即报名"-style phrase.
 	gates := []domain.EligibilityGate{
-		{Kind: domain.GateProgramSignup, Required: true, Satisfied: domain.GateUnsatisfied, Blocking: true, Evidence: []domain.EvidenceID{evID}},
-		{Kind: domain.GatePracticalCertification, ProgramID: &pidCopy, Required: true, Satisfied: domain.GateUnsatisfied, Blocking: true, Evidence: []domain.EvidenceID{evID}},
+		{Kind: domain.GateProgramSignup, Required: true, Satisfied: signupSatisfaction(c.Text, c.Buttons), Blocking: true, Evidence: []domain.EvidenceID{evID}},
+		{Kind: domain.GatePracticalCertification, ProgramID: &pidCopy, Required: true, Satisfied: domain.GateUnknown, Blocking: true, Evidence: []domain.EvidenceID{evID}},
 	}
 	prog := domain.Program{
 		ID:       pid,
@@ -91,7 +96,7 @@ func cardProgram(c srcCard, evID domain.EvidenceID, at time.Time) (domain.Progra
 			Inputs: statusInputs, Evidence: []domain.EvidenceID{evID},
 		},
 		Eligibility: domain.EligibilityState{
-			Decision: domain.HumanActionNeeded, Gates: gates,
+			Decision: eligibilityFromGates(gates), Gates: gates,
 			EvaluatedAt: at, PolicyVersion: extractor,
 		},
 		Scope: domain.Scope{
@@ -167,14 +172,12 @@ func publicWelfareProgram(v pubVendor, evID domain.EvidenceID, at time.Time) (do
 		return domain.Program{}, nil, fmt.Errorf("butian: public welfare vendor missing id/name: %w", adapter.ErrUnsupported)
 	}
 	pid := domain.ProgramID("butian/pub/" + v.CompanyID)
-	status := cardFact(evID, pid, facts.PredProgramStatus, string(domain.StatusRunning), "", at)
-	paused := cardFact(evID, pid, facts.PredProgramPaused, false, "", at)
-	// A vendor listed in the public-welfare list is accepting reports, but the
-	// list states no explicit status, so the observation is less than certain.
-	status.Confidence = 0.8
+	// The list proves only that the vendor is listed. It does not state a
+	// program status, so RUNNING is a derived state from `listed=true`, not an
+	// ObservedFact pretending the platform said it.
+	listed := cardFact(evID, pid, "butian.pub.listed", true, "", at)
 	fs := []domain.ObservedFact{
-		status, paused,
-		cardFact(evID, pid, "butian.pub.listed", true, "", at),
+		listed,
 		cardFact(evID, pid, facts.PredScopeVisibility, string(domain.ScopeUnknown), "", at),
 		cardFact(evID, pid, "butian.pub.company_id", v.CompanyID, "", at),
 		cardFact(evID, pid, "butian.pub.company_name", v.CompanyName, "", at),
@@ -184,9 +187,9 @@ func publicWelfareProgram(v pubVendor, evID domain.EvidenceID, at time.Time) (do
 		ID: pid, Platform: domain.PlatformButian, NativeID: v.CompanyID,
 		Name: v.CompanyName, Type: domain.TypePublicWelfareSRC,
 		Status: domain.ProgramState{
-			Status: domain.StatusRunning, Reason: "listed_in_public_welfare_api",
+			Status: domain.StatusRunning, Reason: "derived_from_public_welfare_listing",
 			ObservedAt: at, ValidUntil: at.Add(30 * time.Minute), Confidence: 0.8,
-			Inputs: []domain.FactID{status.ID, paused.ID}, Evidence: []domain.EvidenceID{evID},
+			Inputs: []domain.FactID{listed.ID}, Evidence: []domain.EvidenceID{evID},
 		},
 		Eligibility: domain.EligibilityState{
 			Decision: domain.Eligible, EvaluatedAt: at, PolicyVersion: extractor,
@@ -253,14 +256,18 @@ func growProgram(ctx context.Context, pages []capturedText, at time.Time) (domai
 		return domain.Program{}, nil, err
 	}
 
-	// Gates come only from phrases the page actually states. The rules modal
-	// always shows a 报名时间 window, so PROGRAM_SIGNUP is required whenever
-	// the rules page was captured.
-	gates := []domain.EligibilityGate{{
-		Kind: domain.GateProgramSignup, Required: true,
-		Satisfied: domain.GateUnsatisfied, Blocking: true,
-		Evidence: []domain.EvidenceID{growEvidence(pages, "报名时间")},
-	}}
+	// Gates come only from phrases the page actually states. A registration
+	// window proves the requirement, not that this account has not signed up;
+	// satisfaction is inferred only from explicit "已报名"/"立即报名" wording.
+	gates := make([]domain.EligibilityGate, 0, 3)
+	if ev := growEvidence(pages, "报名时间", "立即报名", "已报名", "已加入", "报名成功", "未报名"); ev != "" {
+		gates = append(gates, domain.EligibilityGate{
+			Kind: domain.GateProgramSignup, Required: true,
+			Satisfied: gateFromText(pages, []string{"已报名", "已加入", "报名成功"}, []string{"立即报名", "未报名"}),
+			Blocking:  true,
+			Evidence:  []domain.EvidenceID{ev},
+		})
+	}
 	for _, c := range []struct {
 		kind    domain.GateKind
 		needles []string
@@ -288,7 +295,7 @@ func growProgram(ctx context.Context, pages []capturedText, at time.Time) (domai
 		Name: "补天 GROW", Type: domain.TypeCampusProgram,
 		Status: st,
 		Eligibility: domain.EligibilityState{
-			Decision: domain.HumanActionNeeded, Gates: gates,
+			Decision: eligibilityFromGates(gates), Gates: gates,
 			EvaluatedAt: at, PolicyVersion: extractor,
 		},
 		Scope:       scope,
@@ -405,6 +412,64 @@ func parseAccountText(text string) accountText {
 func atoiSafe(s string) int {
 	v, _ := strconv.Atoi(strings.TrimSpace(s))
 	return v
+}
+
+// signupSatisfaction infers enrollment only from explicit wording. A missing
+// phrase is UNKNOWN, never UNSATISFIED: "there is a registration window" is not
+// the same fact as "this account has not registered".
+func signupSatisfaction(text string, buttons []string) domain.GateSatisfaction {
+	return gateFromText(
+		[]capturedText{{Text: text + " " + strings.Join(buttons, " ")}},
+		[]string{"已报名", "已加入", "报名成功"},
+		[]string{"立即报名", "未报名"},
+	)
+}
+
+func gateFromText(pages []capturedText, satisfied, unsatisfied []string) domain.GateSatisfaction {
+	for _, needle := range satisfied {
+		for _, p := range pages {
+			if strings.Contains(p.Text, needle) {
+				return domain.GateSatisfied
+			}
+		}
+	}
+	for _, needle := range unsatisfied {
+		for _, p := range pages {
+			if strings.Contains(p.Text, needle) {
+				return domain.GateUnsatisfied
+			}
+		}
+	}
+	return domain.GateUnknown
+}
+
+func eligibilityFromGates(gates []domain.EligibilityGate) domain.EligibilityDecision {
+	humanBlock, nonHumanBlock, unknown := false, false, false
+	for _, g := range gates {
+		if !g.Required {
+			continue
+		}
+		if g.Satisfied == domain.GateUnknown {
+			unknown = true
+		}
+		if g.Blocking && g.Satisfied == domain.GateUnsatisfied {
+			if g.Kind.HumanResolvable() {
+				humanBlock = true
+			} else {
+				nonHumanBlock = true
+			}
+		}
+	}
+	switch {
+	case humanBlock:
+		return domain.HumanActionNeeded
+	case nonHumanBlock:
+		return domain.Ineligible
+	case unknown:
+		return domain.EligibilityUnknown
+	default:
+		return domain.Eligible
+	}
 }
 
 func parseCompliance(text string) *bool {
