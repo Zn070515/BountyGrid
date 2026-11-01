@@ -349,6 +349,21 @@ func TestReduceRejectsDuplicateID(t *testing.T) {
 	}
 }
 
+func TestReduceRejectsInvalidEvent(t *testing.T) {
+	events := []Event{{ID: "e1", TraceID: "t", Seq: 1, Kind: Kind("BOGUS"), At: testAt()}}
+	if _, err := Reduce(events); err == nil || !strings.Contains(err.Error(), "kind") {
+		t.Fatalf("invalid kind err = %v", err)
+	}
+	events = []Event{{ID: "e1", TraceID: "t", Seq: 1, Kind: KindCustom}}
+	if _, err := Reduce(events); err == nil || !strings.Contains(err.Error(), "at is zero") {
+		t.Fatalf("zero time err = %v", err)
+	}
+	events = []Event{{ID: "e1", TraceID: "t", Seq: 1, Kind: KindCustom, At: testAt(), Payload: []byte("{")}}
+	if _, err := Reduce(events); err == nil || !strings.Contains(err.Error(), "payload") {
+		t.Fatalf("invalid payload err = %v", err)
+	}
+}
+
 func TestReduceRejectsCycle(t *testing.T) {
 	events := []Event{
 		{ID: "e1", TraceID: "t", ParentID: "e2", Seq: 1, Kind: KindCustom, At: testAt()},
