@@ -124,6 +124,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "ledger:", err)
 			os.Exit(1)
 		}
+	case "trace":
+		if err := runTrace(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "trace:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println(version)
 	default:
@@ -133,7 +138,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|decide|schedule|competition|harness|model|verify|report|submit|ledger|version>")
+	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|decide|schedule|competition|harness|model|verify|report|submit|ledger|trace|version>")
 }
 
 func dsn() (string, error) {
