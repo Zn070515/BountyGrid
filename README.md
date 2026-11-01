@@ -111,7 +111,7 @@ bash probes/butian/grow-dates.sh
 
 ## 实现进度 · Implementation
 
-> **真实状态：Phase 0 complete; Phase 1–8 control plane implemented; active execution remains disabled.** 三平台 Reader 主路径已通并落库；Policy/Gateway/Opportunity/Scheduler/Harness 已有实现并在控制层收口；Verification 规则引擎（执行回执 + durable human review）、ReportDraft、dry-run Submission、CNY 现金 Ledger（含 Feedback 回灌 Opportunity）已实现。**真实平台 SubmitAdapter 与真实模型 Provider 仍未实现**；`ACTIVE_HTTP` 工具不存在，主动执行保持 disabled。执行可信度硬化（输入新鲜度、逐请求 Egress 授权、SSRF/DNS rebinding、AMBIGUOUS 回执/提交意图、模型调用持久化）见下方 hardening 记录。
+> **真实状态：Phase 0 complete; Phase 1–8 control plane implemented; active execution remains disabled.** 三平台 Reader 主路径已通并落库；Policy/Gateway/Opportunity/Scheduler/Harness 已有实现并在控制层收口；Verification 规则引擎（执行回执 + durable human review）、ReportDraft、dry-run Submission、CNY 现金 Ledger（含 Feedback 回灌 Opportunity）已实现。**真实平台 SubmitAdapter 与真实模型 Provider 仍未实现**；`ACTIVE_HTTP` 工具不存在，主动执行保持 disabled。执行可信度硬化（输入新鲜度、逐请求 Egress/代理授权、SSRF/DNS rebinding、AMBIGUOUS 回执/提交意图、模型调用状态机、trace）见下方 Implementation notes 与 `architecture/`。
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
@@ -123,291 +123,36 @@ bash probes/butian/grow-dates.sh
 | Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 的路由/数据分级/预算/审计已实现（仅本地 dry-run，**无真实 Provider**）；**无 ACTIVE_HTTP 工具** |
 | Phase 6 | Verification / Report / Submission / Ledger | Verification 规则引擎、ReportDraft、Submission dry-run 控制层、CNY 现金 Ledger（append-only/ExternalRef/REVERSAL/Summary/Reconcile/Feedback）已实现；**真实平台 SubmitAdapter 未实现**；非现金奖励仅留接口 |
 
-### Execution-trust hardening（2026-11-01）
+### Implementation notes
 
-- **声明式策略规则**：`internal/policy/rules` 支持 host/method/path 规则、加载期 `match`/`not_match` 自测、`*.example.com` 仅子域/`**.example.com` 含 apex、URL 规范化（大小写/尾点/百分号编码/`path.Clean`）、最严决策合并与 `justification`；`bountygrid policy check` 输出命中规则和规则集指纹。决策记录 `RuleIDs`/`RuleSetFingerprint`，`Authorize` 拒绝规则集变更后的旧授权。
-- **可回放 Trace**：`internal/trace` 提供 append-only `trace.jsonl`、`raw/<sha256>` content-addressed payload、稳定事件哈希和因果 reducer；`bountygrid trace reduce|validate` 离线读取。当前尚未接入 model/harness/gateway 调用点，DB 仍是唯一权威状态，trace 只做审计/回放。
-- **逐请求网络代理**：`internal/harness/proxy.go` 提供本地 forward proxy：HTTP absolute-form 逐请求 `NetworkPolicy`（`allow/deny/ask`，无交互 UI 时 ask=deny）、先审计后转发（allow 审计失败则不转发）、CONNECT 目标非公网过滤、请求/响应 8 MiB 上限、hop-by-hop 剥离、显式 `ApprovedProxy`（绝不使用环境代理）。`RulePolicy` 把声明式规则接到代理，`AuditSink` 把决策写入 `audit_events`（path 只存 hash）。
-- **输入新鲜度独立检查**：执行/提交动作分别要求 `Program.Status`、`Scope`、`Program.PolicyObservedAt`（automation/constraints 快照）与 `AccountCapability` 在各自窗口内；任一 stale → `REQUIRE_MORE_EVIDENCE`（`STALE_PROGRAM_STATE` / `STALE_SCOPE` / `STALE_AUTOMATION_POLICY` / `STALE_ACCOUNT_CAPABILITY`）。决策记录 `ScopeRevision` 与 `PolicyRevision`。
-- **逐请求 Egress 授权**：网络工具拿到的是绑定 `ExecutionGrant`（approved method、canonical asset host/path、RPS、并发、日限额）的 `Egress`；每次请求与重定向都重新校验，不能被一次 ALLOW 放大成任意请求。
-- **SSRF / DNS rebinding**：连接前解析 DNS，拒绝 loopback/private/link-local/ULA/multicast/unspecified 并固定到校验后的 IP；默认不使用环境代理，只有显式 `ApprovedProxy` 才启用。
-- **执行回执 ≠ ALLOW**：Finding 记录 `source_decision_ids` / `execution_receipts`；`VERIFIED` 必须有 `COMPLETED` 回执，且 program/asset/action/decision/evidence 与 Finding 匹配。网络/破坏性工具报错默认 `AMBIGUOUS`（人工对账），只有工具证明 `ErrNotSent` 才能自动重试。
-- **人工复核是对象**：AI-assisted `VERIFIED` 必须引用 `human_reviews` 中的 `HumanReviewID`，并校验 finding/reviewer/time/verdict/evidence；裸字符串不再足够。
-- **提交意图状态机**：`PENDING → SENT → CONFIRMED/AMBIGUOUS/FAILED_BEFORE_SEND`；只有 `PENDING` 可被 TTL 回收，`SENT/AMBIGUOUS` 永不自动重投。
-- **模型调用可信**：`DataClass` 取请求与 provenance 的最大敏感度；`Local` 由 transport 身份（loopback/unix/in-process）判定；新增 context window/capability 过滤、整条 fallback 链累计预算、`model_calls` 持久化与 `CallID` 幂等。
-- **附件严格校验**：提供 `attachments_root` 时校验 workspace 边界、大小、magic bytes、SHA-256 与敏感值扫描，并把 hash 绑定进报告内容审批。
-- **反馈闭环**：`schedule` 读取 Ledger `Feedback`，用实际接受率/到账/成本回灌 Opportunity 评分。
+Detailed behavior lives in [`architecture/`](architecture/README.md); this section is only the map.
 
-### Phase 1 progress · Browser Sidecar + Vulbox Reader
+- **Readers** (`internal/adapter`): read-only Vulbox/Xianzhi/Butian; `sync` persists Evidence → Facts → Program/Account. `-persist` is idempotent; raw pages stay in `.evidence/`.
+- **Kernel** (`derive`): Facts → `PROGRAM_STATE`/`SCOPE_VISIBILITY`/`REGISTRATION_STATE`; superseded Facts expire dependent states; `-workers` is bounded and deterministic.
+- **Policy/Gateway** (`decide`): action-level decisions; authoritative asset from Scope; independent freshness; `-authorize` re-evaluates before consuming a single-use approval. Declarative rules are a guardrail, not a way to raise platform permission; see [`rules/README.md`](rules/README.md).
+- **Opportunity/Scheduler** (`schedule`): expected return per cost, competition decay, DB cooldown, no dispatch of PAUSED/ENDED; the human queue is not execution.
+- **Harness** (`harness`): the tool declares `RequiredAction`; `ALLOW` + `Authorize` before execution; the proxy is grant-bound and audited in production; see [`architecture/proxy.md`](architecture/proxy.md).
+- **Model** (`model`): data class/provenance, locality, context/capability, cumulative budget, and the `model_calls` state machine; no real provider; see [`architecture/harness-model-router.md`](architecture/harness-model-router.md).
+- **Verification/Report** (`verify`, `report`): `VERIFIED` requires scope, reproduction/impact evidence, minimization, duplicate check, a `COMPLETED` receipt, and a durable human review; a report is assembled, never submitted.
+- **Submission** (`submit`): dry-run only; the approval is bound to the report content hash; one real submission per report; `AMBIGUOUS` never auto-retries.
+- **Ledger** (`ledger`): append-only CNY cash, external refs/reversals/reconcile; Feedback feeds Opportunity.
+- **Trace** (`trace`): append-only JSONL plus content-addressed raw payloads and a reducer; it is not authoritative; see [`architecture/trace.md`](architecture/trace.md).
 
-已落地（只读，不点击提交/报名/NDA）：
-
-- `internal/sidecar`：`agent-browser` 传输层，暴露 `open/wait/reload/eval/get/screenshot/state save/close`；按命令限速，不提供 click/fill。它不是安全沙箱：`Eval` 可执行任意 JS，Reader 只把它用于只读观察与分页/弹窗控制；Harness/Model 不得直接持有 Client。
-- `internal/adapter/vulbox`：`AuthStatus`、`SyncAccount`（需登录）、`SyncPrograms`（公开项目列表，走页面自身的只读 GET）、`SyncProgram/SyncScope/SyncPolicy`（企业SRC子域，实测联想 444）；非企业SRC详情页仍 fail-closed 返回 `ErrUnsupported`。
-- `cmd/bountygrid sync`：`-programs`（默认）、`-public-welfare`/`-grow`（仅 butian）、`-account`、`-program <id>`、`-pages`、`-page-size`、`-session`（默认 `vbprobe`）、`-raw-dir`；输出 JSON 摘要，不打印页面原文。
-- 原始证据脱敏后写入 `.evidence/`（gitignored），数据库/仓库不保存页面原文。
-
-实测（2026-10-31）：
-
-```text
-公开列表：10 个项目/页，estimated_total=1513，150 条 Fact，1 条 Evidence
-账号    ：见习白帽 / exp 10 / 信誉 100 / 排名 9999+ / 实名 / CanSubmit / 已加入 2
-联想 444：RUNNING / ELIGIBLE；Scope PUBLIC+GRANTED+known；include 9 条、exclude *.sunits.com；
-          FileUpload=FORBIDDEN，AIAnalysis=CONDITIONAL，HumanVerificationRequired=true
-```
-
-> 用户中心页面会弹出促销抽屉遮挡个人资料。`readPage` 现在会只读关闭抽屉并等待“已实名”出现后再抽取；修复后 `identity_verified=true`、已加入 2、`CanSubmit=true`。调度器据此为联想 444 产生 `QUEUED` research task。
-
-### Xianzhi Reader（任务列表已实测）
-
-- `internal/adapter/xianzhi`：`AuthStatus`、`SyncAccount`、`SyncPrograms`（5 页/91 任务）、`SyncProgram`、`SyncScope`（未报名 → `GATED_BY_SIGNUP + NOT_GRANTED`）、`SyncPolicy`（保守 `UNKNOWN`）。
-- 任务数据来自页面 React fiber 的 `task` 对象；状态映射实测：`4=RUNNING`、`5=ENDED`、`6=PAUSED`；类型 `1=SRC`、`2=企业众测`。实测 91 条：**34 RUNNING / 54 ENDED / 3 PAUSED**，**61 BRAND_SRC / 30 CROWD_TEST**，1058 条 Fact、5 条 Evidence，与审计完全一致。
-- 翻页/重开同一 hash URL 可能是 no-op；`openList` 会 `reload` 强制重新取数。曾遇到控制台数据接口 `os error 10060` 时 SPA 只剩壳（0 卡片），reload 后恢复。
-- 账号同步已跑通（`auth=OK`），但个人资料页只显示“实名认证”标签、没有文本状态，当前 `identity_verified` 保持 nil（`CanSubmit=false`，fail-closed）；需要补账号状态提取器。
-- **登录不等于报名**：当前 0 个已报名任务；Scope 必须 `GATED_BY_SIGNUP`。已报名任务的可见 Scope 解析需要在本人实际报名后验证，未报名任务一律返回 GATED。
-
-```bash
-go run ./cmd/bountygrid sync -platform xianzhi -programs -pages=5
-go run ./cmd/bountygrid sync -platform xianzhi -programs=false -account
-```
-
-账号与单项目同步需先人工登录：
-
-```bash
-bash probes/session/relogin.sh vulbox
-go run ./cmd/bountygrid sync -account -programs -pages=1
-go run ./cmd/bountygrid sync -programs=false -account=false -program 444
-```
-
-`relogin.sh` 现在故意不加载旧 state（损坏的 state 会让浏览器导航挂起），登录成功后重新保存。单机上产品 Reader 复用探针会话 `vbprobe`；其他环境用 `-session` 覆盖。`sync` 默认**不关闭**会话，避免把内存中的登录态关掉；需要清理时显式加 `-close=true`。
-
-### 快照持久化 · `sync -persist`
-
-- 顺序：Evidence → Facts → Program/Account；Evidence 先落库，Fact 必须带 EvidenceRef，然后才 upsert Program/Account。
-- 原始页面仍只写本地 `.evidence/`；数据库只存 Evidence 元数据/hash/RawRef、Fact、Program/Account JSON。
-- 幂等：Evidence/Fact ID 确定性；同 ID 同内容重跑是 no-op，Program/Account 用 upsert。新一次同步产生新 Evidence/Fact（append-only observation）。
-- 实测（2026-10-31，本地 `bountygrid-pg`）：
-  - Vulbox 第 1 页 50 项目 → `programs=50`、`observed_facts=750`、`evidence=1`
-  - Xianzhi 5 页 91 任务 → `programs=91`、`observed_facts=1058`、`evidence=5`（54 ENDED / 34 RUNNING / 3 PAUSED）
-  - Vulbox 444 详情 → Scope `PUBLIC/GRANTED`、`FileUpload=FORBIDDEN`、`AIAnalysis=CONDITIONAL`
-  - 累计 `programs=141`、`observed_facts=1830`、`evidence=8`；`evidence_refs` 为空 0 条，confidence 越界 0 条。
+Common commands:
 
 ```bash
 go run ./cmd/bountygrid sync -platform vulbox -programs -pages=1 -persist
-```
-
-### 派生状态 · `derive`
-
-- `bountygrid derive -platform vulbox|xianzhi` 从已落库 Fact 重新计算状态，写入 `derived_states`：
-  - `PROGRAM_STATE` ← `DeriveProgramState`（显式 PAUSED/ENDED 优先；已过的 inclusive end 不会被陈旧的 RUNNING 覆盖）
-  - `SCOPE_VISIBILITY` ← `DeriveScopeVisibility`
-  - `REGISTRATION_STATE` ← `DeriveRegistrationOpen`（有 canonical 报名窗口时才写）
-- 状态 ID 稳定（`state/<program>/<subject>`），`inputs` 记录 Fact ID；`derived_states.state` 为 JSONB 字符串。
-- 一次加载平台全部 Fact 并按 Program 分组，派生结果用 `pgx.Batch` 一次写入；`-workers` 控制并行派生（默认最多 4，1 = 顺序），输出按 Program 顺序聚合，保证确定性。
-- Fact supersede：PostgreSQL `SupersedeFact` 在同一事务里把 `inputs` 含该 Fact 的 State 的 `valid_until` 置为 `now()`；`inputs` 有 GIN 索引。状态不会悄悄继续使用被推翻的证据。
-- 实测（2026-10-31）：Xianzhi 91 项目 → 273 状态（91/91/91），Vulbox 50 → 100 状态，合计 **373**；`inputs` 为空 0 条、confidence 越界 0 条、已过期 0 条。
-  - `xianzhi/324 = RUNNING / GATED_BY_SIGNUP / registration CLOSED`
-  - `vulbox/444 = RUNNING / PUBLIC`（详情同步的最新 Scope Fact 覆盖列表的 UNKNOWN）
-
-```bash
-go run ./cmd/bountygrid derive -platform xianzhi
 go run ./cmd/bountygrid derive -platform vulbox
-```
-
-### Action Gateway · `decide`
-
-- `bountygrid decide -request <json>`：从 PostgreSQL 加载 Account/Program → Policy Engine → 持久化 `ActionDecision` + `action.decision` 审计事件。缺失上下文直接产生并持久化 `DENY CONTEXT_NOT_FOUND`。
-- `bountygrid decide -authorize <decision-id>`：执行前重新加载 Account/Program、重新解析 Asset 并重跑 Policy —— 必须 ALLOW、未过期、human-only 有审批；Scope/资格/自动化策略变化后旧 ALLOW 失败。带运行时约束的动作需要 `-context <json>` 提供新的 `usage_today`/`budget_spent`/`execution_environment`（后者必须带 `observed_at`，超过 5 分钟即视为未知），缺失时 fail-closed。Gateway 本身不执行任何平台动作。
-- `REPORT_SUBMIT` 接 PostgreSQL 一次性审批账本；`Policy.Decide` 只校验，`Gateway.Authorize` 在重评估通过后才原子消费，重复使用在 Authorize 阶段失败。
-- Decision ID 使用带分隔符的时间戳（不是 `UnixNano`）：19 位连续数字会被 secret scanner 误判为银行卡号，导致审计 payload 被拒绝。
-- 实测（2026-10-31）：
-  - `VIEW_RULES` → `ALLOW`，`-authorize` 返回 `authorized:true`
-  - `REPORT_SUBMIT` → `DENY ACCOUNT_CANNOT_SUBMIT`
-  - `ACTIVE_HTTP` 缺 Asset → `DENY ASSET_REQUIRED`
-  - DB：`action_decisions=3`、`audit_events(action.decision)=3`，无任何平台动作。
-
-```bash
 go run ./cmd/bountygrid decide -request ./request.json
 go run ./cmd/bountygrid decide -authorize <decision-id>
-```
-
-### Policy rules · `policy`
-
-`internal/policy/rules` 是声明式规则层：按 action/program/host/method/path 选择请求，规则带 `decision`、`source` 与 `justification`，并可在加载时用 `match`/`not_match` 样例自测。多条规则命中时最严决策胜出（`forbidden > require_human > allow`）。
-
-**权限层级**：平台授权是 ceiling，本地规则只能收紧。`source=operator`（默认）的 `allow` 永远不会把 `REQUIRE_HUMAN`/`DENY` 变成 `ALLOW`；只有 `source=platform_evidence` 且带 `evidence_refs/observed_at/valid_until/policy_revision` 的未过期规则才能具体化 `CONDITIONAL`，且仍不能覆盖硬 `DENY`。`can_relax` 会出现在 `policy check` 输出中。路径前缀是 segment-aware：`/api` 匹配 `/api` 与 `/api/users`，不匹配 `/apix`/`/api-admin`；编码分隔符/点段在解码后仍残留会被拒绝。规则指纹（`sha256:`）写入决策，`Authorize` 时规则集变化会拒绝旧授权。
-
-```bash
-go run ./cmd/bountygrid policy check \
-  -rules rules/example.rules.json \
-  -action ACTIVE_HTTP -program vulbox/444 \
-  -asset https://api.example.com/v1/items -method GET
-```
-
-`decide` / `harness` / `submit` 均支持可选 `-rules <file>`。详见 [`rules/README.md`](rules/README.md)。
-
-### Trace bundle · `trace`
-
-`internal/trace` 记录一次研究运行的 append-only 因果链：`trace.jsonl` 每行一个事件，`raw/<sha256>` 保存 content-addressed 的已脱敏原始载荷。事件有 `seq`、`parent_id`、稳定 `hash` 和 kind（`MODEL_CALL`/`ACTION_DECISION`/`TOOL_DISPATCH`/`EXECUTION_RECEIPT`/`EVIDENCE`/...）。DB 仍是权威状态；trace 用于回放和审计，不是第二事实源。
-
-```bash
-go run ./cmd/bountygrid trace reduce -file ./trace.jsonl
-go run ./cmd/bountygrid trace validate -file ./trace.jsonl
-```
-
-详见 [`architecture/trace.md`](architecture/trace.md)。当前 CLI/包已实现，model/harness/gateway 调用点尚未写入 trace。
-
-### Opportunity / Scheduler · `schedule`
-
-- `internal/opportunity`：
-  - `E[reward] = P(valid) × (0.25·min + 0.5·median + 0.25·max) × tier × campaign × (1 − duplicate)`
-  - `penalty = 0.4·top10_share + 0.35·duplicate + 0.25·saturation`；缺 CompetitionSnapshot 时用保守 0.5/0.5/0.5，并把 Confidence 降到 0.2。
-  - `score = E[reward] × (1 − penalty) / max(cost,1) × confidence`；`Inputs[]` 记录 p_valid/权重/竞争/成本/置信度。**不按最高赏金排序。**
-- `Scheduler`：硬过滤 `RUNNING` + cooldown；`CanSubmit=false` / `Eligibility != ELIGIBLE` / `Scope.Access != GRANTED` 只进 HumanActionQueue，不进入执行队列；Top-K、每平台/每项目配额、企业SRC保留位；产出 `ResearchTask` 状态 `QUEUED` 或 `HUMAN_ACTION_REQUIRED`，**没有 Harness 执行**。
-- 实测（2026-10-31）：Vulbox 9 个 RUNNING 可评分程序 → **1 research（联想 444，`QUEUED`）/ 8 human（`PROGRAM_GATE`，未加入）**；40 个 PAUSED/ENDED 被排除、1 个无赏金数据。Butian 34 human（`ACCOUNT_CAPABILITY`，合规考核/实战认证）、Xianzhi 3 human。DB `research_tasks` = 1 `QUEUED` + 45 `HUMAN_ACTION_REQUIRED`，无平台动作。账号能力修复前 Vulbox 是 0 research / 9 human，见下。
-- **登录态 ≠ 资格**：三个浏览器会话都登录着，但 Xianzhi 需要实际报名才解锁 Scope，Butian 需要合规考核/实战认证，Vulbox 个人中心被促销抽屉遮挡（已修复）。账号门槛与页面授权永远不由“已登录”推断。
-
-```bash
 go run ./cmd/bountygrid schedule -platform vulbox -top 5 -persist
+go run ./cmd/bountygrid policy check -rules rules/example.rules.json -action ACTIVE_HTTP -program vulbox/444 -asset https://api.example.com/v1/items -method GET
+go run ./cmd/bountygrid trace reduce -file ./trace.jsonl
+go run ./cmd/bountygrid verify -file ./verify.json -persist
+go run ./cmd/bountygrid report -file ./report.json -persist
+go run ./cmd/bountygrid submit -report <id> -account <account> -approval <approval.json>
+go run ./cmd/bountygrid ledger -summary -platform vulbox
 ```
-
-### CompetitionSnapshot · `competition`
-
-- `bountygrid competition -file snapshot.json -persist`：校验 platform/scope/share/confidence；生成带 Evidence 的快照（`ManualImport`，原文脱敏到 `.evidence/competition/`），写入 `competition_snapshots`。
-- 已落库三份审计快照（2026-10-31）：
-
-```text
-xianzhi  top10=0.708  active=28 rewarded=27 pool=14,680  confidence=0.7
-vulbox   top10=0.500* active=50 rewarded=30 pool=30,000  confidence=0.5
-butian   top10=0.500* active=30 rewarded=10 pool=—       confidence=0.5
-* 页面没有直接给出 top10 share，按 0.5 保守估计并在 Evidence 文本里注明。
-```
-
-- 重新调度后：Vulbox 9 个 human（confidence 0.5、penalty 0.645），Xianzhi 3 个 human（confidence 0.7、penalty 0.608）；`opportunities=12`、`research_tasks=12 HUMAN_ACTION_REQUIRED`。仍无 research，因为账号能力未观测（fail-closed）。
-- `PutOpportunity` 冲突更新现在刷新全部反规范化列（expected_return/per_cost/penalty/confidence/evaluated_at/data），避免“JSON 已更新、列还是旧值”。
-
-### Harness / Tool Registry · `harness`
-
-- 每个工具声明 `RequiredAction`；Harness 用工具的动作覆盖请求，强制 `Action Gateway Evaluate → ALLOW → Authorize → Execute`。`DENY/REQUIRE_HUMAN` 直接停止，工具不会被调用。
-- 沙箱：默认拒绝所有 egress，`-allowed-hosts` 支持 `*.example.org`（只匹配子域，不匹配 apex）；`http/https` 以外 scheme 拒绝。
-- 预算：每次执行前检查 `-budget`（CNY）与请求数；超限不执行。`Destructive` 工具默认禁用，需显式 `-allow-destructive`。
-- 内置工具仅 `view_rules`、`read_scope`、`report_draft`（本地只读，不发起网络/扫描/提交）。本仓库仍不进行任何真实测试。
-- 实测（2026-10-31）：
-  - `view_rules` → ALLOW → Authorize → 输出 `read-only view_rules completed`
-  - 缺失账号 → DENY `CONTEXT_NOT_FOUND`，工具未执行
-  - DB：`action_decisions=5`、`tool.executed=1`
-
-```bash
-go run ./cmd/bountygrid harness -tool view_rules -request ./request.json
-```
-
-### Network proxy boundary · `internal/harness/proxy.go`
-
-- 本地 forward proxy，支持 HTTP absolute-form 与 CONNECT；每个请求先过 `NetworkPolicy`（`allow/deny/ask`），再写 `NetworkAuditSink`，只有 `Allow` 且审计成功才转发。无交互 UI，`Ask` = 403。
-- HTTP 逐请求检查 host/port/method/path；CONNECT 只检查 host/port（opaque TCP，无 TLS MITM）。
-- 请求/响应各 8 MiB 上限；剥离 hop-by-hop 与 `Connection` 指定头；绝不使用 `http.ProxyFromEnvironment`。
-- `Egress` 只有在 `Sandbox.ApprovedProxy` 显式配置时才走代理；代理自身地址允许 loopback/private（固定解析 IP），目标仍走非公网过滤；非法代理配置 fail closed。
-- `RulePolicy` 把 `internal/policy/rules` 接到代理；`AuditSink` 把 `network.policy_decision` 写入 `audit_events`，path 只存 hash。
-- 每日限额由 base `Egress` 按 program 共享，RPS/并发仍在单次执行内。详见 [`architecture/proxy.md`](architecture/proxy.md)。
-
-### Butian Reader（专属SRC / 公益SRC / GROW 已实测）
-
-- `internal/adapter/butian`：`AuthStatus`、`SyncAccount`（合规考核/实战认证/实名/银行卡，保守 fail-closed）、`SyncPrograms`（37 专属SRC）、`SyncProgram`、`SyncScope`（未报名 GATED）、`SyncPolicy`（保守 `UNKNOWN`）。
-- 专属SRC 列表从已渲染 DOM 的 `.plan-exclusive-src .company-card` 读取（不调用被验证码保护的 `/Reward/corps`）；实测 **37/37，259 Fact，1 Evidence**，全部 `RUNNING / PRIVATE_EXCLUSIVE / HUMAN_ACTION_REQUIRED`（报名 + 实战认证双门槛）。
-- 列表卡片没有原生 company ID，ProgramID 用公司名 SHA-1 前缀（`butian/src/<hex>`）；后续拿到原生 ID 时再迁移。
-- 账号同步已成功（`auth=OK`）：账号 `CanSubmit=false`（本季度合规考核未完成；专属SRC还需实战认证），已落库。之前的账号中心导航 `os error 10060` 是瞬时浏览器连接失败，重试后成功；登录态一直在。
-- 37 专属SRC 已落库（178 项目含 Vulbox 50 + Xianzhi 91）；`derive` 产出 74 个 Butian states；调度 34 human（`ACCOUNT_CAPABILITY`）、3 个无赏金数据。Xianzhi 同理：91 任务只读成功，但 0 个已报名，Scope 必须 GATED。
-- 公益SRC（`-public-welfare`）：走页面自身的只读 GET `/Reward/pub?p=N`（需 `X-Requested-With: XMLHttpRequest`，否则平台返回 HTML 壳）；`p` 才是分页参数（`page` 被忽略）。实测 **200 页、30 条/页、末页 9 条 = 5,979 家**；ProgramID `butian/pub/<company_id>`，状态 `RUNNING`（confidence 0.8，原因是“在公益列表中”），**Scope 保持 `UNKNOWN`**。
-- GROW（`-grow`）：打开 `/Grow` 点“查看规则”取报名/活动日期，再打开 `/Active/center` 取月度阶段；两页分别是独立 Evidence。实测 6 条 Fact（报名 8/25–11/30、活动 9/1–11/30、第二期 10/01–10/31）、`RUNNING / HUMAN_ACTION_REQUIRED`（报名 + 学生认证 + 校园团队 3 个 Gate）、Scope `GATED_BY_SIGNUP + NOT_GRANTED`。
-- 月度阶段正则锚定在 GROW 标题后，活动中心里排在前面别的活动日期不会被误当成 GROW 阶段（`docs/advices/2026-10-31-phase-0-1-second-review.md` 第 6 条）。
-
-```bash
-# 用户需先在 btprobe 浏览器完成验证码，使项目大厅渲染 37 张卡
-go run ./cmd/bountygrid sync -platform butian -programs
-# 公益SRC 第 1 页（-pages 最多 200）
-go run ./cmd/bountygrid sync -platform butian -programs=false -public-welfare -pages 1
-# GROW 校园计划
-go run ./cmd/bountygrid sync -platform butian -programs=false -grow
-```
-
-### Phase 0 + core kernel hardening
-
-本轮已修复的 P1/P2：
-
-- Policy 只在参与类动作评估 Eligibility；`VIEW_PROGRAM/VIEW_RULES` 不再被未报名/未达标拦截
-- `READ_SCOPE` 从执行类动作中拆出：GATED 时 `REQUIRE_HUMAN`，已解锁时 `ALLOW`
-- Scope 拆成 `Visibility`（披露）与 `Access`（当前账号访问）；报名后可为 `GATED_BY_SIGNUP + GRANTED`
-- Policy 增加 `Asset` 校验：缺失、跨 Program、Scope 外、Conditional 分别处理
-- Policy 消费 `AutomationPolicy`：`FORBIDDEN` 不可被人工审批覆盖；`ALLOW` 可覆盖默认条件矩阵
-- `HumanApproval` 绑定 `request_id/action/program/asset/resource/parameters_hash/expires/single_use`，并由 PostgreSQL `consumed_approvals` 持久化一次性消费（2026-11-01 起消费点移到 `Gateway.Authorize` 的重评估之后）
-- `PRACTICAL_CERTIFICATION` 改为 Program-scoped，不再阻断普通/公益提交
-- State 保留输入 Fact/Evidence provenance，并提供 supersede invalidation tracker
-- GROW 日期按 `Asia/Shanghai`、date-only、inclusive end 处理
-- Evidence/Audit 深拷贝 + 脱敏/secret scan；Fact Store batch atomic + latest + supersede 校验
-- PostgreSQL 增加 repositories、`0002_constraints.sql` 与 down migration / `rollback` CLI
-- GitHub Actions CI：migrate + unit/integration test + vet + build
-
-### Phase 0/1 second review hardening
-
-- Policy 校验决策上下文与请求一致：`AccountID/ProgramID/Platform` 不一致直接 `DENY`；`Asset.ID` 必须等于请求 `AssetID`，且资产必须属于该 Program
-- `AutomationPolicy=CONDITIONAL` 只增加人工门槛，不能把硬拒绝（DoS/内网/横向）降为可审批动作
-- `ALLOW` 的 `ExpiresAt` 收敛到 `Program.Status.ValidUntil` 与 `HumanApproval.ExpiresAt` 的较早者；审批账本故障向上返回错误，而不是伪装成“已使用”
-- `Scope.CheckAsset` 改为 fail-closed：`ContentsKnown=true` 但 `Include` 为空时不再放行任意资产；`*.example.com` 不再匹配 apex `example.com`
-- 执行类决策要求 `Program.Status.Confidence >= 0.8`；State 的置信度来自输入 Fact 的最小值，不再硬编码 0.9
-- 约束配置（daily limit / budget cap）非法时 fail-closed；预算币种不一致直接 `DENY`
-- Fact 重跑幂等：同 ID 同内容为 no-op，同 ID 不同内容报错；supersede 必须保持 subject/predicate/实体一致，PostgreSQL 增加自环与环检测
-- Repository 写入前执行 Domain `Validate`；PostgreSQL AuditStore 与内存实现一致地拒绝含敏感值的 payload；DerivedState 冲突更新刷新全部派生元数据
-- `DerivationTracker` 重新记录同一 State 时迁移依赖，避免旧 Fact 误失效当前 State
-- Domain 不变量收紧：Fact/State 必须有 ID；`ALLOW` 必须带 `ExpiresAt`；human-only 审批必须 single-use；Program-scoped gate 不再使账号级 `CanSubmit` 失效
-
-### Control-plane hardening (2026-11-01)
-
-- **Asset 真相源**：调用方只能给 `AssetID`；Gateway 从 `Program.Scope.ResolveAsset` 解析 canonical Asset，未存储的 ID 直接 `DENY ASSET_UNKNOWN`。
-- **Constraints 执行化**：`ExecutionEnvironment` 进入 Policy，校验时间窗、RPS、并发、VPN、出口 IP、研究员 Header、测试账号与 HTTP 方法；缺运行时证明 → `REQUIRE_MORE_EVIDENCE`，观察到的违规 → `DENY`。
-- **Sandbox/Egress 强制**：网络工具只拿到 `harness.Egress`，每次请求与重定向都走 `Sandbox.CheckURL`；空 allowlist 的网络工具直接拒绝。
-- **Authorize 重新评估**：Decision 持久化原始 Request；`Authorize` 重新加载 Account/Program、重新解析 Asset 并重跑 Policy，Scope/资格/自动化策略变化后旧 ALLOW 不再可执行。
-- **审批消费时点**：`Policy.Decide` 只校验不消费；`Gateway.Authorize` 在重新评估通过后原子消费 single-use approval。
-- **幂等执行回执**：`NetworkEgress`/`WritesFiles`/`Destructive` 工具必须有 `IdempotencyKey`；`execution_receipts` 在工具执行前预占 key，重试回放已记录结果，审计失败可在不重复执行的情况下补齐。
-- **Decision + Audit 事务**：PostgreSQL `RecordDecisionWithAudit` 在同一个事务写入决策与 `action.decision` 事件。
-- **Fact 年龄限制 State**：`DerivedState.ValidUntil` 取 `now+TTL` 与最旧输入 Fact 的 `observed_at+30d` 的较早者；过期 Fact 不能生成新 State。
-- **CompetitionSnapshot TTL/decay**：`valid_until` 30 天硬上限；7 天后置信度线性衰减；`top1 <= top3 <= top10` 成为导入不变量。
-- **append-only 历史**：ResearchTask/机会评分使用每轮唯一 ID；同一 Program 最多一个 `QUEUED` 任务，被新任务 supersede；Scheduler 从数据库读取 cooldown。
-- **Butian 语义层次**：公益SRC 只发 `butian.pub.listed`，RUNNING 是派生状态；专属SRC/GROW 的报名与实战认证 Gate 不再写死 `UNSATISFIED`，由 Policy 结合账号状态解析。
-- **文档对齐**：CLAUDE/README/implementation-order 的阶段状态改为“Phase 0 complete; Phase 1–6 partially implemented; active execution disabled”。
-- **复核补修**：公益SRC 由 canonical `program.listed` 派生 RUNNING；回执绑定请求身份并按状态处理竞态；`AuthorizeWith` 要求新的 usage/budget/environment（环境 5 分钟过期）；Scheduler 使用账号重算的 Eligibility；列表页显式报名信号写入 `Account.JoinedProgramIDs`；审批参数保留原始字节并接受 canonical hash；回执保留 Evidence。
-
-### Model Router（2026-11-01）
-
-- `internal/model`：`Purpose`/`DataClass`/`ProviderInfo`/`Router`；`SENSITIVE` 只允许本地 Provider，无本地 Provider 直接 `ErrNoProvider`。
-- PLAN/ANALYZE 优先强远程模型，CODE/EMBED/REPORT 优先本地；输出 token 上限不足的 Provider 不参与。
-- 调用前按 `MaxTokens` 估算成本，调用后按实际 usage 复核；超预算丢弃响应并返回 `ErrBudgetExceeded`。
-- 每次尝试写 `model.call` 审计，payload 只含 `prompt_hash/response_hash/usage/cost`，不含原文。
-- `go run ./cmd/bountygrid model -purpose ANALYZE -data-class INTERNAL -max-tokens 2000 -budget 100` 只打印路由计划，不调用模型。
-
-### Verification（2026-11-01）
-
-- `internal/verify.RuleVerifier`：Scope（`ResolveAsset` + `CheckAsset`）→ 授权决策（必须 ALLOW、Request context 完整、动作属于执行类）→ 数据最小化/公开已知 → 重复检查 → AI 人工验证 → 复现/影响证据。
-- `VERIFIED` 必须 `Reproduced/InScope/ImpactVerified/DataMinimized` 全真且有 Evidence；模型不能单独判 VERIFIED。
-- `go run ./cmd/bountygrid verify -file <json> -persist` 从 PostgreSQL 加载 Program/Decision/Finding，证据 ID 必须存在，写 `verifications`。
-- 证据防伪：`VERIFIED` 额外要求 `DuplicateChecked`，AI 辅助时必须持久化 `HumanVerified + HumanVerificationRef`；CLI 不接受调用方覆盖 `now`。
-- `internal/report.Build`：只接受 `VERIFIED` 的 Verification；组装 `ReportDraft`（`DRAFT`）并返回 `Missing/Ready`。通用必填 + Xianzhi `account_name` / Butian `vendor/category/asset_scope/weight/activity/task_id/industry/region/contact`；Butian GROW 的 AI 披露要求模型名/版本/工具名；附件按平台校验扩展名；report 文本含 cookie/token/密码/证件/银行卡/完整手机号/邮箱会被拒绝；裸卡号用已知卡前缀/Luhn 识别，普通长订单号/时间戳仍允许。
-- `go run ./cmd/bountygrid report -file <json> -persist` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`；不提交、不勾选协议。
-- `internal/submit.Service`：`report.Recheck`（不补默认值）→ 当前 Program.Scope 资产复核 → `REPORT_SUBMIT` ActionRequest（绑定 `report_id + report_content_hash`）→ Gateway `ALLOW` → `AuthorizeWith` 消费 single-use approval → `Submitter`。本仓库只有 `DryRunSubmitter`，**不触达平台**；dry-run 不改变草稿状态，后续仍可真实提交；同一 report 只允许一次真实提交（`submissions.report_id` 唯一 + `GetSubmissionByReport` 前置检查 + `RecordSubmission` 事务）；提交 intent 在异常崩溃后 1 小时可回收。审批后修改草稿会使 content hash 不匹配。
-- `go run ./cmd/bountygrid submit -print-binding -report <id> -approval-id <id>` 打印审批必须绑定的 `request_id/parameters_hash`（含内容 hash）；`submit -report -account -approval <json>` 执行 dry-run 并写 `submissions`。`approval_id` 有唯一索引，防止同一审批提交两次。
-- `internal/ledger`：v1 只记 CNY 现金；`PAID` 是到账净额，`FEE/TAX` 仅展示；`EXPECTED/SUBMITTED` 不计净收入。
-- `ExternalRef` 对 `PAID/REFUND/REVERSAL` 必填，`(platform,kind,external_ref)` 唯一；`REVERSAL` 只能冲 `PAID/REFUND` 且不得超过目标金额；同 ID 同内容幂等、不同内容报错；旧的无 digest ID 仍可幂等重导。
-- `go run ./cmd/bountygrid ledger -file <json> [-persist]` 追加；`ledger -summary -platform <p> [-program <id>] [-since/-until]` 汇总；`ledger -reconcile -file <json>` 只报平台/银行差异，不自动改账。
-- 非现金奖励（KB/RYB/积分/荣誉/实物/优惠券）留 `ledger.NonCashRecorder` 接口，v1 不混入金额账本。
-- 未实现：真实平台 SubmitAdapter、非现金奖励记录器、`ReconciliationIssue` 持久化、人工复核 UI。
-
-### Go 工程化与性能（2026-11-01）
-
-- **批量 DB 写入**：`PutFacts` / `PutStates` 使用 `pgx.Batch`，保留 `ON CONFLICT` 幂等语义；`derive` 一次加载平台 Fact、按 Program 分组。
-- **有界并发**：`derive -workers` 默认最多 4 个并行派生 worker；平台 Reader 仍按平台串行（频率限制/sidecar 串行），不做无约束并发。
-- **边界能力**：文件工具通过 `os.Root` 限定在 workspace；网络工具通过 `harness.Egress`（专用 `http.Transport`、重定向检查、8 MiB 响应上限）；出口 IP 用 `net/netip` 解析比较。
-- **时间与取消**：业务日期使用 `timeutil` + `time/tzdata`（Asia/Shanghai 内嵌）；CLI 使用 `signal.NotifyContext`，Ctrl-C 可优雅取消浏览器/DB 操作。
-- **可维护性**：三平台大段 JS 抽取脚本移到 `scripts/*.js` 并用 `//go:embed`；`log/slog` 通过 `BOUNTYGRID_LOG=debug|info|warn|error` 输出到 stderr；`internal/collections` 提供泛型去重/并集/排序键。
-- **质量门**：CI 跑 `go test -race -shuffle=on`、benchmark smoke、`go vet`、`CGO_ENABLED=0 go build`、`govulncheck`；`internal/domain`/`redact`/`report` 提供 fuzz targets；tag `v*` 触发 Linux/Windows 静态二进制 release workflow。
 
 ## 文档入口 · Docs
 
@@ -427,11 +172,8 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 | [`architecture/harness-model-router.md`](architecture/harness-model-router.md) | 执行边界、工具注册、模型路由 |
 | [`architecture/research-lifecycle.md`](architecture/research-lifecycle.md) | Finding/Verification/Report/Submission/Ledger |
 | [`architecture/implementation-order.md`](architecture/implementation-order.md) | 依赖顺序实现计划（非 MVP 切分） |
-| [`docs/advices/2026-10-31-phase-0-1-hardening.md`](docs/advices/2026-10-31-phase-0-1-hardening.md) | 对复核意见的逐项修复记录 |
-| [`docs/advices/2026-10-31-phase-0-1-second-review.md`](docs/advices/2026-10-31-phase-0-1-second-review.md) | 第二次复核结论、已修问题与遗留项 |
-| [`docs/advices/2026-11-01-phase-1-5-high-review.md`](docs/advices/2026-11-01-phase-1-5-high-review.md) | Phase 1–5 high review 的 11 项修复与验证 |
-| [`docs/advices/2026-11-01-control-plane-hardening.md`](docs/advices/2026-11-01-control-plane-hardening.md) | 控制层收口：authoritative Asset、运行时约束、Egress、Authorize 重评估、执行回执、状态/竞争 TTL、Butian 语义 |
 | [`CLAUDE.md`](CLAUDE.md) | 编码代理的运行约定与仓库红线 |
+| [`docs/implementation-notes.md`](docs/implementation-notes.md) | 详细实现记录、历史 hardening 与平台观测数据（README 已精简；与 architecture/rules 冲突时以后者为准） |
 
 ## 工程原则 · Engineering rules
 

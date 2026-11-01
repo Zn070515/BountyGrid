@@ -42,10 +42,12 @@ An unknown decision, a nil policy, or a policy error is `Deny`. The proxy never
 falls back to direct egress.
 
 `NewProxy` validates the configuration; `Validate`, `Serve` and
-`ListenAndServe` fail closed when `Policy` is nil or when `Audit` is nil. The
-request handler applies the same check, so wiring `Handler` directly into an
-`http.Server` cannot forward unaudited `Allow` traffic. `AllowUnauditedForTests`
-is the only escape hatch and must never be set in production.
+`ListenAndServe` fail closed when `Policy` is nil, when `Audit` is nil, or when
+the policy is not a `GrantPolicy` bound to an `ExecutionGrant`. The request
+handler applies the same check, so wiring `Handler` directly into an
+`http.Server` cannot forward unaudited or ungranted `Allow` traffic.
+`AllowUnauditedForTests` and `AllowUngrantedForTests` are the only escape
+hatches and must never be set in production.
 
 ## HTTP forwarding
 

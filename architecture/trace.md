@@ -78,6 +78,8 @@ hash and parent binding are applied:
   writes and records the event ID for later parent checks.
 - `PutRaw` scans the bytes with `redact.Scan` before storing them, so a returned
   content reference always points at scanned data.
+- `Resume(path)` seeds the parent set from an existing trace, so a restarted
+  process can append children of events written before the restart.
 - Rejections name only the finding kind, never the matched value.
 
 Direct `Writer`/`RawStore` callers remain responsible for redaction: "what may
