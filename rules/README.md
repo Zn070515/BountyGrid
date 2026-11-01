@@ -39,12 +39,25 @@ after every domain gate has passed.
 
 - `decision`: `allow`, `require_human`, or `forbidden`.
   `prompt`/`deny` are accepted as aliases and normalized.
+- `source`: `operator` (default) or `platform_evidence`.
+  - Operator guardrails may only tighten. An operator `allow` never raises a
+    `REQUIRE_HUMAN` or `DENY`; it can only keep an existing `ALLOW`.
+  - `platform_evidence` may relax a platform-conditional action, but only when
+    it carries `evidence_refs`, `observed_at`, `valid_until` and
+    `policy_revision`, and the rule is still valid at decision time. It can
+    never override a hard `DENY`.
+  - `platform_evidence` rules must not be hand-written as ordinary operator
+    JSON; they are derived from platform Evidence.
 - `actions` / `programs`: exact match.
 - `hosts`: exact host, `*.example.com` (subdomains only, never the apex), or
   `**.example.com` (apex and subdomains). `*` alone is rejected. Ports, schemes
   and paths are rejected in host patterns.
 - `methods`: uppercase HTTP methods.
-- `path_prefixes`: normalized path prefixes (percent-decoded, `path.Clean`ed).
+- `path_prefixes`: segment-aware prefixes. `/api` matches `/api` and
+  `/api/users`, never `/apix`, `/api2` or `/api-admin`. Paths are
+  percent-decoded once, encoded separators/dot segments that survive decoding
+  (e.g. `%252f`, `%2e`) are rejected, backslashes are treated as separators,
+  and `path.Clean` removes dot segments.
 - Selectors within one list are alternatives (OR); different selector fields
   are conjunctive (AND). Empty selector lists mean "any".
 - `justification` is required for `require_human` and `forbidden`; it is shown
@@ -93,8 +106,9 @@ Output is JSON:
   "rule_set_fingerprint": "sha256:...",
   "request": {"action": "ACTIVE_HTTP", "program": "vulbox/444", "asset": "https://api.example.com/v1/items", "method": "GET"},
   "decision": "allow",
+  "can_relax": false,
   "matched_rules": [
-    {"id": "vulbox-444-read-only", "decision": "allow", "justification": "...", "matched_on": ["action=ACTIVE_HTTP", "program=vulbox/444", "host=*.example.com", "method=GET"]}
+    {"id": "vulbox-444-read-only", "source": "operator", "decision": "allow", "justification": "...", "matched_on": ["action=ACTIVE_HTTP", "program=vulbox/444", "host=*.example.com", "method=GET"]}
   ]
 }
 ```

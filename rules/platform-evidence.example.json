@@ -1,0 +1,36 @@
+{
+  "version": "2026-11-01-platform-evidence-example",
+  "rules": [
+    {
+      "id": "platform-conditional-read-endpoint",
+      "actions": ["ACTIVE_HTTP"],
+      "programs": ["vulbox/444"],
+      "hosts": ["api.example.com"],
+      "methods": ["GET", "HEAD"],
+      "path_prefixes": ["/v1/public"],
+      "decision": "allow",
+      "source": "platform_evidence",
+      "evidence_refs": ["ev-platform-policy-2026-11-01"],
+      "observed_at": "2026-11-01T00:00:00Z",
+      "valid_until": "2026-12-01T00:00:00Z",
+      "policy_revision": "sha256:replace-with-policy-revision",
+      "justification": "The platform policy page explicitly permits read-only requests under /v1/public; only Evidence-backed rules may relax a CONDITIONAL automation policy.",
+      "match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "program": "vulbox/444",
+          "asset": "https://api.example.com/v1/public/status",
+          "method": "GET"
+        }
+      ],
+      "not_match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "program": "vulbox/444",
+          "asset": "https://api.example.com/v1/private/status",
+          "method": "GET"
+        }
+      ]
+    }
+  ]
+}

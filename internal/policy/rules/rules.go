@@ -141,6 +141,7 @@ type Request struct {
 
 type MatchedRule struct {
 	ID            string   `json:"id"`
+	Source        Source   `json:"source"`
 	Decision      Decision `json:"decision"`
 	Justification string   `json:"justification,omitempty"`
 	MatchedOn     []string `json:"matched_on,omitempty"`
@@ -347,8 +348,8 @@ func (s *RuleSet) Evaluate(req Request) (Result, error) {
 			continue
 		}
 		out.Matched = append(out.Matched, MatchedRule{
-			ID: r.ID, Decision: r.Decision, Justification: r.Justification,
-			MatchedOn: matchedOn,
+			ID: r.ID, Source: r.Source, Decision: r.Decision,
+			Justification: r.Justification, MatchedOn: matchedOn,
 		})
 		if r.Decision == DecisionAllow && r.Source == SourcePlatformEvidence {
 			out.CanRelax = true

@@ -28,6 +28,7 @@ type policyCheckOutput struct {
 	Fingerprint string              `json:"rule_set_fingerprint,omitempty"`
 	Request     rules.Request       `json:"request"`
 	Decision    string              `json:"decision,omitempty"`
+	CanRelax    bool                `json:"can_relax,omitempty"`
 	Matched     []rules.MatchedRule `json:"matched_rules,omitempty"`
 }
 
@@ -80,7 +81,7 @@ func executePolicyCheck(o policyOptions) (policyCheckOutput, error) {
 	}
 	return policyCheckOutput{
 		Version: rs.Version, Fingerprint: rs.Fingerprint(), Request: req,
-		Decision: string(res.Decision), Matched: res.Matched,
+		Decision: string(res.Decision), CanRelax: res.CanRelax, Matched: res.Matched,
 	}, nil
 }
 

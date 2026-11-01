@@ -233,7 +233,9 @@ go run ./cmd/bountygrid decide -authorize <decision-id>
 
 ### Policy rules · `policy`
 
-`internal/policy/rules` 是声明式规则层：按 action/program/host/method/path 选择请求，规则带 `decision` 与 `justification`，并可在加载时用 `match`/`not_match` 样例自测。多条规则命中时最严决策胜出（`forbidden > require_human > allow`）；`allow` 只能放宽项目明确可覆盖的动作，不能绕过 Scope/资产/资格/新鲜度/硬 DENY。规则指纹（`sha256:`）写入决策，`Authorize` 时规则集变化会拒绝旧授权。
+`internal/policy/rules` 是声明式规则层：按 action/program/host/method/path 选择请求，规则带 `decision`、`source` 与 `justification`，并可在加载时用 `match`/`not_match` 样例自测。多条规则命中时最严决策胜出（`forbidden > require_human > allow`）。
+
+**权限层级**：平台授权是 ceiling，本地规则只能收紧。`source=operator`（默认）的 `allow` 永远不会把 `REQUIRE_HUMAN`/`DENY` 变成 `ALLOW`；只有 `source=platform_evidence` 且带 `evidence_refs/observed_at/valid_until/policy_revision` 的未过期规则才能具体化 `CONDITIONAL`，且仍不能覆盖硬 `DENY`。`can_relax` 会出现在 `policy check` 输出中。路径前缀是 segment-aware：`/api` 匹配 `/api` 与 `/api/users`，不匹配 `/apix`/`/api-admin`；编码分隔符/点段在解码后仍残留会被拒绝。规则指纹（`sha256:`）写入决策，`Authorize` 时规则集变化会拒绝旧授权。
 
 ```bash
 go run ./cmd/bountygrid policy check \
