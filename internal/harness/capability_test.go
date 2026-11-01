@@ -42,7 +42,7 @@ func TestEgressAndProxyShareDailyCapability(t *testing.T) {
 
 	audit := &recordingNetworkAudit{}
 	proxy := NewProxy(ProxyConfig{
-		Policy:        GrantPolicy{Grant: &grant},
+		Policy:        GrantPolicy{Grant: &grant, Validator: testGrantValidator{}},
 		Audit:         audit,
 		Broker:        broker,
 		AllowLoopback: true,

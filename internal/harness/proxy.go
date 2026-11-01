@@ -197,8 +197,21 @@ func (p *Proxy) validate() error {
 		return errors.New("proxy: a NetworkAuditSink is required (AllowUnauditedForTests is test-only)")
 	}
 	if !p.allowUngranted {
-		switch p.policy.(type) {
-		case GrantPolicy, *GrantPolicy:
+		switch gp := p.policy.(type) {
+		case GrantPolicy:
+			if gp.Grant == nil {
+				return errors.New("proxy: GrantPolicy has no ExecutionGrant")
+			}
+			if gp.Validator == nil {
+				return errors.New("proxy: GrantPolicy requires a capability.GrantValidator (revocation/revision re-check)")
+			}
+		case *GrantPolicy:
+			if gp == nil || gp.Grant == nil {
+				return errors.New("proxy: GrantPolicy has no ExecutionGrant")
+			}
+			if gp.Validator == nil {
+				return errors.New("proxy: GrantPolicy requires a capability.GrantValidator (revocation/revision re-check)")
+			}
 		default:
 			return errors.New("proxy: a GrantPolicy bound to an ExecutionGrant is required (AllowUngrantedForTests is test-only)")
 		}

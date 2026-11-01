@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/capability"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/gateway"
 	"github.com/Zn070515/BountyGrid/internal/harness"
@@ -96,6 +97,11 @@ func runHarness(ctx context.Context, args []string) error {
 		&harness.Budget{MaxCost: domain.Money{Amount: opts.BudgetCNY, Currency: "CNY"}})
 	h.SetAllowDestructive(opts.Destructive)
 	h.SetReceiptStore(repo)
+	// Daily HTTP usage is business authorization state: use the durable
+	// PostgreSQL counter, not a per-process counter that resets on restart.
+	h.SetBroker(capability.NewMemoryBroker(
+		capability.WithDailyQuota(capability.PostgresDailyQuota{Store: repo}),
+	))
 	if opts.Workspace != "" {
 		if err := h.SetWorkspace(opts.Workspace); err != nil {
 			return err

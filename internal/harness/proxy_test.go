@@ -18,9 +18,14 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
+	"github.com/Zn070515/BountyGrid/internal/capability"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 )
+
+type testGrantValidator struct{}
+
+func (testGrantValidator) ValidateGrant(context.Context, capability.ExecutionGrant) error { return nil }
 
 type staticNetworkPolicy struct {
 	decision PolicyDecision
@@ -876,12 +881,23 @@ func TestProxyRequiresGrantPolicyInProduction(t *testing.T) {
 	}
 	granted := NewProxy(ProxyConfig{
 		Policy: GrantPolicy{
-			Grant: &ExecutionGrant{ExpiresAt: time.Now().Add(time.Hour)},
-			Next:  &staticNetworkPolicy{decision: Allow},
+			Grant:     &ExecutionGrant{ExpiresAt: time.Now().Add(time.Hour)},
+			Next:      &staticNetworkPolicy{decision: Allow},
+			Validator: testGrantValidator{},
 		},
 		Audit: audit,
 	})
 	if err := granted.Validate(); err != nil {
 		t.Fatalf("GrantPolicy validation = %v", err)
+	}
+	noValidator := NewProxy(ProxyConfig{
+		Policy: GrantPolicy{
+			Grant: &ExecutionGrant{ExpiresAt: time.Now().Add(time.Hour)},
+			Next:  &staticNetworkPolicy{decision: Allow},
+		},
+		Audit: audit,
+	})
+	if err := noValidator.Validate(); err == nil {
+		t.Fatal("GrantPolicy without a validator must fail closed in production")
 	}
 }
