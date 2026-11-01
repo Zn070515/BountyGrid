@@ -280,6 +280,7 @@ func TestSubmissionRequiresApproval(t *testing.T) {
 		ProgramID:   "p1",
 		SubmittedAt: now(),
 		Receipt:     "receipt",
+		Status:      "SUBMITTED",
 	}
 	if err := s.Validate(); err == nil {
 		t.Fatal("submission without approval should be invalid")

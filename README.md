@@ -121,7 +121,7 @@ bash probes/butian/grow-dates.sh
 | Phase 2/3 | Facts/State/Policy | 已实现并硬化；Fact 年龄限制 State TTL，运行环境约束进入 Policy |
 | Phase 4 | Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、CompetitionSnapshot TTL/decay |
 | Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 的路由/数据分级/预算/审计已实现（仅本地 dry-run，**无真实 Provider**）；**无 ACTIVE_HTTP 工具** |
-| Phase 6 | Verification / Report / Submission / Ledger | Verification 规则引擎、`verifications`、ReportDraft 组装/校验与 `report_drafts` 已实现；Submission/Ledger 仍以领域类型为主 |
+| Phase 6 | Verification / Report / Submission / Ledger | Verification 规则引擎、`verifications`、ReportDraft 组装/校验与 `report_drafts`、Submission dry-run 控制层与 `submissions` 已实现；**真实平台 SubmitAdapter 未实现**；Ledger 仍以领域类型为主 |
 
 ### Phase 1 progress · Browser Sidecar + Vulbox Reader
 
@@ -341,7 +341,9 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - 证据防伪：`VERIFIED` 额外要求 `DuplicateChecked`，AI 辅助时必须持久化 `HumanVerified + HumanVerificationRef`；CLI 不接受调用方覆盖 `now`。
 - `internal/report.Build`：只接受 `VERIFIED` 的 Verification；组装 `ReportDraft`（`DRAFT`）并返回 `Missing/Ready`。通用必填 + Xianzhi `account_name` / Butian `category`；Butian GROW 的 AI 披露要求模型名/版本/工具名；附件按平台校验扩展名。
 - `go run ./cmd/bountygrid report -file <json> -persist` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`；不提交、不勾选协议。
-- 未实现：Finding 状态机自动推进、Submission、Ledger、人工复核 UI。
+- `internal/submit.Service`：`report.Recheck` → `REPORT_SUBMIT` ActionRequest（绑定 `report_id + report_content_hash`）→ Gateway `ALLOW` → `AuthorizeWith` 消费 single-use approval → `Submitter`。本仓库只有 `DryRunSubmitter`，**不触达平台**；审批后修改草稿会使 content hash 不匹配。
+- `go run ./cmd/bountygrid submit -print-binding -report <id> -approval-id <id>` 打印审批必须绑定的 `request_id/parameters_hash`（含内容 hash）；`submit -report -account -approval <json>` 执行 dry-run 并写 `submissions`。`approval_id` 有唯一索引，防止同一审批提交两次。
+- 未实现：真实平台 SubmitAdapter、Ledger、人工复核 UI。
 
 ## 文档入口 · Docs
 

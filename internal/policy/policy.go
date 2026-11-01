@@ -231,9 +231,13 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		}
 	}
 
-	// 7. Rate/budget constraints. Missing usage/budget is unknown, not zero.
-	if d, reason := checkUsage(dc); d != "" {
-		return decide(d, reason), nil
+	// 7. Rate/budget constraints apply to execution actions, not report
+	// submission or other human-only workflow actions. Missing usage/budget is
+	// unknown, not zero.
+	if dc.Request.Action.NeedsScope() {
+		if d, reason := checkUsage(dc); d != "" {
+			return decide(d, reason), nil
+		}
 	}
 
 	// 7b. Runtime constraints. A constraint that the caller cannot prove is

@@ -24,7 +24,7 @@
 | Phase 3：Policy Engine / Gateway | 已实现并硬化：authoritative Asset、ExecutionEnvironment、Authorize 重评估、审批在执行前消费 |
 | Phase 4：Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、唯一 QUEUED 任务、CompetitionSnapshot TTL/decay |
 | Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执已实现；Model Router 路由/数据分级/预算/审计已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
-| Phase 6：Verification / Report / Submission / Ledger | Verification 规则引擎已实现；ReportDraft/Submission/Ledger 未进入 |
+| Phase 6：Verification / Report / Submission / Ledger | Verification、ReportDraft、Submission dry-run 控制层已实现；真实平台 SubmitAdapter 与 Ledger 未进入 |
 
 > **真实状态：Phase 0 complete; Phase 1–6 partially implemented; active execution remains disabled.**
 >
@@ -221,10 +221,14 @@
 - 审批界面/令牌/过期/范围。
 - 退出条件：无审批不能提交；审批过期不能提交。
 
+**当前实现（2026-11-01）**：`internal/submit` 校验 `HumanApproval` 的 action/request_id/program/asset/resource/parameters_hash/expiry/single_use；request_id 固定为 `submit/<report>/<approval>`，参数为 `{"report_id":...,"report_content_hash":...}`，审批后修改草稿会使 hash 不匹配。`bountygrid submit -print-binding` 输出审批必须绑定的 request_id/parameters_hash。`ReportDraft.Status` 增加 `DRAFT/READY_FOR_REVIEW/APPROVED/SUBMITTED/...` 枚举；提交成功后置 `SUBMITTED`。
+
 ### 7.2 Vulbox Submit
 
 - 联想/嘉立创真实表单字段；草稿箱；提交后状态。
 - 退出条件：只读演练（不真正提交）通过；人工确认后可提交一次测试。
+
+**当前实现（2026-11-01）**：`submit.Service` 在 Gateway `ALLOW` + `AuthorizeWith` 消费审批后才调用 `Submitter`。本仓库只有 `DryRunSubmitter`（本地 receipt，状态 `DRY_RUN`，无网络/平台动作）；`submissions` 持久化，`approval_id` 唯一索引防止同一审批重复提交。真实平台 SubmitAdapter 未实现。
 
 ### 7.3 Xianzhi/Butian Submit
 

@@ -70,14 +70,35 @@ type Verification struct {
 }
 
 type ReportDraft struct {
-	ID           string
-	FindingID    FindingID
-	ProgramID    ProgramID
-	Fields       map[string]string
-	AIDisclosure map[string]string
-	Attachments  []string
-	Status       string
-	CreatedAt    time.Time
+	ID             string
+	FindingID      FindingID
+	ProgramID      ProgramID
+	VerificationID string
+	Fields         map[string]string
+	AIDisclosure   map[string]string
+	Attachments    []string
+	Status         string
+	CreatedAt      time.Time
+}
+
+const (
+	ReportStatusDraft          = "DRAFT"
+	ReportStatusReadyForReview = "READY_FOR_REVIEW"
+	ReportStatusApproved       = "APPROVED"
+	ReportStatusSubmitted      = "SUBMITTED"
+	ReportStatusAccepted       = "ACCEPTED"
+	ReportStatusRejected       = "REJECTED"
+	ReportStatusDuplicate      = "DUPLICATE"
+)
+
+func ReportStatusValid(s string) bool {
+	switch s {
+	case ReportStatusDraft, ReportStatusReadyForReview, ReportStatusApproved,
+		ReportStatusSubmitted, ReportStatusAccepted, ReportStatusRejected, ReportStatusDuplicate:
+		return true
+	default:
+		return false
+	}
 }
 
 type Submission struct {
@@ -89,6 +110,9 @@ type Submission struct {
 	Receipt     string
 	Status      string
 	ApprovalID  string
+	// ContentHash is the report content bound by the approval. Legacy rows may
+	// leave it empty.
+	ContentHash string
 	Evidence    []EvidenceID
 }
 

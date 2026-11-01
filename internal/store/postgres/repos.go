@@ -681,6 +681,9 @@ func (r *Repo) GetReportDraft(ctx context.Context, id string) (domain.ReportDraf
 }
 
 func (r *Repo) PutSubmission(ctx context.Context, s domain.Submission) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
 	data, err := mustJSON(s)
 	if err != nil {
 		return err

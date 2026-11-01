@@ -191,6 +191,8 @@ type HumanApproval struct {
 - 需要补充证据时，回到 `ReportDraft`，仍由人工提交补充。
 - 评论/沟通由人工进行；Agent 可起草，不自动发送。
 
+**当前实现（2026-11-01）**：`internal/submit.Service` 加载 `ReportDraft + Program + Finding + Verification`，用 `report.Recheck` 复核完整性，构造 `REPORT_SUBMIT` `ActionRequest`（`request_id=submit/<report>/<approval>`、参数 `{"report_id":...,"report_content_hash":...}`、`ResourceID=report_id`），交给 Action Gateway。content hash 覆盖字段、AI 披露、附件和 VerificationID，审批后修改草稿会使 hash 不匹配。Gateway 返回 `ALLOW` 且 `AuthorizeWith` 消费 single-use approval 之后，才调用 `Submitter`。本仓库只有 `DryRunSubmitter`（本地 receipt，无网络/平台动作）；`PUT /submissions` 持久化 `Submission`，`0006_submission_idempotency.sql` 对 `approval_id` 加唯一索引。`bountygrid submit -print-binding` 打印审批必须绑定的 request_id/parameters_hash；`submit -report -account -approval` 执行 dry-run。真实平台 SubmitAdapter 尚未实现，且本仓库禁止真实提交演练。
+
 ## 6. Revenue Ledger
 
 ### 6.1 账本条目

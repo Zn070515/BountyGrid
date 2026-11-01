@@ -397,7 +397,8 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err != nil || gotVerification.Verdict != domain.VerdictRejected {
 		t.Fatalf("verification update = %+v %v", gotVerification, err)
 	}
-	report := domain.ReportDraft{ID: reportID, FindingID: findingID, ProgramID: progID, Status: "DRAFT", CreatedAt: now,
+	report := domain.ReportDraft{ID: reportID, FindingID: findingID, ProgramID: progID,
+		VerificationID: verification.ID, Status: domain.ReportStatusDraft, CreatedAt: now,
 		Fields: map[string]string{"title": "it"}, AIDisclosure: map[string]string{}}
 	if err := r.PutReportDraft(ctx, report); err != nil {
 		t.Fatal(err)
@@ -409,6 +410,12 @@ func TestRepoRoundTrip(t *testing.T) {
 	sub := domain.Submission{ID: subID, ReportID: reportID, ProgramID: progID, SubmittedAt: now, Receipt: "it", Status: "SUBMITTED", ApprovalID: "it-approval"}
 	if err := r.PutSubmission(ctx, sub); err != nil {
 		t.Fatal(err)
+	}
+	// The same approval must not authorize a second submission.
+	dup := sub
+	dup.ID = subID + "-dup"
+	if err := r.PutSubmission(ctx, dup); err == nil {
+		t.Fatal("second submission with the same approval_id must be rejected")
 	}
 	entry := domain.LedgerEntry{
 		ID: "it-ledger-" + suffix, Platform: domain.PlatformButian, ProgramID: progID,
