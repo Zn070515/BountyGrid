@@ -649,6 +649,9 @@ func (r *Repo) PutFinding(ctx context.Context, f domain.Finding) error {
 }
 
 func (r *Repo) PutReportDraft(ctx context.Context, d domain.ReportDraft) error {
+	if err := d.Validate(); err != nil {
+		return err
+	}
 	data, err := mustJSON(d)
 	if err != nil {
 		return err
@@ -659,6 +662,22 @@ func (r *Repo) PutReportDraft(ctx context.Context, d domain.ReportDraft) error {
 		ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, data=EXCLUDED.data`,
 		d.ID, d.FindingID, d.ProgramID, d.Status, d.CreatedAt, data)
 	return err
+}
+
+func (r *Repo) GetReportDraft(ctx context.Context, id string) (domain.ReportDraft, error) {
+	var data []byte
+	err := r.Pool.QueryRow(ctx, `SELECT data FROM report_drafts WHERE id=$1`, id).Scan(&data)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ReportDraft{}, ErrNotFound
+		}
+		return domain.ReportDraft{}, fmt.Errorf("postgres: get report draft: %w", err)
+	}
+	var d domain.ReportDraft
+	if err := json.Unmarshal(data, &d); err != nil {
+		return domain.ReportDraft{}, fmt.Errorf("postgres: decode report draft: %w", err)
+	}
+	return d, nil
 }
 
 func (r *Repo) PutSubmission(ctx context.Context, s domain.Submission) error {
