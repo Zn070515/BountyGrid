@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/authz"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
 
@@ -159,11 +160,11 @@ func (r *RuleVerifier) Verify(ctx context.Context, in Input) (domain.Verificatio
 	if in.Finding.AssetID == nil {
 		return reject(domain.VerdictNeedsEvidence, "ASSET_MISSING")
 	}
-	asset, _, ok := in.Program.Scope.ResolveAsset(*in.Finding.AssetID)
-	if !ok {
+	_, match, err := authz.ResolveInScopeAsset(in.Program, *in.Finding.AssetID)
+	if err != nil {
 		return reject(domain.VerdictOutOfScope, "ASSET_NOT_IN_SCOPE")
 	}
-	switch in.Program.Scope.CheckAsset(asset) {
+	switch match {
 	case domain.ScopeMatchIncluded:
 		v.InScope = true
 	case domain.ScopeMatchConditional:

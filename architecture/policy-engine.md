@@ -234,11 +234,12 @@ SENSITIVE_DATA_READ（默认；仅项目明确“证明型/限额”例外）
 - 选择器内是 OR，不同字段之间是 AND；空选择器表示 any。
 - `*.example.com` 只匹配子域，`**.example.com` 才匹配 apex；全局 `*`、带 scheme/port/path 的 host 在加载时拒绝。
 - URL 在匹配前规范化：host 小写/去尾点/去端口/去 IPv6 括号，path 百分号解码 + 强制前导 `/` + `path.Clean`。
-- **权限层级**：平台授权是 ceiling，本地规则只能收紧。`source=operator`（默认）的 `allow` 永远不能把 `REQUIRE_HUMAN`/`DENY` 变成 `ALLOW`；只有 `source=platform_evidence` 且带 `evidence_refs/observed_at/valid_until/policy_revision`、在决策时仍未过期的规则，才能具体化 `CONDITIONAL`（`CanRelax=true`），且仍不能覆盖硬 `DENY`、`AUTOMATION_UNKNOWN/FORBIDDEN`、Scope/资产/资格/新鲜度/运行时约束。
-- 多规则命中取最严：`forbidden > require_human > allow`。
+- **权限层级**：平台授权是 ceiling，本地规则只能收紧。规则文件的 `source` 只有 `operator`（默认）；`source=platform_evidence` 的文件被加载器直接拒绝（platform authority 只能由 Evidence 编译，不能手写 JSON）。`operator` 的 `allow` 永远不能把 `REQUIRE_HUMAN`/`DENY` 变成 `ALLOW`。
+- **平台授权独立求值**：`rules.PlatformRule` 是独立类型（无 JSON loader，字段私有，只能由 `NewPlatformRule` 构造）。`authz.BuildPlatformPolicy` 在构造前验证 evidence 存在、`Evidence.Platform == Program.Platform`、程序绑定、`PolicyRevision`、观察窗口和 `Program.PolicyFreshAt`。`Engine.WithPlatformAuthority` 只接受这种已验证的 policy；决策时再检查平台/revision/新鲜度。只有它能把平台自身的 `CONDITIONAL` 放宽为 `ALLOW`（`CanRelax=true`），且不能覆盖硬 `DENY`、`AUTOMATION_UNKNOWN/FORBIDDEN`、Scope/资产/资格/新鲜度/运行时约束，也不能覆盖 operator 的 `require_human`/`forbidden`。详见 [`authz.md`](authz.md)。
+- 多规则命中取最严：`forbidden > require_human > allow`（operator 层内）。
 - 路径前缀 segment-aware：`/api` 匹配 `/api`、`/api/users`，不匹配 `/apix`、`/api2`、`/api-admin`；匹配前统一 `CanonicalPath`（单次 percent-decode、拒绝残留 `%2f/%2e/%5c`、反斜杠归一、`path.Clean`）。
-- 决策记录 `RuleIDs` 与 `RuleSetFingerprint`；`Authorize` 在同一事务/重评估路径上拒绝指纹变化后的旧授权。
-- `bountygrid policy check -rules <file> -action ...` 加载并自测规则、输出命中规则；`decide`/`harness`/`submit` 可用可选 `-rules`。
+- 决策记录 `RuleIDs` 与 `RuleSetFingerprint`；指纹覆盖 operator 规则与平台授权的 provenance，`Authorize` 拒绝指纹变化后的旧授权。
+- `bountygrid policy check -rules <file> -action ...` 加载并自测 operator 规则、输出命中规则（`can_relax` 恒为 false）；`decide`/`harness`/`submit` 可用可选 `-rules`。平台授权目前只通过 Go API 注入。
 
 规则层与 `ExecutionGrant` 的关系：规则决定“是否需要人工审批”，`ExecutionGrant` 决定“这个请求到底能打到哪个 host/method/path、以什么 RPS/并发/日限额”。两者都不能被对方替代。
 
@@ -348,23 +349,31 @@ func (e *Engine) Decide(ctx context.Context, req domain.ActionRequest) (domain.A
         }
     }
 
-    // 7b. 声明式规则覆盖：最严决策胜出；只有平台证据 allow 可具体化 CONDITIONAL
+    // 7b. operator 规则与平台授权分开求值，避免 operator allow 冒充平台授权
+    ruleReq := rules.Request{Action: req.Action, Program: req.ProgramID,
+        Asset: dc.AssetValue(), Method: req.Method, Now: now}
+    operatorTightened := false
     if e.rules != nil {
-        rr, err := e.rules.Evaluate(rules.Request{
-            Action: req.Action, Program: req.ProgramID,
-            Asset: dc.AssetValue(), Method: req.Method, Now: now,
-        })
+        rr, err := e.rules.Evaluate(ruleReq)
         if err != nil { return deny(req, "RULE_REQUEST_INVALID"), nil }
         switch rr.Decision {
         case rules.DecisionForbidden:
             return denyWithRules(req, rr), nil
         case rules.DecisionRequireHuman:
             if base != domain.DecisionDeny { base = domain.DecisionRequireHuman }
+            operatorTightened = true
         case rules.DecisionAllow:
-            // Operator guardrail allow never raises the ceiling.
-            if rr.CanRelax && base != domain.DecisionDeny && overridableByAutomation(req.Action) {
-                base = domain.DecisionAllow
-            }
+            // Operator allow never raises the ceiling.
+        }
+    }
+    if e.platform != nil {
+        pr, err := e.platform.Evaluate(dc.Program, ruleReq)
+        if err != nil { return deny(req, "RULE_REQUEST_INVALID"), nil }
+        // 只有已验证平台规则、且 automation 确实是 CONDITIONAL、且 operator
+        // 没有收紧时，才允许放宽。
+        if pr.CanRelax && !operatorTightened && conditionalGate &&
+            base != domain.DecisionDeny && overridableByAutomation(req.Action) {
+            base = domain.DecisionAllow
         }
     }
 
@@ -471,7 +480,7 @@ single_use（human-only 动作必须 true）
 
 ## 12. Control-plane hardening（2026-11-01）
 
-- **声明式规则覆盖**：`internal/policy/rules` 在矩阵/automation 之后、人工批准之前求值；多规则最严合并。平台授权是 ceiling：`operator` allow 只能保持已有 `ALLOW`，只有未过期的 `platform_evidence` allow（带 evidence/observed/valid/revision，`CanRelax=true`）才能具体化 `CONDITIONAL`，且不能覆盖硬 `DENY`、`AUTOMATION_UNKNOWN/FORBIDDEN`、Scope/资产/资格/新鲜度/运行时约束。路径前缀 segment-aware（`/api` 不匹配 `/apix`），统一 `CanonicalPath`。规则文件加载时验证 `match`/`not_match`；决策记录 `RuleIDs`/`RuleSetFingerprint`，`Authorize` 拒绝规则集变更后的旧授权。`bountygrid policy check` 可离线验证规则文件并输出 `can_relax`。
+- **声明式规则覆盖**：`internal/policy/rules` 在矩阵/automation 之后、人工批准之前求值；operator 规则内多规则最严合并。平台授权是独立的 ceiling：`operator` allow 只能保持已有 `ALLOW`；`source=platform_evidence` 的 JSON 文件被加载器拒绝，平台授权只能由 `internal/authz` 从 Evidence 编译为 `rules.PlatformRule` 并通过 `VerifyPlatformEvidence`。只有已验证、仍新鲜、revision 匹配且未被 operator 收紧的规则才能具体化 `CONDITIONAL`，且不能覆盖硬 `DENY`、`AUTOMATION_UNKNOWN/FORBIDDEN`、Scope/资产/资格/新鲜度/运行时约束。路径前缀 segment-aware（`/api` 不匹配 `/apix`），统一 `CanonicalPath`。规则文件加载时验证 `match`/`not_match`；决策记录 `RuleIDs`/`RuleSetFingerprint`（含平台授权 provenance），`Authorize` 拒绝规则/授权变更后的旧授权。`bountygrid policy check` 可离线验证 operator 规则文件，`can_relax` 恒为 false。
 - **Authoritative Asset**：调用方只能提交 `AssetID`。Action Gateway 从 `Program.Scope.ResolveAsset` 取 canonical Asset；未存储的 ID → `DENY ASSET_UNKNOWN`，不再接受调用方提供的 Asset 对象。
 - **Authorize 重新评估**：`ActionDecision` 持久化 `Request/ResourceID/UsageToday/BudgetSpent/Environment`。`Authorize` 重新加载 Account/Program、重新解析 Asset、重跑 Policy；任一门槛变化 → 执行前失败。旧格式（无 Request）Decision 只保留窄校验。
 - **审批消费时点**：`Policy.Decide` 校验但不消费 single-use approval；`Gateway.Authorize` 在重新评估通过后调用 `ApprovalLedger.Consume`。审批过期/已消费 → 不执行。

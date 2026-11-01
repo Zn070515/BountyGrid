@@ -2,9 +2,13 @@ package policy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/authz"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 )
@@ -13,7 +17,7 @@ const DefaultPolicyVersion = "policy-v1"
 
 // MinExecutionConfidence is the floor from architecture/evidence-facts.md:
 // a fact below 0.8 cannot by itself drive an execution decision.
-const MinExecutionConfidence domain.Confidence = 0.8
+const MinExecutionConfidence domain.Confidence = authz.MinExecutionConfidence
 
 type DecisionContext struct {
 	Request domain.ActionRequest
@@ -35,7 +39,13 @@ type DecisionContext struct {
 
 type Engine struct {
 	matrix map[domain.Action]domain.Decision
-	rules  *rules.RuleSet
+	// rules is operator guardrail authority loaded from JSON. It may tighten but
+	// never raise the ceiling.
+	rules *rules.RuleSet
+	// platform is verified platform authority compiled from Evidence by
+	// internal/authz. Only this authority may relax a CONDITIONAL automation
+	// decision, and only after every domain gate has passed.
+	platform *authz.PlatformPolicy
 }
 
 func NewEngine() *Engine {
@@ -56,15 +66,45 @@ func (e *Engine) SetRules(rs *rules.RuleSet) {
 	e.rules = rs
 }
 
-// RuleSetFingerprint returns the fingerprint of the active rule set (empty when
-// no rules are configured).
+// WithPlatformAuthority attaches verified platform authority. The policy must
+// have been built by authz.BuildPlatformPolicy; there is deliberately no path
+// that loads it from a JSON rule file.
+func (e *Engine) WithPlatformAuthority(pp *authz.PlatformPolicy) *Engine {
+	e.platform = pp
+	return e
+}
+
+// SetPlatformPolicy is the non-chaining form of WithPlatformAuthority.
+func (e *Engine) SetPlatformPolicy(pp *authz.PlatformPolicy) {
+	e.platform = pp
+}
+
+// RuleSetFingerprint returns the fingerprint of all active rule authority
+// (operator rules + verified platform authority). It is empty when neither is
+// configured. Decisions bind to it, so a change to either layer invalidates
+// earlier approvals.
 func (e *Engine) RuleSetFingerprint() string { return e.ruleSetFingerprint() }
 
 func (e *Engine) ruleSetFingerprint() string {
-	if e.rules == nil {
-		return ""
+	operator := ""
+	if e.rules != nil {
+		operator = e.rules.Fingerprint()
 	}
-	return e.rules.Fingerprint()
+	platform := ""
+	if e.platform != nil {
+		platform = e.platform.Fingerprint()
+	}
+	switch {
+	case operator == "" && platform == "":
+		return ""
+	case platform == "":
+		return operator
+	case operator == "":
+		return platform
+	default:
+		sum := sha256.Sum256([]byte("operator\x00" + operator + "\x00platform\x00" + platform))
+		return "sha256:" + hex.EncodeToString(sum[:])
+	}
 }
 
 // DefaultMatrix is deliberately conservative. Project automation policy is
@@ -163,30 +203,15 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	}
 
 	// 0b. Freshness and confidence are required for execution/submission, not
-	// for viewing.
-	if requiresFreshState(dc.Request.Action) {
-		if !dc.Program.StatusFreshAt(now) {
-			return decide(domain.DecisionRequireMoreEvidence, "STALE_PROGRAM_STATE"), nil
-		}
-		if dc.Program.Status.Confidence < MinExecutionConfidence {
-			return decide(domain.DecisionRequireMoreEvidence, "LOW_CONFIDENCE_STATE"), nil
-		}
-	}
-
-	// 0c. Every authorization input has its own freshness window. A fresh
+	// for viewing. Every authorization input has its own window; a fresh
 	// Program.Status says nothing about the scope, automation rules, constraints
-	// or account capability captured earlier, so each is checked separately and
-	// any stale input fails closed.
-	if requiresFreshAuthorizationInputs(dc.Request.Action) {
-		if !dc.Program.PolicyFreshAt(now) {
-			return decide(domain.DecisionRequireMoreEvidence, "STALE_AUTOMATION_POLICY"), nil
+	// or account capability captured earlier.
+	if err := authz.CheckAuthorizationFreshness(dc.Program, dc.Account, dc.Request.Action, now); err != nil {
+		var stale *authz.FreshnessError
+		if errors.As(err, &stale) {
+			return decide(domain.DecisionRequireMoreEvidence, stale.Reason), nil
 		}
-		if !dc.Account.CapabilityFreshAt(now) {
-			return decide(domain.DecisionRequireMoreEvidence, "STALE_ACCOUNT_CAPABILITY"), nil
-		}
-		if !dc.Program.Scope.FreshAt(now) {
-			return decide(domain.DecisionRequireMoreEvidence, "STALE_SCOPE"), nil
-		}
+		return domain.ActionDecision{}, err
 	}
 
 	// 1. Account-level capability. A program-scoped gate is evaluated with the
@@ -303,6 +328,10 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	if !ok {
 		return decide(domain.DecisionDeny, "NO_ACTION_POLICY"), nil
 	}
+	// conditionalGate records that the platform's own automation policy made
+	// this action CONDITIONAL. Only verified platform authority may relax that
+	// specific ceiling; it is not a general override of the matrix or a hard DENY.
+	conditionalGate := false
 	if cap, has := automationCapability(dc.Program.Automation, dc.Request.Action); has {
 		switch cap {
 		case domain.CapForbidden:
@@ -314,6 +343,7 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 			// human-gated action, but it must never loosen a hard DENY.
 			if base != domain.DecisionDeny {
 				base = domain.DecisionRequireHuman
+				conditionalGate = true
 			}
 		case domain.CapAllowed:
 			if overridableByAutomation(dc.Request.Action) {
@@ -323,27 +353,30 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	}
 
 	// 8b. Declarative rules are an overlay on the automation/matrix decision.
-	// They are evaluated only after every domain gate has passed. The strictest
-	// matched decision wins; an allow rule may loosen a project-conditional
-	// action only when the action is explicitly overridable, never a hard DENY.
+	// They are evaluated only after every domain gate has passed. Operator rules
+	// and platform authority are evaluated separately: an operator allow can
+	// never claim platform authority, and only a verified platform rule may
+	// relax a CONDITIONAL ceiling.
+	assetTarget := ""
+	if dc.Asset != nil {
+		assetTarget = dc.Asset.Value
+	}
+	ruleRequest := rules.Request{
+		Action:  dc.Request.Action,
+		Program: dc.Request.ProgramID,
+		Asset:   assetTarget,
+		Method:  dc.Request.Method,
+		Now:     now,
+	}
+	operatorTightened := false
 	if e.rules != nil {
-		assetTarget := ""
-		if dc.Asset != nil {
-			assetTarget = dc.Asset.Value
-		}
-		rr, rerr := e.rules.Evaluate(rules.Request{
-			Action:  dc.Request.Action,
-			Program: dc.Request.ProgramID,
-			Asset:   assetTarget,
-			Method:  dc.Request.Method,
-			Now:     now,
-		})
+		rr, rerr := e.rules.Evaluate(ruleRequest)
 		if rerr != nil {
 			return decide(domain.DecisionDeny, "RULE_REQUEST_INVALID"), nil
 		}
-		if rr.Decision != rules.DecisionNone {
-			matchedRuleIDs = rr.IDs()
-			ruleReasons = rr.Reasons()
+		if len(rr.Matched) > 0 {
+			matchedRuleIDs = append(matchedRuleIDs, rr.IDs()...)
+			ruleReasons = append(ruleReasons, rr.Reasons()...)
 		}
 		switch rr.Decision {
 		case rules.DecisionForbidden:
@@ -352,13 +385,27 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 			if base != domain.DecisionDeny {
 				base = domain.DecisionRequireHuman
 			}
+			operatorTightened = true
 		case rules.DecisionAllow:
-			// Operator guardrails may only keep an existing ALLOW. Only an
-			// unexpired platform-evidence allow rule may specifically relax a
-			// platform-conditional action; it still cannot override a hard DENY.
-			if rr.CanRelax && base != domain.DecisionDeny && overridableByAutomation(dc.Request.Action) {
-				base = domain.DecisionAllow
-			}
+			// Operator guardrails may only keep an existing ALLOW.
+		}
+	}
+	if e.platform != nil {
+		pr, perr := e.platform.Evaluate(dc.Program, ruleRequest)
+		if perr != nil {
+			return decide(domain.DecisionDeny, "RULE_REQUEST_INVALID"), nil
+		}
+		if len(pr.Matched) > 0 {
+			matchedRuleIDs = append(matchedRuleIDs, pr.IDs()...)
+			ruleReasons = append(ruleReasons, pr.Reasons()...)
+		}
+		// Platform authority may relax the platform's own CONDITIONAL gate only.
+		// It cannot override a hard DENY, AUTOMATION_UNKNOWN/FORBIDDEN (handled
+		// above), an operator guardrail that tightened the decision, or an action
+		// the matrix does not allow automation to override.
+		if pr.CanRelax && !operatorTightened && conditionalGate &&
+			base != domain.DecisionDeny && overridableByAutomation(dc.Request.Action) {
+			base = domain.DecisionAllow
 		}
 	}
 
@@ -403,7 +450,7 @@ func (e *Engine) allow(dc DecisionContext, now time.Time, decide func(domain.Dec
 	// An executable ALLOW must not outlive any authorization input it depends
 	// on. The 5-minute cache window is normally the tightest bound, but this
 	// keeps the invariant explicit if the freshness windows change.
-	if requiresFreshAuthorizationInputs(dc.Request.Action) {
+	if authz.RequiresFreshAuthorizationInputs(dc.Request.Action) {
 		for _, until := range []time.Time{
 			dc.Program.StatusFreshUntil(),
 			dc.Program.Scope.FreshUntil(),
@@ -463,22 +510,6 @@ func validateApproval(a *domain.HumanApproval, req domain.ActionRequest, resourc
 		return fmt.Errorf("human-only approval must be single-use")
 	}
 	return nil
-}
-
-func requiresFreshState(a domain.Action) bool {
-	switch a {
-	case domain.ActionViewProgram, domain.ActionViewRules:
-		return false
-	default:
-		return true
-	}
-}
-
-// requiresFreshAuthorizationInputs selects actions whose execution decision
-// depends on scope contents, automation policy, constraints and account
-// capability. Each of those inputs must be fresh independently of Program.Status.
-func requiresFreshAuthorizationInputs(a domain.Action) bool {
-	return a.NeedsScope() || a == domain.ActionReportSubmit
 }
 
 func automationCapability(p domain.AutomationPolicy, a domain.Action) (domain.CapabilityStatus, bool) {
