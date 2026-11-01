@@ -1,6 +1,7 @@
 // Command ollama_smoke feeds a real local Ollama model through BountyGrid's
-// reliability context compiler and proposal ranker. It only reads model output;
-// it never executes a proposal or performs a platform action.
+// reliability context compiler, proposal ranker and loop detector. It only
+// reads model output; it never executes a platform action or opens a network
+// connection except to the local Ollama API.
 package main
 
 import (
@@ -18,6 +19,16 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/reliability"
 )
 
+const proposalInstruction = `你是短程 planner。只输出一个 JSON 对象，不要数组，不要 Markdown，不要解释。
+只允许这五个字段：
+{"action":"READ_SCOPE","tool":"read_scope","parameters":{},"rationale":"...","confidence":0.9}
+action 只能是 READ_SCOPE 或 VIEW_RULES；不要附加 "|human_only=false" 等后缀。
+parameters 必须是空对象 {}，不要复制上下文中的任何字段或值。
+选择最低风险、最有助于确认范围的动作。
+
+=== 上下文 ===
+`
+
 type proposalDTO struct {
 	Action              string          `json:"action"`
 	Tool                string          `json:"tool"`
@@ -30,50 +41,59 @@ type proposalDTO struct {
 func main() {
 	model := flag.String("model", "qwen25-0.5b-local", "Ollama model name")
 	addr := flag.String("addr", "http://127.0.0.1:11434", "Ollama base URL")
+	suite := flag.String("suite", "proposal", "proposal|filters|injection|budget|loop|repeat")
+	repeat := flag.Int("n", 5, "iterations for the repeat suite")
 	flag.Parse()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	session, evidence, auth := fixture()
-	compiled, err := reliability.NewDefaultContextCompiler().Compile(
-		ctx, session, auth, evidence, reliability.ContextBudget{MaxChars: 3000})
+	var out any
+	var err error
+	switch *suite {
+	case "proposal":
+		out, err = runProposal(ctx, *addr, *model)
+	case "filters":
+		out, err = runFilters(ctx, *addr, *model)
+	case "injection":
+		out, err = runInjection(ctx, *addr, *model)
+	case "budget":
+		out, err = runBudget(ctx, *addr, *model)
+	case "loop":
+		out, err = runLoopSuite(ctx, *addr, *model)
+	case "repeat":
+		out, err = runRepeat(ctx, *addr, *model, *repeat)
+	default:
+		err = fmt.Errorf("unknown suite %q", *suite)
+	}
 	if err != nil {
 		fatal(err)
 	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(out); err != nil {
+		fatal(err)
+	}
+}
 
-	const instruction = `你是短程 planner。只输出一个 JSON 对象，不要数组，不要 Markdown，不要解释。
-字段：
-{"action":"READ_SCOPE","tool":"read_scope","parameters":{},"rationale":"...","expected_observation":"...","confidence":0.9}
-action 只能是 READ_SCOPE 或 VIEW_RULES，不要附加 "|human_only=false" 之类的后缀。
-选择最低风险、最有助于确认范围的动作。
-
-=== 上下文 ===
-`
+func runProposal(ctx context.Context, addr, model string) (map[string]any, error) {
+	compiled, session, auth, err := compileFixture(ctx, 3000)
+	if err != nil {
+		return nil, err
+	}
 	started := time.Now()
-	resp, err := chat(ctx, *addr, *model, instruction+compiled.Text)
+	resp, err := chat(ctx, addr, model, proposalInstruction+compiled.Text)
 	wall := time.Since(started)
 	if err != nil {
-		fatal(err)
+		return nil, err
 	}
-
 	parsed, parseErr := parseProposals(resp.Content)
-	proposals := make([]reliability.ActionProposal, 0, len(parsed))
-	for _, p := range parsed {
-		// Keep only the action token before any model-invented suffix; an
-		// invalid value is still rejected by RankProposals below.
-		action := strings.TrimSpace(strings.SplitN(p.Action, "|", 2)[0])
-		proposals = append(proposals, reliability.ActionProposal{
-			Action:     domain.Action(strings.ToUpper(action)),
-			Tool:       strings.TrimSpace(strings.SplitN(p.Tool, "|", 2)[0]),
-			Parameters: p.Parameters, Rationale: p.Rationale,
-			ExpectedObservation: p.ExpectedObservation, Confidence: p.Confidence,
-		})
-	}
+	proposals := toProposals(parsed)
 	ranked := reliability.RankProposals(proposals, auth, session.Budget, time.Now().UTC())
 
 	out := map[string]any{
-		"model":          *model,
+		"model":          model,
 		"context_chars":  compiled.Chars,
 		"context_tokens": compiled.Tokens,
 		"context_hash":   compiled.Hash,
@@ -97,12 +117,7 @@ action 只能是 READ_SCOPE 或 VIEW_RULES，不要附加 "|human_only=false" �
 			"confidence": ranked[0].Confidence, "rationale": ranked[0].Rationale,
 		}
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(out); err != nil {
-		fatal(err)
-	}
+	return out, nil
 }
 
 func fixture() (*reliability.ResearchSession, []reliability.EvidenceView, reliability.Authorization) {
@@ -144,6 +159,29 @@ func fixture() (*reliability.ResearchSession, []reliability.EvidenceView, reliab
 		ExpiresAt:      now.Add(time.Hour),
 	}
 	return s, evidence, auth
+}
+
+func compileFixture(ctx context.Context, maxChars int) (reliability.CompiledContext, *reliability.ResearchSession, reliability.Authorization, error) {
+	session, evidence, auth := fixture()
+	compiled, err := reliability.NewDefaultContextCompiler().Compile(
+		ctx, session, auth, evidence, reliability.ContextBudget{MaxChars: maxChars})
+	return compiled, session, auth, err
+}
+
+func toProposals(parsed []proposalDTO) []reliability.ActionProposal {
+	proposals := make([]reliability.ActionProposal, 0, len(parsed))
+	for _, p := range parsed {
+		// Keep only the action token before any model-invented suffix; an
+		// invalid value is still rejected by RankProposals.
+		action := strings.TrimSpace(strings.SplitN(p.Action, "|", 2)[0])
+		proposals = append(proposals, reliability.ActionProposal{
+			Action:     domain.Action(strings.ToUpper(action)),
+			Tool:       strings.TrimSpace(strings.SplitN(p.Tool, "|", 2)[0]),
+			Parameters: p.Parameters, Rationale: p.Rationale,
+			ExpectedObservation: p.ExpectedObservation, Confidence: p.Confidence,
+		})
+	}
+	return proposals
 }
 
 type chatResponse struct {
