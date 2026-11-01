@@ -120,7 +120,7 @@ bash probes/butian/grow-dates.sh
 | Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 基本完成：三平台主路径已实测并落库；部分 scope/detail 与数据语义仍在收口 |
 | Phase 2/3 | Facts/State/Policy | 已实现并硬化；Fact 年龄限制 State TTL，运行环境约束进入 Policy |
 | Phase 4 | Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、CompetitionSnapshot TTL/decay |
-| Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 未实现，**无 ACTIVE_HTTP 工具** |
+| Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 的路由/数据分级/预算/审计已实现（仅本地 dry-run，**无真实 Provider**）；**无 ACTIVE_HTTP 工具** |
 | Phase 6+ | Verification / Submission / Ledger | 领域类型为主，尚未进入 |
 
 ### Phase 1 progress · Browser Sidecar + Vulbox Reader
@@ -324,6 +324,14 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - **Butian 语义层次**：公益SRC 只发 `butian.pub.listed`，RUNNING 是派生状态；专属SRC/GROW 的报名与实战认证 Gate 不再写死 `UNSATISFIED`，由 Policy 结合账号状态解析。
 - **文档对齐**：CLAUDE/README/implementation-order 的阶段状态改为“Phase 0 complete; Phase 1–5 partially implemented; active execution disabled”。
 - **复核补修**：公益SRC 由 canonical `program.listed` 派生 RUNNING；回执绑定请求身份并按状态处理竞态；`AuthorizeWith` 要求新的 usage/budget/environment（环境 5 分钟过期）；Scheduler 使用账号重算的 Eligibility；列表页显式报名信号写入 `Account.JoinedProgramIDs`；审批参数保留原始字节并接受 canonical hash；回执保留 Evidence。
+
+### Model Router（2026-11-01）
+
+- `internal/model`：`Purpose`/`DataClass`/`ProviderInfo`/`Router`；`SENSITIVE` 只允许本地 Provider，无本地 Provider 直接 `ErrNoProvider`。
+- PLAN/ANALYZE 优先强远程模型，CODE/EMBED/REPORT 优先本地；输出 token 上限不足的 Provider 不参与。
+- 调用前按 `MaxTokens` 估算成本，调用后按实际 usage 复核；超预算丢弃响应并返回 `ErrBudgetExceeded`。
+- 每次尝试写 `model.call` 审计，payload 只含 `prompt_hash/response_hash/usage/cost`，不含原文。
+- `go run ./cmd/bountygrid model -purpose ANALYZE -data-class INTERNAL -max-tokens 2000 -budget 100` 只打印路由计划，不调用模型。
 
 ## 文档入口 · Docs
 
