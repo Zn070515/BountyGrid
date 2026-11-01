@@ -126,6 +126,7 @@ bash probes/butian/grow-dates.sh
 ### Execution-trust hardening（2026-11-01）
 
 - **声明式策略规则**：`internal/policy/rules` 支持 host/method/path 规则、加载期 `match`/`not_match` 自测、`*.example.com` 仅子域/`**.example.com` 含 apex、URL 规范化（大小写/尾点/百分号编码/`path.Clean`）、最严决策合并与 `justification`；`bountygrid policy check` 输出命中规则和规则集指纹。决策记录 `RuleIDs`/`RuleSetFingerprint`，`Authorize` 拒绝规则集变更后的旧授权。
+- **可回放 Trace**：`internal/trace` 提供 append-only `trace.jsonl`、`raw/<sha256>` content-addressed payload、稳定事件哈希和因果 reducer；`bountygrid trace reduce|validate` 离线读取。当前尚未接入 model/harness/gateway 调用点，DB 仍是唯一权威状态，trace 只做审计/回放。
 - **输入新鲜度独立检查**：执行/提交动作分别要求 `Program.Status`、`Scope`、`Program.PolicyObservedAt`（automation/constraints 快照）与 `AccountCapability` 在各自窗口内；任一 stale → `REQUIRE_MORE_EVIDENCE`（`STALE_PROGRAM_STATE` / `STALE_SCOPE` / `STALE_AUTOMATION_POLICY` / `STALE_ACCOUNT_CAPABILITY`）。决策记录 `ScopeRevision` 与 `PolicyRevision`。
 - **逐请求 Egress 授权**：网络工具拿到的是绑定 `ExecutionGrant`（approved method、canonical asset host/path、RPS、并发、日限额）的 `Egress`；每次请求与重定向都重新校验，不能被一次 ALLOW 放大成任意请求。
 - **SSRF / DNS rebinding**：连接前解析 DNS，拒绝 loopback/private/link-local/ULA/multicast/unspecified 并固定到校验后的 IP；默认不使用环境代理，只有显式 `ApprovedProxy` 才启用。
@@ -241,6 +242,17 @@ go run ./cmd/bountygrid policy check \
 ```
 
 `decide` / `harness` / `submit` 均支持可选 `-rules <file>`。详见 [`rules/README.md`](rules/README.md)。
+
+### Trace bundle · `trace`
+
+`internal/trace` 记录一次研究运行的 append-only 因果链：`trace.jsonl` 每行一个事件，`raw/<sha256>` 保存 content-addressed 的已脱敏原始载荷。事件有 `seq`、`parent_id`、稳定 `hash` 和 kind（`MODEL_CALL`/`ACTION_DECISION`/`TOOL_DISPATCH`/`EXECUTION_RECEIPT`/`EVIDENCE`/...）。DB 仍是权威状态；trace 用于回放和审计，不是第二事实源。
+
+```bash
+go run ./cmd/bountygrid trace reduce -file ./trace.jsonl
+go run ./cmd/bountygrid trace validate -file ./trace.jsonl
+```
+
+详见 [`architecture/trace.md`](architecture/trace.md)。当前 CLI/包已实现，model/harness/gateway 调用点尚未写入 trace。
 
 ### Opportunity / Scheduler · `schedule`
 
@@ -396,7 +408,8 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 | [`architecture/domain-model.md`](architecture/domain-model.md) | Go 类型、聚合关系、不变量 |
 | [`architecture/evidence-facts.md`](architecture/evidence-facts.md) | Evidence → Fact → State → Decision、TTL、置信度 |
 | [`architecture/adapters.md`](architecture/adapters.md) | 三平台 Adapter、Transport、轮询、失败模式 |
-| [`architecture/policy-engine.md`](architecture/policy-engine.md) | AccountCapability + EligibilityState + 动作矩阵 |
+| [`architecture/policy-engine.md`](architecture/policy-engine.md) | AccountCapability + EligibilityState + 动作矩阵 + 声明式规则 |
+| [`architecture/trace.md`](architecture/trace.md) | append-only trace bundle、raw payloads、reducer、CLI |
 | [`architecture/opportunity-scheduler.md`](architecture/opportunity-scheduler.md) | CompetitionSnapshot、期望收益/成本、调度 |
 | [`architecture/harness-model-router.md`](architecture/harness-model-router.md) | 执行边界、工具注册、模型路由 |
 | [`architecture/research-lifecycle.md`](architecture/research-lifecycle.md) | Finding/Verification/Report/Submission/Ledger |
@@ -435,7 +448,7 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 ## 目录结构 · Layout
 
 ```text
-cmd/bountygrid/              migrate / rollback / ping / sync / derive / decide / schedule / harness / model / policy / verify / report / submit / ledger / version 入口
+cmd/bountygrid/              migrate / rollback / ping / sync / derive / decide / schedule / harness / model / policy / verify / report / submit / ledger / trace / version 入口
 internal/domain/             平台/账号/项目/Scope/Eligibility/Action/Research/Ledger 类型与不变量
 internal/evidence/           不可变 Evidence Store（接口 + 内存实现）
 internal/audit/              审计事件（不可变、可过滤）
@@ -443,6 +456,7 @@ internal/facts/              抽取器接口、FactSet、内存 Store、补天 G
 internal/state/              程序状态/报名窗口/Scope/账号能力派生
 internal/policy/             Eligibility 合并 + 动作矩阵 + 人工审批
 internal/policy/rules/       声明式 host/method/path 规则、match/not_match 自测、最严决策合并
+internal/trace/              append-only JSONL 事件、content-addressed raw payloads、因果 reducer
 internal/sidecar/            agent-browser 只读客户端（open/wait/eval/get/state save/close）
 internal/adapter/            Reader 接口 + Vulbox Reader（公开列表/账号；详情待接入）
 internal/store/postgres/     pgxpool、嵌入式迁移、仓储与一次性审批账本
