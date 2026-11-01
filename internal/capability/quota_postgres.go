@@ -25,6 +25,10 @@ type PostgresDailyQuota struct {
 	Store NetworkUsageStore
 }
 
+// Durable reports that counts are persisted in network_usage and survive a
+// restart.
+func (q PostgresDailyQuota) Durable() bool { return q.Store != nil }
+
 func (q PostgresDailyQuota) Consume(ctx context.Context, key, businessDate string, limit int64) (bool, error) {
 	if q.Store == nil {
 		return false, errors.New("capability: postgres daily quota has no store")

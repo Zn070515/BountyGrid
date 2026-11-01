@@ -50,9 +50,15 @@ type Lease interface{ Release() }
 - **Daily quota**: delegated to `DailyQuota` (see below). `limit == 0` has no
   ceiling but still counts, so a later tighter grant sees the true usage.
 
-Acquisition order is RPS wait → daily consume → concurrency slot. A request with
+Acquisition order is concurrency slot → RPS wait → daily consume. A request
+cancelled while waiting for concurrency or RPS never spends a daily slot, and a
+daily-quota rejection releases the concurrency slot it held. A request with
 neither account nor program identity receives an ephemeral, non-shared limiter:
 an unattributable grant must not reset or block another program's budget.
+
+`DurableBroker` is a `Broker` whose daily counter survives a restart; the
+production proxy requires one (`Durable()` reports whether the injected
+`DailyQuota` is durable). `MemoryBroker` is only as durable as its quota.
 
 `ErrLimit` wraps `ErrGrantDenied`, so existing callers that match the grant
 sentinel keep failing closed while new callers can map the daily limit to HTTP
@@ -149,27 +155,42 @@ type ProgramValidator struct {
 8. current revocation epoch != `grant.AuthorizationEpoch`.
 
 `GrantPolicy.Validator` is called after the local expiry/method/target checks
-and before `Next`; any error is a Deny. A nil validator keeps the local checks
-only (tests), but production should configure `ProgramValidator`.
+and before `Next`; any error is a Deny. A production proxy must configure
+`ProgramValidator`.
+
+The client-side `Egress` enforces the same check: every grant-bound request
+calls `GrantValidator.ValidateGrant(ctx, grant)` before acquiring a lease. A
+grant-bound `Egress` without a validator fails closed with
+`ErrGrantValidatorRequired`; `AllowUnvalidatedGrantsForTests` is the only
+escape hatch. This closes the gap where a long-running tool kept using a grant
+the proxy would have rejected.
+
+Grant-bound redirects are denied (`ErrGrantRedirect`): one grant authorizes one
+request, and following a redirect would send a second request that was never
+authorized, validated or counted.
 
 ```go
 type RevocationRegistry interface {
-    Epoch(program domain.ProgramID) uint64
-    Bump(program domain.ProgramID) uint64
+    Epoch(ctx context.Context, program domain.ProgramID) (uint64, error)
+    Bump(ctx context.Context, program domain.ProgramID) (uint64, error)
 }
 ```
 
-`MemoryRevocationRegistry` is process-local. `Bump` invalidates every
-outstanding grant for the program immediately. Wiring `Bump` to the Reader /
-materialized-state / kill-switch pipeline (and making the epoch durable) is the
-next step; the interface and validator behavior are in place today.
+`MemoryRevocationRegistry` is process-local. `PostgresRevocationRegistry{Store:
+repo}` persists epochs in `revocation_epochs` (migration `0015`); `Bump` uses a
+single `INSERT ... ON CONFLICT DO UPDATE ... RETURNING epoch` so concurrent
+bumps cannot return the same value. A registry read error fails closed — an
+unreadable epoch is never treated as epoch 0. The CLI wires the durable
+registry into both the harness (grant stamping) and the `ProgramValidator`.
 
 ## Deliberate limits
 
-- RPS/concurrency are per-process; the daily quota can be durable.
+- RPS/concurrency are per-process; the daily quota and revocation epochs can be
+  durable.
 - `MemoryRevocationRegistry` does not survive a restart and is not shared with
-  another process. A durable epoch store is required before revocation is an
-  operational control.
+  another process; use `PostgresRevocationRegistry` when revocation is an
+  operational control. Bumping the epoch is not yet wired to Reader/KillSwitch
+  events (the store exists; the trigger does not).
 - `Egress`, proxy-forwarded HTTP and proxy CONNECT all charge the `http`
   interface, so they share one account/program budget. `Request.Interface` is
   available if a future surface needs a separate namespace (for example a

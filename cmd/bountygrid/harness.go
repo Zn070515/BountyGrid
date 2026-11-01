@@ -102,6 +102,12 @@ func runHarness(ctx context.Context, args []string) error {
 	h.SetBroker(capability.NewMemoryBroker(
 		capability.WithDailyQuota(capability.PostgresDailyQuota{Store: repo}),
 	))
+	// Grant revocation is durable and re-checked on every network request:
+	// the grant stamps the current epoch, and Egress re-reads Program state,
+	// revisions and the epoch immediately before sending.
+	revocations := capability.PostgresRevocationRegistry{Store: repo}
+	h.SetRevocationRegistry(revocations)
+	h.SetGrantValidator(capability.ProgramValidator{Programs: repo, Revocations: revocations})
 	if opts.Workspace != "" {
 		if err := h.SetWorkspace(opts.Workspace); err != nil {
 			return err

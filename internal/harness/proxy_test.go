@@ -72,9 +72,11 @@ func (a *recordingNetworkAudit) recorded() []NetworkDecisionAudit {
 
 func newTestProxy(t *testing.T, cfg ProxyConfig) (*Proxy, *httptest.Server) {
 	t.Helper()
-	// Most proxy tests exercise mechanics with a static/RulePolicy; production
-	// grant binding is covered by the dedicated GrantPolicy test.
+	// Most proxy tests exercise mechanics with a static/RulePolicy and no
+	// database; production grant/durability requirements are covered by the
+	// dedicated tests below and inject a durable broker.
 	cfg.AllowUngrantedForTests = true
+	cfg.AllowNonDurableCapabilityForTests = true
 	p := NewProxy(cfg)
 	srv := httptest.NewServer(p.Handler())
 	t.Cleanup(srv.Close)
@@ -791,9 +793,10 @@ func TestProxyAllowsUnauditedOnlyWhenExplicit(t *testing.T) {
 		AllowUnauditedForTests: true,
 	})
 	if err := NewProxy(ProxyConfig{
-		Policy:                 &staticNetworkPolicy{decision: Allow},
-		AllowUnauditedForTests: true,
-		AllowUngrantedForTests: true,
+		Policy:                            &staticNetworkPolicy{decision: Allow},
+		AllowUnauditedForTests:            true,
+		AllowUngrantedForTests:            true,
+		AllowNonDurableCapabilityForTests: true,
 	}).Validate(); err != nil {
 		t.Fatalf("explicit test escape hatch was rejected: %v", err)
 	}
@@ -874,7 +877,8 @@ func TestProxyRequiresGrantPolicyInProduction(t *testing.T) {
 	}
 	allowedForTests := NewProxy(ProxyConfig{
 		Policy: &staticNetworkPolicy{decision: Allow}, Audit: audit,
-		AllowUngrantedForTests: true,
+		AllowUngrantedForTests:            true,
+		AllowNonDurableCapabilityForTests: true,
 	})
 	if err := allowedForTests.Validate(); err != nil {
 		t.Fatalf("explicit test escape hatch = %v", err)
@@ -885,7 +889,8 @@ func TestProxyRequiresGrantPolicyInProduction(t *testing.T) {
 			Next:      &staticNetworkPolicy{decision: Allow},
 			Validator: testGrantValidator{},
 		},
-		Audit: audit,
+		Audit:  audit,
+		Broker: newDurableTestBroker(),
 	})
 	if err := granted.Validate(); err != nil {
 		t.Fatalf("GrantPolicy validation = %v", err)
@@ -895,9 +900,49 @@ func TestProxyRequiresGrantPolicyInProduction(t *testing.T) {
 			Grant: &ExecutionGrant{ExpiresAt: time.Now().Add(time.Hour)},
 			Next:  &staticNetworkPolicy{decision: Allow},
 		},
-		Audit: audit,
+		Audit:  audit,
+		Broker: newDurableTestBroker(),
 	})
 	if err := noValidator.Validate(); err == nil {
 		t.Fatal("GrantPolicy without a validator must fail closed in production")
+	}
+	// A GrantPolicy with a validator but no broker must not forward: the proxy
+	// cannot account for the platform's RPS/concurrency/daily budget.
+	noBroker := NewProxy(ProxyConfig{
+		Policy: GrantPolicy{
+			Grant:     &ExecutionGrant{ExpiresAt: time.Now().Add(time.Hour)},
+			Next:      &staticNetworkPolicy{decision: Allow},
+			Validator: testGrantValidator{},
+		},
+		Audit: audit,
+	})
+	if err := noBroker.Validate(); err == nil {
+		t.Fatal("a proxy without a capability broker must fail closed in production")
+	}
+	// An in-memory daily quota is not durable and must also be rejected.
+	nonDurable := NewProxy(ProxyConfig{
+		Policy: GrantPolicy{
+			Grant:     &ExecutionGrant{ExpiresAt: time.Now().Add(time.Hour)},
+			Next:      &staticNetworkPolicy{decision: Allow},
+			Validator: testGrantValidator{},
+		},
+		Audit:  audit,
+		Broker: capability.NewMemoryBroker(),
+	})
+	if err := nonDurable.Validate(); err == nil {
+		t.Fatal("a proxy with a non-durable daily quota must fail closed in production")
+	}
+	// The explicit test-only escape hatch permits it.
+	if err := NewProxy(ProxyConfig{
+		Policy: GrantPolicy{
+			Grant:     &ExecutionGrant{ExpiresAt: time.Now().Add(time.Hour)},
+			Next:      &staticNetworkPolicy{decision: Allow},
+			Validator: testGrantValidator{},
+		},
+		Audit:                             audit,
+		Broker:                            capability.NewMemoryBroker(),
+		AllowNonDurableCapabilityForTests: true,
+	}).Validate(); err != nil {
+		t.Fatalf("explicit non-durable escape hatch = %v", err)
 	}
 }

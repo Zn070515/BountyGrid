@@ -33,14 +33,50 @@ type ProgramStore interface {
 // RevocationRegistry holds the per-program authorization epoch. A grant is
 // valid only while its AuthorizationEpoch equals the current epoch; Bump
 // invalidates every outstanding grant for the program immediately.
+//
+// The methods take a context and return an error so a durable implementation
+// can fail closed: an unreadable epoch is never treated as epoch 0.
 type RevocationRegistry interface {
-	Epoch(program domain.ProgramID) uint64
-	Bump(program domain.ProgramID) uint64
+	Epoch(ctx context.Context, program domain.ProgramID) (uint64, error)
+	Bump(ctx context.Context, program domain.ProgramID) (uint64, error)
 }
 
-// MemoryRevocationRegistry is the process-local registry. Wiring it to the
-// Reader/MaterializedState pipeline (or a durable kill switch) is the next
-// step; today it exposes the seam and the validator behavior.
+// RevocationStore is the durable epoch source consumed by
+// PostgresRevocationRegistry. The PostgreSQL Repo implements it.
+type RevocationStore interface {
+	Epoch(ctx context.Context, program domain.ProgramID) (uint64, error)
+	BumpRevocationEpoch(ctx context.Context, program domain.ProgramID) (uint64, error)
+}
+
+// PostgresRevocationRegistry adapts a durable revocation store (the
+// revocation_epochs table) to RevocationRegistry. Inject it as:
+//
+//	registry := capability.PostgresRevocationRegistry{Store: repo}
+//	h.SetRevocationRegistry(registry)
+//	validator := capability.ProgramValidator{Programs: repo, Revocations: registry}
+//
+// A nil store fails closed rather than reporting epoch 0.
+type PostgresRevocationRegistry struct {
+	Store RevocationStore
+}
+
+func (r PostgresRevocationRegistry) Epoch(ctx context.Context, program domain.ProgramID) (uint64, error) {
+	if r.Store == nil {
+		return 0, errors.New("capability: revocation registry has no store")
+	}
+	return r.Store.Epoch(ctx, program)
+}
+
+func (r PostgresRevocationRegistry) Bump(ctx context.Context, program domain.ProgramID) (uint64, error) {
+	if r.Store == nil {
+		return 0, errors.New("capability: revocation registry has no store")
+	}
+	return r.Store.BumpRevocationEpoch(ctx, program)
+}
+
+// MemoryRevocationRegistry is the process-local registry. It does not survive
+// a restart and is not shared with another process; use
+// PostgresRevocationRegistry when revocation must be an operational control.
 type MemoryRevocationRegistry struct {
 	mu     sync.Mutex
 	epochs map[domain.ProgramID]uint64
@@ -52,22 +88,28 @@ func NewMemoryRevocationRegistry() *MemoryRevocationRegistry {
 
 // Epoch returns the current authorization epoch. An unseen program is at
 // epoch 0.
-func (r *MemoryRevocationRegistry) Epoch(program domain.ProgramID) uint64 {
+func (r *MemoryRevocationRegistry) Epoch(ctx context.Context, program domain.ProgramID) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if r == nil {
-		return 0
+		return 0, nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.epochs[program]
+	return r.epochs[program], nil
 }
 
 // Bump invalidates every outstanding grant for the program and returns the new
 // epoch.
-func (r *MemoryRevocationRegistry) Bump(program domain.ProgramID) uint64 {
+func (r *MemoryRevocationRegistry) Bump(ctx context.Context, program domain.ProgramID) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.epochs[program]++
-	return r.epochs[program]
+	return r.epochs[program], nil
 }
 
 // GrantValidator re-checks an execution grant against authoritative state
@@ -132,10 +174,16 @@ func (v ProgramValidator) ValidateGrant(ctx context.Context, g ExecutionGrant) e
 		return ErrPolicyRevisionMismatch
 	}
 	// A nil registry means "no revocation source configured": the current epoch
-	// is then 0, so a grant stamped with a non-zero epoch still fails closed.
+	// is then 0, so a grant stamped with a non-zero epoch still fails closed. A
+	// configured registry that cannot be read also fails closed; it is never
+	// treated as epoch 0.
 	var epoch uint64
 	if v.Revocations != nil {
-		epoch = v.Revocations.Epoch(g.ProgramID)
+		var err error
+		epoch, err = v.Revocations.Epoch(ctx, g.ProgramID)
+		if err != nil {
+			return fmt.Errorf("capability: read revocation epoch for %s: %w", g.ProgramID, err)
+		}
 	}
 	if epoch != g.AuthorizationEpoch {
 		return ErrGrantRevoked

@@ -159,6 +159,14 @@ var (
 	// ErrGrantDenied aliases the capability sentinel so existing harness
 	// callers can keep matching it with errors.Is.
 	ErrGrantDenied = capability.ErrGrantDenied
+	// ErrGrantValidatorRequired means a grant-bound Egress has no
+	// capability.GrantValidator. Production must configure one; without it the
+	// lease, program status, revisions and revocation epoch are never re-checked.
+	ErrGrantValidatorRequired = errors.New("egress: grant-bound request requires a capability.GrantValidator")
+	// ErrGrantRedirect means a grant-bound request tried to follow a redirect.
+	// One grant authorizes one request; a redirect is a second request that was
+	// never authorized or charged against the platform budget.
+	ErrGrantRedirect = fmt.Errorf("%w: redirects are not permitted under an execution grant", ErrGrantDenied)
 )
 
 // ExecutionGrant is the capability package's grant type. The alias keeps the
@@ -172,6 +180,12 @@ type Egress struct {
 	maxBytes int64
 	grant    *ExecutionGrant
 	broker   capability.Broker
+	// validator re-checks a grant against authoritative state (lease, program
+	// status, revisions, revocation epoch) before every request.
+	validator capability.GrantValidator
+	// allowUnvalidatedGrant is a test-only escape hatch. A grant-bound Egress
+	// without a validator fails closed in production.
+	allowUnvalidatedGrant bool
 }
 
 // DefaultEgressMaxBytes bounds a single response body. Tools must not be able
@@ -265,13 +279,11 @@ func (e *Egress) WithGrant(g ExecutionGrant) *Egress {
 		Transport: transport,
 		Timeout:   timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("egress: too many redirects")
-			}
-			if err := out.CheckURL(req.URL.String()); err != nil {
-				return err
-			}
-			return out.checkGrant(req)
+			// Fail closed: one grant authorizes one request. Following a redirect
+			// would send a second request that was never authorized, validated or
+			// charged against the platform's RPS/daily budget. A caller that needs
+			// the redirect target must obtain a new decision/grant.
+			return ErrGrantRedirect
 		},
 	}
 	return &out
@@ -298,6 +310,35 @@ func (e *Egress) SetBroker(b capability.Broker) {
 	}
 }
 
+// WithValidator returns a copy of this Egress bound to a grant validator.
+// Set it before WithGrant (the grant copy inherits the validator) or on the
+// grant-bound copy.
+func (e *Egress) WithValidator(v capability.GrantValidator) *Egress {
+	out := *e
+	if v != nil {
+		out.validator = v
+	}
+	return &out
+}
+
+// SetValidator replaces the grant validator on the base Egress. It is a
+// setup-time operation; callers must not race it with in-flight requests.
+func (e *Egress) SetValidator(v capability.GrantValidator) {
+	if v != nil {
+		e.validator = v
+	}
+}
+
+// AllowUnvalidatedGrantsForTests lets a grant-bound Egress run without a
+// capability.GrantValidator. It exists only for tests that exercise the
+// transport/grant mechanics in isolation; production must configure a
+// ProgramValidator.
+func (e *Egress) AllowUnvalidatedGrantsForTests() *Egress {
+	out := *e
+	out.allowUnvalidatedGrant = true
+	return &out
+}
+
 // SetMaxBytes overrides the response-body limit (tests or a stricter tool).
 func (e *Egress) SetMaxBytes(n int64) {
 	if n > 0 {
@@ -320,6 +361,9 @@ func (e *Egress) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		return nil, err
 	}
 	if err := e.checkGrant(req); err != nil {
+		return nil, err
+	}
+	if err := e.validateGrant(ctx); err != nil {
 		return nil, err
 	}
 	release, err := e.acquire(ctx)
@@ -363,6 +407,22 @@ func (e *Egress) checkGrant(req *http.Request) error {
 		return err
 	}
 	return nil
+}
+
+// validateGrant re-checks the grant against authoritative state before the
+// request is admitted. A grant-bound Egress without a validator fails closed;
+// the test-only escape hatch must never be set in production.
+func (e *Egress) validateGrant(ctx context.Context) error {
+	if e.grant == nil {
+		return nil
+	}
+	if e.validator == nil {
+		if e.allowUnvalidatedGrant {
+			return nil
+		}
+		return ErrGrantValidatorRequired
+	}
+	return e.validator.ValidateGrant(ctx, *e.grant)
 }
 
 // acquire takes a shared capability lease for one request. The grant's
@@ -758,6 +818,13 @@ func (h *Harness) SetRevocationRegistry(r capability.RevocationRegistry) {
 	h.revocations = r
 }
 
+// SetGrantValidator wires the authoritative grant re-check used by every
+// network request. Production must configure a capability.ProgramValidator (or
+// an equivalent); without one a grant-bound Egress fails closed.
+func (h *Harness) SetGrantValidator(v capability.GrantValidator) {
+	h.egress.SetValidator(v)
+}
+
 // Execute authorizes and runs one tool. The tool's RequiredAction overrides the
 // request action; a mismatched non-empty action is rejected. The tool is never
 // called unless the gateway returns ALLOW and Authorize passes.
@@ -910,7 +977,11 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	if spec.NetworkEgress {
 		grant := buildGrant(decision, in.Request, h.now())
 		if h.revocations != nil {
-			grant.AuthorizationEpoch = h.revocations.Epoch(grant.ProgramID)
+			epoch, epochErr := h.revocations.Epoch(ctx, grant.ProgramID)
+			if epochErr != nil {
+				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: read revocation epoch: %w", epochErr)
+			}
+			grant.AuthorizationEpoch = epoch
 		}
 		tc.Egress = h.egress.WithGrant(grant)
 	}

@@ -110,6 +110,12 @@ type ProxyConfig struct {
 	// bind the proxy to an ExecutionGrant so an external worker cannot bypass
 	// the Action Gateway's grant.
 	AllowUngrantedForTests bool
+	// AllowNonDurableCapabilityForTests permits a nil Broker or an in-memory
+	// (non-durable) daily quota. It exists only for tests that exercise proxy
+	// mechanics without a database; production must configure a durable broker
+	// so a restart or a second process cannot reset the daily budget. It is
+	// deliberately separate from AllowUngrantedForTests.
+	AllowNonDurableCapabilityForTests bool
 	// AllowOpaqueConnect permits host-level CONNECT tunnels. The default is
 	// false because a tunnel hides method/path from the policy and audit layer;
 	// phase one uses controlled Egress (absolute-form HTTP) instead. Enable it
@@ -137,6 +143,7 @@ type Proxy struct {
 	allowLoopback   bool
 	allowUnaudited  bool
 	allowUngranted  bool
+	allowNonDurable bool
 	allowOpaqueConn bool
 	policyVersion   string
 	broker          capability.Broker
@@ -178,6 +185,7 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 		allowLoopback:   cfg.AllowLoopback,
 		allowUnaudited:  cfg.AllowUnauditedForTests,
 		allowUngranted:  cfg.AllowUngrantedForTests,
+		allowNonDurable: cfg.AllowNonDurableCapabilityForTests,
 		allowOpaqueConn: cfg.AllowOpaqueConnect,
 		policyVersion:   cfg.PolicyVersion,
 		broker:          cfg.Broker,
@@ -214,6 +222,19 @@ func (p *Proxy) validate() error {
 			}
 		default:
 			return errors.New("proxy: a GrantPolicy bound to an ExecutionGrant is required (AllowUngrantedForTests is test-only)")
+		}
+	}
+	// A proxy that cannot account for the platform's daily budget must not
+	// forward. Without a broker it cannot acquire RPS/concurrency/quota at all;
+	// with a process-local quota a restart or a second process resets the
+	// platform's daily count. Both are hard configuration errors in production.
+	if !p.allowNonDurable {
+		if p.broker == nil {
+			return errors.New("proxy: a capability.Broker is required (AllowNonDurableCapabilityForTests is test-only)")
+		}
+		durable, ok := p.broker.(capability.DurableBroker)
+		if !ok || !durable.Durable() {
+			return errors.New("proxy: a durable capability.Broker is required: configure capability.PostgresDailyQuota (AllowNonDurableCapabilityForTests is test-only)")
 		}
 	}
 	return nil
@@ -525,7 +546,12 @@ type CapabilitySource interface {
 // forward traffic whose platform budget it cannot account for.
 func (p *Proxy) acquireCapability(ctx context.Context, iface string) (capability.Lease, error) {
 	if p.broker == nil {
-		return nil, nil
+		if p.allowNonDurable {
+			return nil, nil
+		}
+		// Defense in depth: even if a caller bypassed NewProxy's validation, the
+		// handler must not forward traffic it cannot account for.
+		return nil, errors.New("no capability broker configured")
 	}
 	src, ok := p.policy.(CapabilitySource)
 	if !ok {
