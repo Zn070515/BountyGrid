@@ -104,6 +104,11 @@ type ProxyConfig struct {
 	// without this escape hatch) the proxy refuses to serve and denies every
 	// request.
 	AllowUnauditedForTests bool
+	// AllowUngrantedForTests permits a policy that is not a GrantPolicy. It
+	// exists only for tests that exercise the proxy mechanics; production must
+	// bind the proxy to an ExecutionGrant so an external worker cannot bypass
+	// the Action Gateway's grant.
+	AllowUngrantedForTests bool
 	// AllowOpaqueConnect permits host-level CONNECT tunnels. The default is
 	// false because a tunnel hides method/path from the policy and audit layer;
 	// phase one uses controlled Egress (absolute-form HTTP) instead. Enable it
@@ -124,6 +129,7 @@ type Proxy struct {
 	maxBody         int64
 	allowLoopback   bool
 	allowUnaudited  bool
+	allowUngranted  bool
 	allowOpaqueConn bool
 	policyVersion   string
 	configErr       error
@@ -163,6 +169,7 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 		maxBody:         maxBody,
 		allowLoopback:   cfg.AllowLoopback,
 		allowUnaudited:  cfg.AllowUnauditedForTests,
+		allowUngranted:  cfg.AllowUngrantedForTests,
 		allowOpaqueConn: cfg.AllowOpaqueConnect,
 		policyVersion:   cfg.PolicyVersion,
 	}
@@ -179,6 +186,13 @@ func (p *Proxy) validate() error {
 	}
 	if p.audit == nil && !p.allowUnaudited {
 		return errors.New("proxy: a NetworkAuditSink is required (AllowUnauditedForTests is test-only)")
+	}
+	if !p.allowUngranted {
+		switch p.policy.(type) {
+		case GrantPolicy, *GrantPolicy:
+		default:
+			return errors.New("proxy: a GrantPolicy bound to an ExecutionGrant is required (AllowUngrantedForTests is test-only)")
+		}
 	}
 	return nil
 }

@@ -57,6 +57,28 @@ func NewSafeSink(w *Writer, r *RawStore) *SafeSink {
 	return &SafeSink{Writer: w, Raw: r, seen: make(map[string]struct{})}
 }
 
+// Resume seeds parent state from an existing trace file. It is required when a
+// process restarts and continues appending to the same file; otherwise every
+// child of an earlier event would look like a dangling parent.
+func (s *SafeSink) Resume(path string) error {
+	if s == nil {
+		return ErrWriterMissing
+	}
+	events, err := Read(path)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.seen == nil {
+		s.seen = make(map[string]struct{})
+	}
+	for _, e := range events {
+		s.seen[e.ID] = struct{}{}
+	}
+	return nil
+}
+
 // Append validates and redacts-scans e, checks parent binding, then appends it
 // through the underlying Writer. The event ID is recorded only after a
 // successful append, so a failed write does not make the event a valid parent.

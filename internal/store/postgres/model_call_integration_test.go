@@ -11,6 +11,7 @@ import (
 
 func TestModelCallLifecycle(t *testing.T) {
 	r, ctx := integrationRepo(t)
+	store := &ModelCallStore{Repo: r}
 	now := time.Now().UTC().Truncate(time.Second)
 	suffix := now.Format("150405.000000000")
 	id := "it-call-" + suffix
@@ -23,14 +24,14 @@ func TestModelCallLifecycle(t *testing.T) {
 		DataClass: model.DataPublic, Status: model.CallReserved,
 		PromptHash: "prompt-hash", StartedAt: now,
 	}
-	ok, err := r.ReserveModelCall(ctx, id, rec)
+	ok, err := store.Reserve(ctx, id, rec)
 	if err != nil || !ok {
 		t.Fatalf("reserve = %v %v, want true", ok, err)
 	}
-	if ok, err := r.ReserveModelCall(ctx, id, rec); err != nil || ok {
+	if ok, err := store.Reserve(ctx, id, rec); err != nil || ok {
 		t.Fatalf("duplicate reserve = %v %v, want false", ok, err)
 	}
-	if got, found, err := r.GetModelCall(ctx, id); err != nil || !found || got.Status != model.CallReserved {
+	if got, found, err := store.Get(ctx, id); err != nil || !found || got.Status != model.CallReserved {
 		t.Fatalf("reserved call = %+v found=%v err=%v", got, found, err)
 	}
 
@@ -38,13 +39,13 @@ func TestModelCallLifecycle(t *testing.T) {
 	started.Status = model.CallStarted
 	started.Provider = "local"
 	started.Model = "local-model"
-	if err := r.CompleteModelCall(ctx, id, started); err != nil {
+	if err := store.Complete(ctx, id, started); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, err := r.GetModelCall(ctx, id); err != nil || got.Status != model.CallStarted {
+	if got, _, err := store.Get(ctx, id); err != nil || got.Status != model.CallStarted {
 		t.Fatalf("started call = %+v err=%v", got, err)
 	}
-	if err := r.ReclaimModelCall(ctx, id); err == nil {
+	if err := store.Reclaim(ctx, id); err == nil {
 		t.Fatal("a STARTED call must not be reclaimable")
 	}
 
@@ -52,16 +53,16 @@ func TestModelCallLifecycle(t *testing.T) {
 	failed.Status = model.CallFailedBeforeSend
 	failed.Error = "PROVIDER_ERROR"
 	failed.EndedAt = now
-	if err := r.CompleteModelCall(ctx, id, failed); err != nil {
+	if err := store.Complete(ctx, id, failed); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, err := r.GetModelCall(ctx, id); err != nil || got.Status != model.CallFailedBeforeSend {
+	if got, _, err := store.Get(ctx, id); err != nil || got.Status != model.CallFailedBeforeSend {
 		t.Fatalf("failed call = %+v err=%v", got, err)
 	}
-	if err := r.ReclaimModelCall(ctx, id); err != nil {
+	if err := store.Reclaim(ctx, id); err != nil {
 		t.Fatalf("reclaim FAILED_BEFORE_SEND: %v", err)
 	}
-	if _, found, err := r.GetModelCall(ctx, id); err != nil || found {
+	if _, found, err := store.Get(ctx, id); err != nil || found {
 		t.Fatalf("reclaimed call: found=%v err=%v", found, err)
 	}
 
@@ -71,16 +72,16 @@ func TestModelCallLifecycle(t *testing.T) {
 	completed.Model = "local-model"
 	completed.ResponseHash = "response-hash"
 	completed.EndedAt = now
-	if ok, err := r.ReserveModelCall(ctx, id, rec); err != nil || !ok {
+	if ok, err := store.Reserve(ctx, id, rec); err != nil || !ok {
 		t.Fatalf("re-reserve after reclaim = %v %v", ok, err)
 	}
-	if err := r.CompleteModelCall(ctx, id, completed); err != nil {
+	if err := store.Complete(ctx, id, completed); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, err := r.GetModelCall(ctx, id); err != nil || got.Status != model.CallCompleted {
+	if got, _, err := store.Get(ctx, id); err != nil || got.Status != model.CallCompleted {
 		t.Fatalf("completed call = %+v err=%v", got, err)
 	}
-	if ok, err := r.ReserveModelCall(ctx, id, rec); err != nil || ok {
+	if ok, err := store.Reserve(ctx, id, rec); err != nil || ok {
 		t.Fatalf("duplicate completed reserve = %v %v, want false", ok, err)
 	}
 }
