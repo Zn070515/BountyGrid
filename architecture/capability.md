@@ -159,11 +159,14 @@ and before `Next`; any error is a Deny. A production proxy must configure
 `ProgramValidator`.
 
 The client-side `Egress` enforces the same check: every grant-bound request
-calls `GrantValidator.ValidateGrant(ctx, grant)` before acquiring a lease. A
-grant-bound `Egress` without a validator fails closed with
-`ErrGrantValidatorRequired`; `AllowUnvalidatedGrantsForTests` is the only
-escape hatch. This closes the gap where a long-running tool kept using a grant
-the proxy would have rejected.
+calls `GrantValidator.ValidateGrant(ctx, grant)` before acquiring a lease **and
+again after the lease is held, immediately before the request is sent**. The
+broker wait is bounded by the earlier of `LeaseUntil` and `ExpiresAt`, so a
+grant that expires while queued cannot result in a request. A grant-bound
+`Egress` without a validator fails closed with `ErrGrantValidatorRequired`;
+`AllowUnvalidatedGrantsForTests` is the only escape hatch. This closes the gap
+where a long-running tool kept using a grant the proxy would have rejected,
+and the authorize-then-queue window.
 
 Grant-bound redirects are denied (`ErrGrantRedirect`): one grant authorizes one
 request, and following a redirect would send a second request that was never
@@ -200,8 +203,11 @@ bountygrid revoke -program <program-id> -reason "why"
 ```
 
 The command bumps the durable epoch and appends a `grant.revoked` audit event
-(`ActorKind=HUMAN`). Outstanding grants are rejected on their next request by
-both `GrantPolicy` and `Egress`, even after a process restart.
+(`ActorKind=HUMAN`) in **one transaction** (`Repo.RevokeProgramWithAudit`). If
+the audit payload is rejected (for example the operator reason contains a
+secret), the epoch bump is rolled back: an effective revocation without its
+audit trail must not be committed. Outstanding grants are rejected on their next
+request by both `GrantPolicy` and `Egress`, even after a process restart.
 
 ## Deliberate limits
 

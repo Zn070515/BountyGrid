@@ -358,6 +358,15 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	if lease != nil {
 		defer lease.Release()
 	}
+	// A grant may have expired or been revoked while queued for RPS,
+	// concurrency or the daily quota. Static policies have no lease and cannot
+	// change during the wait; grant-bearing policies must be re-evaluated.
+	if _, leaseBound := p.policy.(CapacityDeadlineSource); leaseBound {
+		if ok, reason := p.revalidateAfterQueue(r.Context(), req); !ok {
+			http.Error(w, "proxy: authorization changed while queued: "+reason, http.StatusForbidden)
+			return
+		}
+	}
 
 	body, err := p.readRequestBody(r)
 	if err != nil {
@@ -445,6 +454,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if lease != nil {
 		defer lease.Release()
+	}
+	if _, leaseBound := p.policy.(CapacityDeadlineSource); leaseBound {
+		if ok, reason := p.revalidateAfterQueue(r.Context(), req); !ok {
+			http.Error(w, "proxy: authorization changed while queued: "+reason, http.StatusForbidden)
+			return
+		}
 	}
 
 	// CONNECT target dialing is filtered here; the policy may allow the host by
@@ -544,7 +559,34 @@ type CapabilitySource interface {
 // acquireCapability takes a lease from the configured broker. A configured
 // broker with a policy that exposes no limits fails closed: the proxy must not
 // forward traffic whose platform budget it cannot account for.
+// revalidateAfterQueue re-runs the policy after a capability lease is held.
+// A grant can expire or be revoked while waiting; the request must not be
+// forwarded on the strength of the pre-queue decision.
+func (p *Proxy) revalidateAfterQueue(ctx context.Context, req Request) (bool, string) {
+	decision, reason := p.decide(ctx, req)
+	if decision != Allow {
+		_ = p.record(ctx, req, decision, reason)
+		return false, reason
+	}
+	return true, reason
+}
+
+// CapacityDeadlineSource is implemented by policies that can bound how long a
+// capability wait may last (GrantPolicy derives it from the grant).
+type CapacityDeadlineSource interface {
+	CapabilityDeadline() time.Time
+}
+
 func (p *Proxy) acquireCapability(ctx context.Context, iface string) (capability.Lease, error) {
+	if src, ok := p.policy.(CapacityDeadlineSource); ok {
+		if deadline := src.CapabilityDeadline(); !deadline.IsZero() {
+			if current, ok := ctx.Deadline(); !ok || deadline.Before(current) {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, deadline)
+				defer cancel()
+			}
+		}
+	}
 	if p.broker == nil {
 		if p.allowNonDurable {
 			return nil, nil
@@ -809,6 +851,20 @@ type GrantPolicy struct {
 	// Next runs. A nil validator keeps the local expiry/target checks only;
 	// production should configure capability.ProgramValidator.
 	Validator capability.GrantValidator
+}
+
+// CapabilityDeadline bounds a broker wait by the grant's lease and decision
+// expiry. A grant that expires while queued must not authorize a later request.
+func (p GrantPolicy) CapabilityDeadline() time.Time {
+	g := p.Grant
+	if g == nil {
+		return time.Time{}
+	}
+	deadline := g.ExpiresAt
+	if !g.LeaseUntil.IsZero() && (deadline.IsZero() || g.LeaseUntil.Before(deadline)) {
+		deadline = g.LeaseUntil
+	}
+	return deadline
 }
 
 // CapabilityRequest exposes the grant's shared limits to the proxy broker so a

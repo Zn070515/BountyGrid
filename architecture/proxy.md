@@ -186,10 +186,16 @@ a restart reset the platform's daily budget. The explicit test escape hatch is
 separate from `AllowUngrantedForTests`.
 
 On the client side, a grant-bound `Egress` now re-runs
-`GrantValidator.ValidateGrant` before every request and refuses redirects
-(`ErrGrantRedirect`), so it enforces the same lease/status/revision/epoch
-conditions as `GrantPolicy` and does not turn one grant into a chain of
-unauthorized requests.
+`GrantValidator.ValidateGrant` before every request and **after** the broker
+lease is held, and refuses redirects (`ErrGrantRedirect`). The broker wait is
+bounded by the grant's lease/expiry, so a grant that expires while queued
+cannot authorize a request.
+
+The proxy has the same post-queue check for lease-bearing policies: after
+`acquireCapability`, a policy that implements `CapacityDeadlineSource` (notably
+`GrantPolicy`) is evaluated again; a Deny releases the lease and returns 403.
+Static/rule policies have no lease and cannot change while queued, so they are
+not re-evaluated. `GrantPolicy.CapabilityDeadline` also bounds the broker wait.
 
 The broker keeps one `programLimiter` per `account + program + interface`, so
 plain HTTP forwarded through the proxy and HTTP through `Egress` share:
