@@ -209,7 +209,7 @@ go run ./cmd/bountygrid ledger -summary -platform vulbox
 ## 目录结构 · Layout
 
 ```text
-cmd/bountygrid/              migrate / rollback / ping / sync / derive / decide / schedule / harness / model / policy / verify / report / submit / ledger / trace / version 入口
+cmd/bountygrid/              migrate / rollback / ping / sync / derive / decide / schedule / harness / model / policy / verify / report / submit / ledger / trace / revoke / version 入口
 internal/domain/             平台/账号/项目/Scope/Eligibility/Action/Research/Ledger 类型与不变量
 internal/evidence/           不可变 Evidence Store（接口 + 内存实现）
 internal/audit/              审计事件（不可变、可过滤）

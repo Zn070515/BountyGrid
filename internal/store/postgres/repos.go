@@ -92,7 +92,34 @@ func (r *Repo) UpsertProgram(ctx context.Context, p domain.Program) error {
 	if err != nil {
 		return err
 	}
-	_, err = r.Pool.Exec(ctx, `
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: begin program upsert: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Lock the existing row so the authority comparison and the epoch bump are
+	// serialized with any concurrent program update. A new program has no
+	// outstanding grants, so there is nothing to revoke.
+	var oldData []byte
+	err = tx.QueryRow(ctx, `SELECT data FROM programs WHERE id=$1 FOR UPDATE`, p.ID).Scan(&oldData)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return fmt.Errorf("postgres: read existing program %s: %w", p.ID, err)
+	default:
+		var old domain.Program
+		if err := json.Unmarshal(oldData, &old); err != nil {
+			return fmt.Errorf("postgres: decode existing program %s: %w", p.ID, err)
+		}
+		if programSupersedesAuthority(old, p) {
+			if _, err := bumpRevocationEpoch(ctx, tx, p.ID); err != nil {
+				return err
+			}
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO programs
 			(id, platform, native_id, name, type, status, status_reason,
 			 status_observed_at, status_valid_until, next_check_at, data, observed_at, updated_at)
@@ -107,9 +134,11 @@ func (r *Repo) UpsertProgram(ctx context.Context, p domain.Program) error {
 			observed_at=EXCLUDED.observed_at, updated_at=now()`,
 		p.ID, p.Platform, p.NativeID, p.Name, p.Type, p.Status.Status, p.Status.Reason,
 		p.Status.ObservedAt, p.Status.ValidUntil, p.NextCheckAt, data, p.ObservedAt,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("postgres: upsert program: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: commit program upsert: %w", err)
 	}
 	return nil
 }
