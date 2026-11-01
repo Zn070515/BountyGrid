@@ -181,3 +181,50 @@ func TestSafeSinkResumeSeedsExistingParents(t *testing.T) {
 		t.Fatalf("after resume = %v", err)
 	}
 }
+
+func TestSafeSinkResumeValidated(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	path := filepath.Join(root, "trace.jsonl")
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSafeSink(w, nil)
+	if err := s.Append(ctx, Event{ID: "e1", TraceID: "t", Kind: KindModelCall, At: testAt()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	w2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w2.Close() }()
+	s2 := NewSafeSink(w2, nil)
+	if err := s2.ResumeValidated(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.Append(ctx, Event{ID: "e2", TraceID: "t", ParentID: "e1", Kind: KindActionDecision, At: testAt()}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSafeSinkResumeValidatedRejectsBadHash(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "trace.jsonl")
+	body := `{"id":"e1","trace_id":"t","seq":1,"kind":"CUSTOM","at":"2026-11-01T12:00:00Z","hash":"sha256:bad"}`
+	if err := os.WriteFile(path, []byte(body+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	if err := NewSafeSink(w, nil).ResumeValidated(path); err == nil {
+		t.Fatal("bad hash should fail validation")
+	}
+}
