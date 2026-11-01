@@ -227,7 +227,10 @@ ceiling；平台授权不能覆盖 operator guardrail。`cmd/bountygrid policy c
   [-evidence <ids>] [-content-root .]` 通过 `FileContentReader` 读取 `.evidence/`
   下的脱敏原文，`CompilePermissions` 把显式 `PERMISSION` 行转换成
   `PermissionFact`，再由 `BuildPlatformPolicy` 验证并输出
-  `platform_policy_fingerprint`。`bountygrid decide -platform-evidence <ids>`
+  `platform_policy_fingerprint`。省略 `-evidence` 时使用 `Program.Evidence`；
+  `sync -program` 会把本次同步的 scope 与 policy 证据并入该列表，因此同步后
+  无需手工复制 Evidence ID（非授权来源会作为 skipped 输出）。
+  `bountygrid decide -platform-evidence <ids>`
   把同一结果挂到决策引擎（`-request` 与 `-authorize` 都可；`-authorize` 从存储
   决策取 ProgramID 并用同一批 evidence 重建 fingerprint）；该 flag 是显式
   opt-in，仍不能覆盖硬 DENY、operator guardrail 或任何 domain gate。非 `POLICY`/`ANNOUNCEMENT` 证据列为 skipped，

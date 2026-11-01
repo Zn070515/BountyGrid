@@ -161,6 +161,21 @@ func TestCompilePlatformAuthorityRejectsMissingEvidence(t *testing.T) {
 	}
 }
 
+func TestResolveCompileEvidence(t *testing.T) {
+	program := domain.Program{ID: "p1", Evidence: []domain.EvidenceID{"ev-1", "ev-2"}}
+	ids, err := resolveCompileEvidence(program, nil)
+	if err != nil || len(ids) != 2 || ids[0] != "ev-1" || ids[1] != "ev-2" {
+		t.Fatalf("program evidence = %v err=%v", ids, err)
+	}
+	ids, err = resolveCompileEvidence(program, []string{"ev-explicit"})
+	if err != nil || len(ids) != 1 || ids[0] != "ev-explicit" {
+		t.Fatalf("explicit evidence = %v err=%v", ids, err)
+	}
+	if _, err := resolveCompileEvidence(domain.Program{ID: "p1"}, nil); err == nil {
+		t.Fatal("program without evidence should fail")
+	}
+}
+
 func TestCompilePlatformAuthorityRejectsExpiredPermission(t *testing.T) {
 	content := compileTestLine + "\n"
 	ev := compileTestEvidence("ev-1", domain.SourcePolicy, content)

@@ -256,6 +256,24 @@ func compilePlatformAuthority(
 	return out, pp, nil
 }
 
+// resolveCompileEvidence picks the evidence IDs a compile should inspect.
+// Explicit -evidence wins; otherwise it uses the evidence associated with the
+// program, which sync -program populates with both scope and policy captures.
+// The caller lists non-authorizing evidence as skipped, not as an error.
+func resolveCompileEvidence(program domain.Program, explicit []string) ([]domain.EvidenceID, error) {
+	if len(explicit) > 0 {
+		ids := make([]domain.EvidenceID, 0, len(explicit))
+		for _, id := range explicit {
+			ids = append(ids, domain.EvidenceID(id))
+		}
+		return ids, nil
+	}
+	if len(program.Evidence) == 0 {
+		return nil, fmt.Errorf("policy compile: program %s has no associated evidence; pass -evidence", program.ID)
+	}
+	return append([]domain.EvidenceID(nil), program.Evidence...), nil
+}
+
 func executePolicyCompile(ctx context.Context, o policyCompileOptions) error {
 	d, err := dsn()
 	if err != nil {
@@ -271,15 +289,9 @@ func executePolicyCompile(ctx context.Context, o policyCompileOptions) error {
 	if err != nil {
 		return fmt.Errorf("policy compile: load program %s: %w", o.Program, err)
 	}
-	ids := make([]domain.EvidenceID, 0, len(o.Evidence))
-	for _, id := range o.Evidence {
-		ids = append(ids, domain.EvidenceID(id))
-	}
-	if len(ids) == 0 {
-		ids = append(ids, program.Evidence...)
-	}
-	if len(ids) == 0 {
-		return fmt.Errorf("policy compile: program %s has no associated evidence; pass -evidence", program.ID)
+	ids, err := resolveCompileEvidence(program, o.Evidence)
+	if err != nil {
+		return err
 	}
 	contents, err := authz.NewFileContentReader(o.ContentRoot)
 	if err != nil {

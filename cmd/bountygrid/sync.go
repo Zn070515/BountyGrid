@@ -341,6 +341,11 @@ func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w
 			if err := persistEvidenceFacts(ctx, writer, evs, fs); err != nil {
 				return err
 			}
+			// Program.Evidence is the association policy compile uses to find
+			// the policy page without the operator copying IDs from sync output.
+			// It includes scope and policy captures; compile skips the
+			// non-authorizing ones explicitly.
+			prog.Evidence = collections.Union(prog.Evidence, evidenceIDsOf(evs))
 			if err := prog.Validate(); err != nil {
 				return fmt.Errorf("sync: persist program: %w", err)
 			}
@@ -452,6 +457,14 @@ func persistEvidenceFacts(ctx context.Context, w snapshotWriter, evs []domain.Ev
 		}
 	}
 	return nil
+}
+
+func evidenceIDsOf(evs []domain.Evidence) []domain.EvidenceID {
+	out := make([]domain.EvidenceID, 0, len(evs))
+	for _, ev := range evs {
+		out = append(out, ev.ID)
+	}
+	return out
 }
 
 // uniqueEvidence deduplicates exact repeats but rejects an ID reused for a

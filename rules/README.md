@@ -190,6 +190,8 @@ go run ./cmd/bountygrid decide -platform-evidence ev-platform-policy-1 -request 
 `policy compile` reads the redacted evidence file through
 `authz.FileContentReader`, parses only explicit `PERMISSION` lines, verifies
 them with `authz.BuildPlatformPolicy`, and prints the resulting fingerprint.
+When `-evidence` is omitted it uses `Program.Evidence`, which
+`sync -program` populates with the scope and policy captures for that program.
 Non-`POLICY`/`ANNOUNCEMENT` evidence is reported as skipped; unreadable or
 malformed evidence fails the command. `decide -platform-evidence` is opt-in and
 still cannot override hard `DENY`, operator guardrails, scope/eligibility/

@@ -20,7 +20,7 @@ Browser Sidecar（Playwright/CDP）
 
 Adapter 不直接操作数据库；返回 domain 对象 + ObservedFact + EvidenceRef，由用例层落库。
 
-`cmd/bountygrid sync -persist` 是该用例层的第一个实现：先 `PutEvidence`，再 `PutFacts`（Fact 必须带 EvidenceRef），最后 `UpsertProgram`/`UpsertAccount`。Evidence/Fact ID 确定性，Program/Account 用 upsert；新同步产生新的 append-only Evidence/Fact。原始页面只落本地 `.evidence/`，数据库只存元数据/hash/RawRef。
+`cmd/bountygrid sync -persist` 是该用例层的第一个实现：先 `PutEvidence`，再 `PutFacts`（Fact 必须带 EvidenceRef），最后 `UpsertProgram`/`UpsertAccount`。Evidence/Fact ID 确定性，Program/Account 用 upsert；新同步产生新的 append-only Evidence/Fact。原始页面只落本地 `.evidence/`，数据库只存元数据/hash/RawRef。`sync -program` 还会把本次同步的 scope 与 policy 证据 ID 并入 `Program.Evidence`，作为 `policy compile` 自动发现政策页的关联。
 
 ## 2. 接口
 
