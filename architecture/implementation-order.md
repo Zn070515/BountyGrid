@@ -23,7 +23,7 @@
 | Phase 2：Facts + State | 已实现并硬化；State TTL 受输入 Fact 年龄限制 |
 | Phase 3：Policy Engine / Gateway | 已实现并硬化：authoritative Asset、ExecutionEnvironment、Authorize 重评估、审批在执行前消费；新增 `internal/policy/rules` 声明式 host/method/path 规则（match/not_match 自测、最严合并、规则集指纹绑定授权） |
 | Phase 4：Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、唯一 QUEUED 任务、CompetitionSnapshot TTL/decay |
-| Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执/逐请求 Egress grant/SSRF 防护/本地 forward proxy（每请求策略+审计+CONNECT 公网过滤）已实现；Model Router 路由/派生数据分级/transport 本地性/context+capability/累计预算/model_calls 幂等已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
+| Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执/逐请求 Egress grant/SSRF 防护/本地 forward proxy（GrantPolicy+审计必需+CONNECT opt-in+共享 RPS/并发/日限）已实现；Model Router 路由/派生数据分级/transport 本地性/context+capability/累计预算/model_calls 状态机（RESERVED/STARTED/COMPLETED/AMBIGUOUS/FAILED_BEFORE_SEND）已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
 | Phase 6：Verification / Report / Submission / Ledger | Verification（receipt provenance + durable human review）、ReportDraft（严格附件）、Submission dry-run（intent 状态机/AMBIGUOUS）、CNY 现金 Ledger 已实现；Ledger Feedback 已回灌 Opportunity；真实平台 SubmitAdapter 未实现 |
 
 > **真实状态：Phase 0 complete; Phase 1–8 control plane implemented; active execution remains disabled.**
