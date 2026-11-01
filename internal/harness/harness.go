@@ -165,10 +165,19 @@ var (
 // rate/concurrency ceiling and daily limit are enforced on every request, not
 // once per tool call.
 type ExecutionGrant struct {
-	DecisionID  domain.DecisionID
-	ProgramID   domain.ProgramID
-	AssetID     *domain.AssetID
+	DecisionID domain.DecisionID
+	// AccountID is the account the decision was made for. Together with
+	// ProgramID it identifies the shared rate/concurrency/daily limiter, so a
+	// second execution for the same account and program cannot reset the ceiling.
+	AccountID domain.AccountID
+	ProgramID domain.ProgramID
+	AssetID   *domain.AssetID
+	// AssetTarget is the canonical asset value resolved by the Action Gateway.
 	AssetTarget string
+	// ExpiresAt is the decision's expiry. A zero value means the grant carries no
+	// expiry; GrantPolicy rejects such a grant rather than treating it as
+	// unlimited.
+	ExpiresAt time.Time
 	// AllowedMethods is empty only for a grant with no bound method, in which
 	// case only GET/HEAD are permitted.
 	AllowedMethods   map[string]struct{}
@@ -183,11 +192,31 @@ type ExecutionGrant struct {
 	DailyLimit int64
 }
 
-type requestGate struct {
-	mu    sync.Mutex
-	last  time.Time
-	sem   chan struct{}
-	daily *dailyCounter
+// programLimiter is the shared rate/concurrency/daily state for one
+// account+program+interface. It lives on the base Egress and is selected by a
+// stable key, so separate WithGrant/Execute calls cannot each reset the
+// platform's RPS, concurrency or daily ceilings.
+type programLimiter struct {
+	mu sync.Mutex
+	// last is the last scheduled RPS slot. It is shared by every grant bound to
+	// this limiter.
+	last time.Time
+	// rps is the strictest positive RPS observed on this limiter. A later grant
+	// with a lower RPS tightens the shared schedule.
+	rps float64
+	// maxConc is the strictest concurrency ceiling observed (0 = unlimited).
+	// A later tighter ceiling is applied to subsequent acquisitions.
+	maxConc int
+	// inFlight is the number of requests currently holding a concurrency slot.
+	inFlight int
+	// notify is closed and replaced on every release so blocked acquisitions
+	// wake up and re-check the ceiling without a polling loop.
+	notify chan struct{}
+	daily  *dailyCounter
+}
+
+func newProgramLimiter() *programLimiter {
+	return &programLimiter{notify: make(chan struct{}), daily: &dailyCounter{}}
 }
 
 // dailyCounter is the per-program daily request budget. Every ExecutionGrant
@@ -214,33 +243,41 @@ func (c *dailyCounter) count(now time.Time, limit int64) error {
 	return nil
 }
 
-// dailyBudget holds the shared daily counters. RPS and concurrency remain
-// execution-local; only the daily ceiling spans grants.
-type dailyBudget struct {
+// limiterRegistry holds one programLimiter per account+program+interface key.
+// The base Egress owns the registry so every derived WithGrant client shares
+// the same limiter.
+type limiterRegistry struct {
 	mu       sync.Mutex
-	counters map[string]*dailyCounter
+	limiters map[string]*programLimiter
 }
 
-func newDailyBudget() *dailyBudget {
-	return &dailyBudget{counters: make(map[string]*dailyCounter)}
+func newLimiterRegistry() *limiterRegistry {
+	return &limiterRegistry{limiters: make(map[string]*programLimiter)}
 }
 
-func (b *dailyBudget) counter(key string) *dailyCounter {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	c := b.counters[key]
-	if c == nil {
-		c = &dailyCounter{}
-		b.counters[key] = c
+func (r *limiterRegistry) limiter(key string) *programLimiter {
+	if key == "" {
+		// A grant without account/program/asset identity cannot be shared
+		// safely; give it its own limiter (fail-safe, not global).
+		return newProgramLimiter()
 	}
-	return c
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	l := r.limiters[key]
+	if l == nil {
+		l = newProgramLimiter()
+		r.limiters[key] = l
+	}
+	return l
 }
 
-// dailyGrantKey groups grants that must share one daily budget. ProgramID is
-// the stable identity; asset/asset-target are fallbacks for callers that build
-// a grant without one. HTTP and ACTIVE_HTTP limits both collapse into the
-// grant's single request budget.
-func dailyGrantKey(g ExecutionGrant) string {
+// grantScopeKey groups grants that must share one rate/concurrency/daily
+// limiter. AccountID+ProgramID is the stable identity; asset/asset-target are
+// fallbacks for callers that build a grant without a program. The trailing
+// "http" component is the interface/action namespace: HTTP and ACTIVE_HTTP
+// collapse into the grant's single request budget.
+func grantScopeKey(g ExecutionGrant) string {
+	account := strings.TrimSpace(string(g.AccountID))
 	scope := strings.TrimSpace(string(g.ProgramID))
 	if scope == "" && g.AssetID != nil {
 		scope = "asset:" + string(*g.AssetID)
@@ -248,10 +285,10 @@ func dailyGrantKey(g ExecutionGrant) string {
 	if scope == "" {
 		scope = strings.TrimSpace(g.AssetTarget)
 	}
-	if scope == "" {
+	if account == "" && scope == "" {
 		return ""
 	}
-	return scope + "|http"
+	return account + "|" + scope + "|http"
 }
 
 type Egress struct {
@@ -259,8 +296,8 @@ type Egress struct {
 	client   *http.Client
 	maxBytes int64
 	grant    *ExecutionGrant
-	gate     *requestGate
-	daily    *dailyBudget
+	limiter  *programLimiter
+	limiters *limiterRegistry
 }
 
 // DefaultEgressMaxBytes bounds a single response body. Tools must not be able
@@ -271,7 +308,7 @@ func NewEgress(s *Sandbox) *Egress {
 	if s == nil {
 		s = &Sandbox{}
 	}
-	e := &Egress{sandbox: s, maxBytes: DefaultEgressMaxBytes, daily: newDailyBudget()}
+	e := &Egress{sandbox: s, maxBytes: DefaultEgressMaxBytes, limiters: newLimiterRegistry()}
 	approved, proxyErr := parseApprovedProxy(s.ApprovedProxy)
 	transport := &http.Transport{
 		// Proxy is nil unless an operator configured an approved proxy. An
@@ -329,21 +366,19 @@ func parseApprovedProxy(raw string) (*url.URL, error) {
 }
 
 // WithGrant returns a per-execution client bound to the approved decision. The
-// shared transport is reused. Method/target/path checks, RPS and concurrency
-// are execution-local; the daily counter is shared per program so a second
-// execution cannot reset the platform's daily ceiling.
+// shared transport is reused. Method/target/path checks are per grant, but RPS,
+// concurrency and the daily counter are shared through the base Egress's
+// limiter registry: a second execution for the same account/program cannot
+// reset the platform's ceilings.
 func (e *Egress) WithGrant(g ExecutionGrant) *Egress {
 	out := *e
 	grant := g
 	out.grant = &grant
-	gate := &requestGate{daily: &dailyCounter{}}
-	if key := dailyGrantKey(g); key != "" && e.daily != nil {
-		gate.daily = e.daily.counter(key)
+	if e.limiters != nil {
+		out.limiter = e.limiters.limiter(grantScopeKey(g))
+	} else {
+		out.limiter = newProgramLimiter()
 	}
-	if g.MaxConcurrency != nil && *g.MaxConcurrency > 0 {
-		gate.sem = make(chan struct{}, *g.MaxConcurrency)
-	}
-	out.gate = gate
 	// Redirects must be checked against the grant, not only the sandbox. The
 	// base client's hook captures the original Egress (grant == nil), so a grant
 	// client gets its own redirect policy closure.
@@ -438,46 +473,55 @@ func (e *Egress) checkGrant(req *http.Request) error {
 
 func (g *ExecutionGrant) allowsTarget(u *url.URL) error {
 	target := strings.TrimSpace(g.AssetTarget)
-	if target == "" {
-		return nil
-	}
+	host := strings.ToLower(u.Hostname())
 	// Asset values may be bare host patterns (api.example.com, *.example.com)
 	// or full URLs including a path. A bare pattern is matched against the host;
 	// a URL target additionally pins scheme and path prefix.
-	host := strings.ToLower(u.Hostname())
-	if !strings.Contains(target, "/") && !strings.Contains(target, ":") {
+	if target != "" && !strings.Contains(target, "/") && !strings.Contains(target, ":") {
 		if !rules.HostMatches(target, host) {
 			return fmt.Errorf("%w: host %s is not the approved asset %s", ErrGrantDenied, host, target)
 		}
-		return nil
+	} else if target != "" {
+		parsed, err := url.Parse(target)
+		if err != nil || parsed.Hostname() == "" {
+			// A non-URL asset value (a description, CIDR, etc.) cannot be treated
+			// as a network target. Do not widen the grant silently.
+			return fmt.Errorf("%w: asset target %q is not a network target", ErrGrantDenied, target)
+		}
+		if parsed.Scheme != "" && !strings.EqualFold(parsed.Scheme, u.Scheme) {
+			return fmt.Errorf("%w: scheme %s is not approved", ErrGrantDenied, u.Scheme)
+		}
+		if !rules.HostMatches(parsed.Hostname(), host) {
+			return fmt.Errorf("%w: host %s is not the approved asset %s", ErrGrantDenied, host, parsed.Hostname())
+		}
+		if parsed.Port() != "" && parsed.Port() != u.Port() {
+			return fmt.Errorf("%w: port %s is not approved", ErrGrantDenied, u.Port())
+		}
+		if parsed.Path != "" && parsed.Path != "/" {
+			path := u.EscapedPath()
+			if path == "" {
+				path = "/"
+			}
+			// Segment-aware matching: /api must not match /apix or /api-admin.
+			// CanonicalPath also decodes escapes and resolves dot segments, so
+			// /api/%2e%2e/admin cannot escape an /api prefix.
+			if !rules.PathWithin(parsed.EscapedPath(), path) {
+				return fmt.Errorf("%w: path %s is outside %s", ErrGrantDenied, path, parsed.Path)
+			}
+		}
 	}
-	parsed, err := url.Parse(target)
-	if err != nil || parsed.Hostname() == "" {
-		// A non-URL asset value (a description, CIDR, etc.) cannot be treated as
-		// a network target. Do not widen the grant silently.
-		return fmt.Errorf("%w: asset target %q is not a network target", ErrGrantDenied, target)
-	}
-	if parsed.Scheme != "" && !strings.EqualFold(parsed.Scheme, u.Scheme) {
-		return fmt.Errorf("%w: scheme %s is not approved", ErrGrantDenied, u.Scheme)
-	}
-	if !rules.HostMatches(parsed.Hostname(), host) {
-		return fmt.Errorf("%w: host %s is not the approved asset %s", ErrGrantDenied, host, parsed.Hostname())
-	}
-	if parsed.Port() != "" && parsed.Port() != u.Port() {
-		return fmt.Errorf("%w: port %s is not approved", ErrGrantDenied, u.Port())
-	}
-	if parsed.Path != "" && parsed.Path != "/" {
+	// AllowedPathPrefixes apply to bare-host assets too; a host-only asset must
+	// not silently drop the grant's path restriction.
+	for _, prefix := range g.AllowedPathPrefixes {
+		if prefix == "" {
+			continue
+		}
 		path := u.EscapedPath()
 		if path == "" {
 			path = "/"
 		}
-		if !strings.HasPrefix(path, parsed.EscapedPath()) {
-			return fmt.Errorf("%w: path %s is outside %s", ErrGrantDenied, path, parsed.Path)
-		}
-	}
-	for _, prefix := range g.AllowedPathPrefixes {
-		if prefix != "" && !strings.HasPrefix(u.EscapedPath(), prefix) {
-			return fmt.Errorf("%w: path %s is outside %s", ErrGrantDenied, u.EscapedPath(), prefix)
+		if !rules.PathWithin(prefix, path) {
+			return fmt.Errorf("%w: path %s is outside %s", ErrGrantDenied, path, prefix)
 		}
 	}
 	return nil
@@ -488,42 +532,49 @@ func (e *Egress) acquire(ctx context.Context) (func(), error) {
 	if g == nil {
 		return func() {}, nil
 	}
-	if e.gate != nil {
-		if err := e.gate.wait(ctx, g.MaxRPS); err != nil {
-			return nil, err
-		}
-		if err := e.gate.count(time.Now(), g.DailyLimit); err != nil {
-			return nil, err
-		}
-		if e.gate.sem != nil {
-			select {
-			case e.gate.sem <- struct{}{}:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-			var once sync.Once
-			return func() { once.Do(func() { <-e.gate.sem }) }, nil
-		}
+	l := e.limiter
+	if l == nil {
+		return func() {}, nil
 	}
-	return func() {}, nil
+	if err := l.wait(ctx, g.MaxRPS); err != nil {
+		return nil, err
+	}
+	if err := l.daily.count(time.Now(), g.DailyLimit); err != nil {
+		return nil, err
+	}
+	maxConc := 0
+	if g.MaxConcurrency != nil {
+		maxConc = *g.MaxConcurrency
+	}
+	return l.acquireConc(ctx, maxConc)
 }
 
-func (g *requestGate) wait(ctx context.Context, rps *float64) error {
-	if rps == nil || *rps <= 0 {
+// wait schedules the next request slot on the shared RPS timeline. The limiter
+// keeps the strictest positive RPS observed, so a later grant with a lower rate
+// tightens the shared schedule instead of resetting it.
+func (l *programLimiter) wait(ctx context.Context, rps *float64) error {
+	l.mu.Lock()
+	if rps != nil && *rps > 0 && (l.rps == 0 || *rps < l.rps) {
+		l.rps = *rps
+	}
+	// A grant with no RPS of its own still observes a ceiling already set on the
+	// shared limiter.
+	if l.rps == 0 {
+		l.mu.Unlock()
 		return nil
 	}
-	interval := time.Duration(float64(time.Second) / *rps)
-	g.mu.Lock()
+	interval := time.Duration(float64(time.Second) / l.rps)
 	now := time.Now()
-	next := g.last.Add(interval)
+	next := l.last.Add(interval)
+	if next.Before(now) {
+		next = now
+	}
+	l.last = next
 	wait := time.Until(next)
+	l.mu.Unlock()
 	if wait <= 0 {
-		g.last = now
-		g.mu.Unlock()
 		return nil
 	}
-	g.last = next
-	g.mu.Unlock()
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
@@ -534,11 +585,47 @@ func (g *requestGate) wait(ctx context.Context, rps *float64) error {
 	}
 }
 
-func (g *requestGate) count(now time.Time, limit int64) error {
-	if g.daily == nil {
-		return nil
+// acquireConc takes one shared concurrency slot. A limit <= 0 means the grant
+// imposes no ceiling of its own, but an already-observed tighter ceiling from
+// another grant on the same limiter is still enforced. A later grant with a
+// lower ceiling tightens subsequent acquisitions; it never raises an existing
+// one.
+func (l *programLimiter) acquireConc(ctx context.Context, limit int) (func(), error) {
+	for {
+		l.mu.Lock()
+		if limit > 0 && (l.maxConc == 0 || limit < l.maxConc) {
+			l.maxConc = limit
+		}
+		if l.maxConc == 0 {
+			l.mu.Unlock()
+			return func() {}, nil
+		}
+		if l.inFlight < l.maxConc {
+			l.inFlight++
+			l.mu.Unlock()
+			var once sync.Once
+			return func() {
+				once.Do(func() { l.releaseConc() })
+			}, nil
+		}
+		ch := l.notify
+		l.mu.Unlock()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	return g.daily.count(now, limit)
+}
+
+func (l *programLimiter) releaseConc() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.inFlight > 0 {
+		l.inFlight--
+	}
+	close(l.notify)
+	l.notify = make(chan struct{})
 }
 
 func businessDay(t time.Time) string {
@@ -1106,13 +1193,21 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 // program's allowed/forbidden lists and rate/concurrency/daily constraints are
 // enforced per request by Egress.
 func buildGrant(decision domain.ActionDecision, req domain.ActionRequest) ExecutionGrant {
+	account := decision.Request.AccountID
+	if account == "" {
+		account = req.AccountID
+	}
 	g := ExecutionGrant{
 		DecisionID:       decision.ID,
+		AccountID:        account,
 		ProgramID:        decision.ProgramID,
 		AssetID:          decision.Request.AssetID,
 		AssetTarget:      decision.AssetTarget,
 		AllowedMethods:   map[string]struct{}{},
 		ForbiddenMethods: map[string]struct{}{},
+	}
+	if decision.ExpiresAt != nil {
+		g.ExpiresAt = *decision.ExpiresAt
 	}
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {

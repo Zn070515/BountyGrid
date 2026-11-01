@@ -546,11 +546,11 @@ func TestExecutionGrantEnforcesMethodAndTarget(t *testing.T) {
 }
 
 func TestExecutionGrantDailyLimit(t *testing.T) {
-	g := &requestGate{daily: &dailyCounter{}}
-	if err := g.count(testNow, 1); err != nil {
+	l := newProgramLimiter()
+	if err := l.daily.count(testNow, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.count(testNow, 1); !errors.Is(err, ErrGrantDenied) {
+	if err := l.daily.count(testNow, 1); !errors.Is(err, ErrGrantDenied) {
 		t.Fatalf("second request err = %v, want daily limit", err)
 	}
 }
@@ -600,6 +600,176 @@ func TestDailyLimitSharedAcrossGrants(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestRPSSharedAcrossGrants(t *testing.T) {
+	e := NewEgress(&Sandbox{})
+	rps := 0.01 // one request per 100 seconds: the first acquire holds the shared slot
+	grant := ExecutionGrant{AccountID: "acc1", ProgramID: "p1", MaxRPS: &rps}
+
+	first := e.WithGrant(grant)
+	release, err := first.acquire(context.Background())
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	release() // the RPS slot remains scheduled on the shared limiter
+
+	// A second execution for the same account/program shares the RPS timeline.
+	second := e.WithGrant(grant)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := second.acquire(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second acquire err = %v, want deadline exceeded from the shared RPS slot", err)
+	}
+
+	// A different program gets a separate limiter and is not blocked.
+	otherGrant := grant
+	otherGrant.ProgramID = "p2"
+	if e.limiters.limiter(grantScopeKey(grant)) == e.limiters.limiter(grantScopeKey(otherGrant)) {
+		t.Fatal("different programs must not share a limiter")
+	}
+	other := e.WithGrant(otherGrant)
+	otherCtx, otherCancel := context.WithTimeout(context.Background(), time.Second)
+	defer otherCancel()
+	releaseOther, err := other.acquire(otherCtx)
+	if err != nil {
+		t.Fatalf("other program acquire: %v", err)
+	}
+	releaseOther()
+
+	// Move the shared slot into the past; only the shared limiter can unblock
+	// the second execution, proving its per-execution state was not reset.
+	l := e.limiters.limiter(grantScopeKey(grant))
+	l.mu.Lock()
+	l.last = time.Now().Add(-200 * time.Second)
+	l.mu.Unlock()
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	releaseSecond, err := second.acquire(ctx2)
+	if err != nil {
+		t.Fatalf("second acquire after the shared slot elapsed: %v", err)
+	}
+	releaseSecond()
+}
+
+func TestConcurrencySharedAcrossGrants(t *testing.T) {
+	e := NewEgress(&Sandbox{})
+	maxConc := 1
+	grant := ExecutionGrant{AccountID: "acc1", ProgramID: "p1", MaxConcurrency: &maxConc}
+
+	first := e.WithGrant(grant)
+	releaseFirst, err := first.acquire(context.Background())
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+
+	// The second execution shares the in-flight slot, so it must block.
+	second := e.WithGrant(grant)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := second.acquire(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second acquire err = %v, want deadline exceeded from the shared concurrency slot", err)
+	}
+
+	// A different program has its own limiter.
+	otherGrant := grant
+	otherGrant.ProgramID = "p2"
+	other := e.WithGrant(otherGrant)
+	otherCtx, otherCancel := context.WithTimeout(context.Background(), time.Second)
+	defer otherCancel()
+	releaseOther, err := other.acquire(otherCtx)
+	if err != nil {
+		t.Fatalf("other program acquire: %v", err)
+	}
+	releaseOther()
+
+	// Releasing the first slot unblocks the second grant.
+	releaseFirst()
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	releaseSecond, err := second.acquire(ctx2)
+	if err != nil {
+		t.Fatalf("second acquire after release: %v", err)
+	}
+	releaseSecond()
+}
+
+func TestExecutionGrantPathUsesSegmentAwareMatching(t *testing.T) {
+	const target = "https://api.example.com/api"
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"exact", "/api", true},
+		{"descendant", "/api/users", true},
+		{"prefix sibling apix", "/apix", false},
+		{"prefix sibling api2", "/api2", false},
+		{"prefix sibling api-admin", "/api-admin", false},
+		{"encoded traversal", "/api/%2e%2e/admin", false},
+		{"literal traversal", "/api/../admin", false},
+		{"encoded slash traversal", "/api%2f..%2fadmin", false},
+		{"backslash traversal", `/api\..\admin`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.Parse("https://api.example.com" + tc.path)
+			if err != nil {
+				t.Fatalf("parse %q: %v", tc.path, err)
+			}
+			g := ExecutionGrant{AssetTarget: target}
+			err = g.allowsTarget(u)
+			if got := err == nil; got != tc.want {
+				t.Fatalf("allowsTarget(%q) allowed=%v err=%v, want allowed=%v", tc.path, got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestExecutionGrantAllowedPathPrefixes(t *testing.T) {
+	g := ExecutionGrant{AssetTarget: "api.example.com", AllowedPathPrefixes: []string{"/api"}}
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/api", true},
+		{"/api/users", true},
+		{"/apix", false},
+		{"/api-admin", false},
+		{"/api/%2e%2e/admin", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			u, err := url.Parse("https://api.example.com" + tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = g.allowsTarget(u)
+			if got := err == nil; got != tc.want {
+				t.Fatalf("allowsTarget(%q) allowed=%v err=%v, want allowed=%v", tc.path, got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildGrantBindsAccountAndExpiry(t *testing.T) {
+	exp := testNow.Add(time.Minute)
+	decision := domain.ActionDecision{
+		ID: "d1", ProgramID: "p1", ExpiresAt: &exp,
+		Request: domain.ActionRequest{AccountID: "acc1"},
+	}
+	g := buildGrant(decision, domain.ActionRequest{AccountID: "fallback"})
+	if g.AccountID != "acc1" {
+		t.Fatalf("grant account = %q, want acc1", g.AccountID)
+	}
+	if !g.ExpiresAt.Equal(exp) {
+		t.Fatalf("grant expiry = %v, want %v", g.ExpiresAt, exp)
+	}
+	decision.Request.AccountID = ""
+	g = buildGrant(decision, domain.ActionRequest{AccountID: "fallback"})
+	if g.AccountID != "fallback" {
+		t.Fatalf("grant account fallback = %q, want fallback", g.AccountID)
 	}
 }
 
