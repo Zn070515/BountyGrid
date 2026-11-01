@@ -127,6 +127,7 @@ bash probes/butian/grow-dates.sh
 
 - **声明式策略规则**：`internal/policy/rules` 支持 host/method/path 规则、加载期 `match`/`not_match` 自测、`*.example.com` 仅子域/`**.example.com` 含 apex、URL 规范化（大小写/尾点/百分号编码/`path.Clean`）、最严决策合并与 `justification`；`bountygrid policy check` 输出命中规则和规则集指纹。决策记录 `RuleIDs`/`RuleSetFingerprint`，`Authorize` 拒绝规则集变更后的旧授权。
 - **可回放 Trace**：`internal/trace` 提供 append-only `trace.jsonl`、`raw/<sha256>` content-addressed payload、稳定事件哈希和因果 reducer；`bountygrid trace reduce|validate` 离线读取。当前尚未接入 model/harness/gateway 调用点，DB 仍是唯一权威状态，trace 只做审计/回放。
+- **逐请求网络代理**：`internal/harness/proxy.go` 提供本地 forward proxy：HTTP absolute-form 逐请求 `NetworkPolicy`（`allow/deny/ask`，无交互 UI 时 ask=deny）、先审计后转发（allow 审计失败则不转发）、CONNECT 目标非公网过滤、请求/响应 8 MiB 上限、hop-by-hop 剥离、显式 `ApprovedProxy`（绝不使用环境代理）。`RulePolicy` 把声明式规则接到代理，`AuditSink` 把决策写入 `audit_events`（path 只存 hash）。
 - **输入新鲜度独立检查**：执行/提交动作分别要求 `Program.Status`、`Scope`、`Program.PolicyObservedAt`（automation/constraints 快照）与 `AccountCapability` 在各自窗口内；任一 stale → `REQUIRE_MORE_EVIDENCE`（`STALE_PROGRAM_STATE` / `STALE_SCOPE` / `STALE_AUTOMATION_POLICY` / `STALE_ACCOUNT_CAPABILITY`）。决策记录 `ScopeRevision` 与 `PolicyRevision`。
 - **逐请求 Egress 授权**：网络工具拿到的是绑定 `ExecutionGrant`（approved method、canonical asset host/path、RPS、并发、日限额）的 `Egress`；每次请求与重定向都重新校验，不能被一次 ALLOW 放大成任意请求。
 - **SSRF / DNS rebinding**：连接前解析 DNS，拒绝 loopback/private/link-local/ULA/multicast/unspecified 并固定到校验后的 IP；默认不使用环境代理，只有显式 `ApprovedProxy` 才启用。
@@ -298,6 +299,15 @@ butian   top10=0.500* active=30 rewarded=10 pool=—       confidence=0.5
 go run ./cmd/bountygrid harness -tool view_rules -request ./request.json
 ```
 
+### Network proxy boundary · `internal/harness/proxy.go`
+
+- 本地 forward proxy，支持 HTTP absolute-form 与 CONNECT；每个请求先过 `NetworkPolicy`（`allow/deny/ask`），再写 `NetworkAuditSink`，只有 `Allow` 且审计成功才转发。无交互 UI，`Ask` = 403。
+- HTTP 逐请求检查 host/port/method/path；CONNECT 只检查 host/port（opaque TCP，无 TLS MITM）。
+- 请求/响应各 8 MiB 上限；剥离 hop-by-hop 与 `Connection` 指定头；绝不使用 `http.ProxyFromEnvironment`。
+- `Egress` 只有在 `Sandbox.ApprovedProxy` 显式配置时才走代理；代理自身地址允许 loopback/private（固定解析 IP），目标仍走非公网过滤；非法代理配置 fail closed。
+- `RulePolicy` 把 `internal/policy/rules` 接到代理；`AuditSink` 把 `network.policy_decision` 写入 `audit_events`，path 只存 hash。
+- 每日限额由 base `Egress` 按 program 共享，RPS/并发仍在单次执行内。详见 [`architecture/proxy.md`](architecture/proxy.md)。
+
 ### Butian Reader（专属SRC / 公益SRC / GROW 已实测）
 
 - `internal/adapter/butian`：`AuthStatus`、`SyncAccount`（合规考核/实战认证/实名/银行卡，保守 fail-closed）、`SyncPrograms`（37 专属SRC）、`SyncProgram`、`SyncScope`（未报名 GATED）、`SyncPolicy`（保守 `UNKNOWN`）。
@@ -410,6 +420,7 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 | [`architecture/adapters.md`](architecture/adapters.md) | 三平台 Adapter、Transport、轮询、失败模式 |
 | [`architecture/policy-engine.md`](architecture/policy-engine.md) | AccountCapability + EligibilityState + 动作矩阵 + 声明式规则 |
 | [`architecture/trace.md`](architecture/trace.md) | append-only trace bundle、raw payloads、reducer、CLI |
+| [`architecture/proxy.md`](architecture/proxy.md) | 逐请求网络代理、RulePolicy、AuditSink、CONNECT 与 ApprovedProxy |
 | [`architecture/opportunity-scheduler.md`](architecture/opportunity-scheduler.md) | CompetitionSnapshot、期望收益/成本、调度 |
 | [`architecture/harness-model-router.md`](architecture/harness-model-router.md) | 执行边界、工具注册、模型路由 |
 | [`architecture/research-lifecycle.md`](architecture/research-lifecycle.md) | Finding/Verification/Report/Submission/Ledger |
@@ -456,6 +467,7 @@ internal/facts/              抽取器接口、FactSet、内存 Store、补天 G
 internal/state/              程序状态/报名窗口/Scope/账号能力派生
 internal/policy/             Eligibility 合并 + 动作矩阵 + 人工审批
 internal/policy/rules/       声明式 host/method/path 规则、match/not_match 自测、最严决策合并
+internal/harness/            Workspace(os.Root)、Egress(grant)、local forward proxy、执行回执
 internal/trace/              append-only JSONL 事件、content-addressed raw payloads、因果 reducer
 internal/sidecar/            agent-browser 只读客户端（open/wait/eval/get/state save/close）
 internal/adapter/            Reader 接口 + Vulbox Reader（公开列表/账号；详情待接入）
