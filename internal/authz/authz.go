@@ -87,14 +87,27 @@ var (
 	ErrAssetUnknown  = errors.New("authz: asset is not present in the program scope")
 )
 
-// Platform authority rejection reason codes.
+// Platform authority rejection reason codes. A PermissionFact is only
+// authority when it is an explicit, evidence-bound permission; every other
+// shape is rejected rather than treated as a broader allow.
 const (
-	ReasonEvidenceStoreMissing     = "PLATFORM_EVIDENCE_STORE_MISSING"
-	ReasonEvidenceMissing          = "PLATFORM_EVIDENCE_MISSING"
-	ReasonEvidencePlatformMismatch = "PLATFORM_EVIDENCE_PLATFORM_MISMATCH"
-	ReasonRuleProgramMismatch      = "PLATFORM_RULE_PROGRAM_MISMATCH"
-	ReasonRuleExpired              = "PLATFORM_RULE_EXPIRED"
-	ReasonRuleFromFuture           = "PLATFORM_RULE_FROM_FUTURE"
+	ReasonEvidenceStoreMissing             = "PLATFORM_EVIDENCE_STORE_MISSING"
+	ReasonEvidenceMissing                  = "PLATFORM_EVIDENCE_MISSING"
+	ReasonEvidencePlatformMismatch         = "PLATFORM_EVIDENCE_PLATFORM_MISMATCH"
+	ReasonEvidenceContentHashMismatch      = "PLATFORM_EVIDENCE_CONTENT_HASH_MISMATCH"
+	ReasonEvidenceSourceTypeNotAuthorizing = "PLATFORM_EVIDENCE_SOURCE_TYPE_NOT_AUTHORIZING"
+	ReasonPermissionProgramMismatch        = "PLATFORM_PERMISSION_PROGRAM_MISMATCH"
+	ReasonPermissionActionInvalid          = "PLATFORM_PERMISSION_ACTION_INVALID"
+	ReasonPermissionHostsMissing           = "PLATFORM_PERMISSION_HOSTS_MISSING"
+	ReasonPermissionMethodsMissing         = "PLATFORM_PERMISSION_METHODS_MISSING"
+	ReasonPermissionHostInvalid            = "PLATFORM_PERMISSION_HOST_INVALID"
+	ReasonPermissionPathInvalid            = "PLATFORM_PERMISSION_PATH_INVALID"
+	ReasonPermissionRestrictionsPresent    = "PLATFORM_PERMISSION_RESTRICTIONS_PRESENT"
+	ReasonPermissionObservationInvalid     = "PLATFORM_PERMISSION_OBSERVATION_INVALID"
+	ReasonPermissionExpired                = "PLATFORM_PERMISSION_EXPIRED"
+	ReasonPermissionFromFuture             = "PLATFORM_PERMISSION_FROM_FUTURE"
+	ReasonPermissionRevisionMissing        = "PLATFORM_PERMISSION_REVISION_MISSING"
+	ReasonPermissionJustificationMissing   = "PLATFORM_PERMISSION_JUSTIFICATION_MISSING"
 )
 
 // RejectedError reports that platform authority could not be verified. It is

@@ -43,9 +43,10 @@ after every domain gate has passed.
   - Operator guardrails may only tighten. An operator `allow` never raises a
     `REQUIRE_HUMAN` or `DENY`; it can only keep an existing `ALLOW`.
   - `source=platform_evidence` in a JSON file is **rejected**. Platform
-    authority is not a hand-written rule: it is compiled from Evidence by
-    `internal/authz`, using the separate `rules.PlatformRule` type, and only a
+    authority is not a hand-written rule: it is an Evidence-backed
+    `authz.PermissionFact`, verified by `authz.BuildPlatformPolicy`, and only a
     verified `authz.PlatformPolicy` may relax a platform `CONDITIONAL` action.
+    The `rules` package deliberately has no public platform-rule constructor.
     `rules/platform-evidence.example.json` is kept as a negative fixture; the
     loader must reject it.
 - `actions` / `programs`: exact match.
@@ -75,10 +76,13 @@ after every domain gate has passed.
 - An operator `allow` never raises the ceiling: it can only keep an existing
   `ALLOW`. It can never loosen a hard `DENY` (`DoS`, internal network, lateral
   movement, credential stuffing) or a `CONDITIONAL` automation gate.
-- A verified `authz.PlatformPolicy` rule may relax a platform `CONDITIONAL`
-  action for an overridable action, but only when the rule is evidence-backed,
-  fresh, bound to the current `Program.PolicyRevision()`, and no operator rule
-  tightened the decision. It still cannot override a hard `DENY`,
+- A verified `authz.PlatformPolicy` permission may relax a platform
+  `CONDITIONAL` action for an overridable action, but only when it is
+  evidence-backed (Evidence `SourceType` `POLICY`/`ANNOUNCEMENT`, matching
+  evidence content hash), names hosts and methods explicitly, has no
+  restrictions, is fresh, is bound to the current `Program.PolicyRevision()`,
+  and no operator rule tightened the decision. A same-platform program listing
+  is not authorization. It still cannot override a hard `DENY`,
   `AUTOMATION_UNKNOWN`/`FORBIDDEN`, scope/eligibility/freshness or runtime
   constraints.
 - `forbidden` always produces `DENY`.
@@ -129,33 +133,42 @@ loaded from a file.
 
 ## Platform authority (not a rule file)
 
-Platform evidence rules exist in Go, not JSON:
+Platform permissions exist in Go, not JSON:
 
 ```go
 store := postgres.NewEvidenceStore(pool) // implements authz.EvidenceStore
-pp, err := authz.BuildPlatformPolicy(ctx, program, []rules.PlatformRuleSpec{{
-    ID:             "vulbox-444-read-only",
-    Actions:        []domain.Action{domain.ActionActiveHTTP},
-    Programs:       []domain.ProgramID{program.ID},
-    Hosts:          []string{"api.example.com"},
-    Methods:        []string{"GET"},
-    EvidenceRefs:   []domain.EvidenceID{"ev-platform-policy-..."},
-    ObservedAt:     observedAt,
-    ValidUntil:     validUntil,
-    PolicyRevision: program.PolicyRevision(),
-    Justification:  "the platform policy page explicitly permits this endpoint",
+pp, err := authz.BuildPlatformPolicy(ctx, program, []authz.PermissionFact{{
+    EvidenceID:          "ev-platform-policy-...",
+    EvidenceContentHash: "sha256:...", // the hash of that Evidence record
+    Platform:            program.Platform,
+    ProgramID:           program.ID,
+    Action:              domain.ActionActiveHTTP,
+    Hosts:               []string{"api.example.com"},
+    Methods:             []string{"GET"},
+    PathPrefixes:        []string{"/v1"},
+    ObservedAt:          observedAt,
+    ValidUntil:          validUntil,
+    PolicyRevision:      program.PolicyRevision(),
+    Justification:       "the platform policy page explicitly permits this endpoint",
 }}, store, now)
 if err != nil {
-    // reject: missing/wrong-platform evidence, wrong revision, expired, stale
+    // reject: missing evidence, wrong platform/hash, non-authorizing source
+    // type, missing hosts/methods, restrictions, wrong revision, expired, stale
 }
 
 engine := policy.NewEngineWithRules(operatorRules).WithPlatformAuthority(pp)
 ```
 
-`authz.VerifyPlatformEvidence` checks the evidence store, evidence platform,
-program binding, `policy_revision`, observation window and
-`Program.PolicyFreshAt`. Only a rule that passes all of them can set
-`CanRelax`. See [`architecture/authz.md`](../architecture/authz.md).
+`authz.VerifyPlatformEvidence` checks that the Evidence exists, belongs to the
+same platform, matches `EvidenceContentHash`, has `SourceType` `POLICY` or
+`ANNOUNCEMENT`, that the permission binds the program, names an action and
+non-empty hosts/methods, has valid path prefixes, carries no `Restrictions`,
+has a matching `policy_revision`, and is inside its observation window while
+`Program.PolicyFreshAt` holds. Only a permission that passes all of them can
+set `CanRelax`; `PlatformPolicy.Evaluate` re-runs the same checks at decision
+time, so deleting or replacing the Evidence removes authority. A program-list
+(`SourceType=PROGRAM`) Evidence is not authorization. See
+[`architecture/authz.md`](../architecture/authz.md).
 
 ## Using rules in decisions
 

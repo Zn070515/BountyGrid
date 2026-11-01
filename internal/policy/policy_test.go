@@ -1037,19 +1037,23 @@ func (f fakeEvidenceStore) GetEvidence(_ context.Context, id domain.EvidenceID) 
 func platformPolicy(t *testing.T, prog domain.Program, action domain.Action) *authz.PlatformPolicy {
 	t.Helper()
 	store := fakeEvidenceStore{evidence: map[domain.EvidenceID]domain.Evidence{
-		"ev-1": {ID: "ev-1", Platform: prog.Platform, CapturedAt: testNow},
+		"ev-1": {
+			ID: "ev-1", Platform: prog.Platform, SourceType: domain.SourcePolicy,
+			CapturedAt: testNow, ContentHash: "sha256:policy-content",
+		},
 	}}
-	pp, err := authz.BuildPlatformPolicy(context.Background(), prog, []rules.PlatformRuleSpec{{
-		ID:             "platform-rule",
-		Actions:        []domain.Action{action},
-		Programs:       []domain.ProgramID{prog.ID},
-		Hosts:          []string{"api.example.com"},
-		Methods:        []string{"GET"},
-		EvidenceRefs:   []domain.EvidenceID{"ev-1"},
-		ObservedAt:     testNow.Add(-time.Hour),
-		ValidUntil:     testNow.Add(time.Hour),
-		PolicyRevision: prog.PolicyRevision(),
-		Justification:  "platform evidence explicitly permits this endpoint",
+	pp, err := authz.BuildPlatformPolicy(context.Background(), prog, []authz.PermissionFact{{
+		EvidenceID:          "ev-1",
+		EvidenceContentHash: "sha256:policy-content",
+		Platform:            prog.Platform,
+		ProgramID:           prog.ID,
+		Action:              action,
+		Hosts:               []string{"api.example.com"},
+		Methods:             []string{"GET"},
+		ObservedAt:          testNow.Add(-time.Hour),
+		ValidUntil:          testNow.Add(time.Hour),
+		PolicyRevision:      prog.PolicyRevision(),
+		Justification:       "platform policy explicitly permits this endpoint",
 	}}, store, testNow)
 	if err != nil {
 		t.Fatal(err)
@@ -1084,7 +1088,7 @@ func TestPlatformEvidenceRuleCanLoosenConditionalAutomation(t *testing.T) {
 	if d.Decision != domain.DecisionAllow {
 		t.Fatalf("platform evidence did not relax CONDITIONAL: %s %v", d.Decision, d.Reasons)
 	}
-	if len(d.RuleIDs) != 1 || d.RuleIDs[0] != "platform-rule" {
+	if len(d.RuleIDs) != 1 || !strings.HasPrefix(d.RuleIDs[0], "platform-permission/ev-1/") {
 		t.Fatalf("rule ids = %v", d.RuleIDs)
 	}
 	if d.RuleSetFingerprint == "" {
