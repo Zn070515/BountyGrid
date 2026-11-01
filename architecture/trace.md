@@ -26,6 +26,7 @@ which cause".
   "parent_id": "evt-...",
   "seq": 17,
   "kind": "TOOL_DISPATCH",
+  "data_class": "INTERNAL",
   "entity_type": "receipt",
   "entity_id": "rcpt/...",
   "actor_kind": "HARNESS",
@@ -43,7 +44,9 @@ Kinds: `MODEL_CALL`, `ACTION_DECISION`, `TOOL_DISPATCH`, `EXECUTION_RECEIPT`,
 `Seq` is assigned by the writer under one mutex; it is monotonic within a file.
 `ParentID` links an event to its cause. `Hash` covers the key fields plus
 canonicalized payload (UTC time, sorted keys) and is stable across a JSON
-round-trip.
+round-trip. `DataClass` is optional (`PUBLIC`, `INTERNAL`, `SENSITIVE`) and is
+validated when non-empty; when present it is also covered by the hash, while an
+empty value leaves hashes of existing events unchanged.
 
 ## Writer guarantees
 
@@ -63,9 +66,23 @@ identical content is deduplicated. `Get` re-hashes the bytes and fails closed on
 a content mismatch. Refs must be `sha256:<64 hex>`; other forms (including path
 traversal) are rejected.
 
-Callers are responsible for redaction before writing an `Event` or raw payload.
-The package performs none, because "what may leave the process" is a caller
-decision (`internal/redact` / `internal/audit`).
+## Safe sink
+
+`SafeSink` is the enforced entry point and should be used instead of writing to
+`Writer`/`RawStore` directly. It is the single point where schema, redaction,
+hash and parent binding are applied:
+
+- `Append` validates the event, optionally requires `DataClass`
+  (`RequireDataClass`), refuses a `ParentID` this sink has not already appended
+  (`AllowDanglingParents` opts out), scans `Payload` with `redact.Scan`, then
+  writes and records the event ID for later parent checks.
+- `PutRaw` scans the bytes with `redact.Scan` before storing them, so a returned
+  content reference always points at scanned data.
+- Rejections name only the finding kind, never the matched value.
+
+Direct `Writer`/`RawStore` callers remain responsible for redaction: "what may
+leave the process" is still a caller decision (`internal/redact` /
+`internal/audit`), and the raw `Writer` API does not re-check it.
 
 ## Reducer
 

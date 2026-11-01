@@ -16,6 +16,37 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
 
+// CallStatus is the durable state of a logical model call. The transitions are
+// explicit: RESERVED -> STARTED -> COMPLETED, or STARTED -> AMBIGUOUS /
+// FAILED_BEFORE_SEND. Only FAILED_BEFORE_SEND is safe to retry, because the
+// provider proved no request left the process.
+type CallStatus string
+
+const (
+	// CallReserved reserves the idempotency key before any provider is chosen.
+	CallReserved CallStatus = "RESERVED"
+	// CallStarted is persisted immediately before the provider is invoked.
+	CallStarted CallStatus = "STARTED"
+	// CallCompleted means the provider returned a response and it was recorded.
+	CallCompleted CallStatus = "COMPLETED"
+	// CallAmbiguous means the provider returned an error but may still have
+	// processed (and charged for) the request. It must never be retried
+	// automatically.
+	CallAmbiguous CallStatus = "AMBIGUOUS"
+	// CallFailedBeforeSend means the provider proved the request was not sent
+	// (domain.ErrNotSent), so a retry under the same CallID is safe.
+	CallFailedBeforeSend CallStatus = "FAILED_BEFORE_SEND"
+)
+
+func (s CallStatus) Valid() bool {
+	switch s {
+	case CallReserved, CallStarted, CallCompleted, CallAmbiguous, CallFailedBeforeSend:
+		return true
+	default:
+		return false
+	}
+}
+
 // CallRecord is one model invocation. It stores hashes, never prompt or
 // response content.
 type CallRecord struct {
@@ -29,6 +60,7 @@ type CallRecord struct {
 	ResponseHash string
 	Usage        Usage
 	Cost         domain.Money
+	Status       CallStatus
 	StartedAt    time.Time
 	EndedAt      time.Time
 	Error        string
@@ -71,6 +103,10 @@ type CallStore interface {
 	Reserve(ctx context.Context, id string, rec CallRecord) (bool, error)
 	Complete(ctx context.Context, id string, rec CallRecord) error
 	Get(ctx context.Context, id string) (CallRecord, bool, error)
+	// Reclaim deletes a FAILED_BEFORE_SEND reservation so the same CallID can
+	// be reserved and retried. It must refuse any other status: those calls may
+	// already have reached (and been charged by) the provider.
+	Reclaim(ctx context.Context, id string) error
 }
 
 type MemoryCallStore struct {
@@ -104,6 +140,20 @@ func (s *MemoryCallStore) Get(ctx context.Context, id string) (CallRecord, bool,
 	defer s.mu.Unlock()
 	r, ok := s.records[id]
 	return r, ok, nil
+}
+
+func (s *MemoryCallStore) Reclaim(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.records[id]
+	if !ok {
+		return fmt.Errorf("model: reclaim call %s: not found", id)
+	}
+	if rec.Status != CallFailedBeforeSend {
+		return fmt.Errorf("model: reclaim call %s: status %q is not FAILED_BEFORE_SEND", id, rec.Status)
+	}
+	delete(s.records, id)
+	return nil
 }
 
 type Options struct {
@@ -234,6 +284,13 @@ func routeScore(req ModelRequest, info ProviderInfo) int {
 // records the call, and falls back to the next provider on failure. Model
 // output is returned as text; it never becomes an ActionDecision or platform
 // action.
+//
+// Every transition is durable: RESERVED is written before the fallback chain,
+// STARTED immediately before each provider invocation, and COMPLETED /
+// AMBIGUOUS / FAILED_BEFORE_SEND after it. A retry with the same CallID may only
+// proceed when the previous attempt is FAILED_BEFORE_SEND (the provider proved
+// nothing was sent). RESERVED, STARTED and AMBIGUOUS are refused as ambiguous,
+// because the provider may already have been paid.
 func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 	if err := req.Validate(); err != nil {
 		return ModelResponse{}, err
@@ -245,33 +302,42 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 	}
 
 	// Reserve the logical call before any provider is invoked. A retry with the
-	// same CallID is rejected instead of paying for a second call.
+	// same CallID is resolved against the recorded state below.
 	callID := strings.TrimSpace(req.CallID)
 	if callID == "" {
 		callID = callIDFor(req, r.now())
 	}
-	if r.calls != nil {
-		reserved, err := r.calls.Reserve(ctx, callID, CallRecord{
+	if err := r.reserveCall(ctx, callID, req); err != nil {
+		return ModelResponse{}, err
+	}
+
+	recordFor := func(status CallStatus) CallRecord {
+		return CallRecord{
 			ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
-			DataClass: req.EffectiveDataClass(), PromptHash: PromptHash(req),
-		})
-		if err != nil {
-			return ModelResponse{}, fmt.Errorf("model: reserve call: %w", err)
+			DataClass: req.EffectiveDataClass(), Status: status,
 		}
-		if !reserved {
-			return ModelResponse{}, fmt.Errorf("%w: %s", ErrDuplicateCall, callID)
+	}
+	finish := func(rec CallRecord) error {
+		if r.calls == nil {
+			return nil
 		}
+		rec.ID = callID
+		// The audit trail must not be lost because the caller's context was
+		// cancelled after the provider responded.
+		return r.calls.Complete(context.WithoutCancel(ctx), callID, rec)
+	}
+	joinFinish := func(err error, ferr error) error {
+		if ferr != nil {
+			return errors.Join(err, fmt.Errorf("model: persist call status: %w", ferr))
+		}
+		return err
 	}
 
 	budgeted := 0
 	var spent int64
 	var lastErr error
-	finish := func(rec CallRecord) {
-		if r.calls == nil {
-			return
-		}
-		_ = r.calls.Complete(context.WithoutCancel(ctx), callID, rec)
-	}
+	var lastAttempt CallRecord
+	sawAmbiguous := false
 	for _, info := range candidates {
 		provider := r.provider(info.Name)
 		if provider == nil {
@@ -280,8 +346,11 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		estimate := EstimateCost(info, req)
 		if req.Budget.Amount > 0 {
 			if !strings.EqualFold(req.Budget.Currency, estimate.Currency) {
-				return ModelResponse{}, fmt.Errorf("%w: budget currency %q does not match pricing %q",
+				berr := fmt.Errorf("%w: budget currency %q does not match pricing %q",
 					ErrInvalidRequest, req.Budget.Currency, estimate.Currency)
+				rec := recordFor(CallFailedBeforeSend)
+				rec.Error = "CURRENCY_MISMATCH"
+				return ModelResponse{}, joinFinish(berr, finish(rec))
 			}
 			// The budget bounds the whole fallback chain, not one candidate.
 			if spent+estimate.Amount > req.Budget.Amount {
@@ -291,17 +360,47 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		}
 
 		started := r.now()
+		startedRec := recordFor(CallStarted)
+		startedRec.Provider = info.Name
+		startedRec.Model = info.Model
+		startedRec.PromptHash = PromptHash(req)
+		startedRec.StartedAt = started
+		// Persist STARTED before the provider sees the request. If this write
+		// fails the provider is never invoked, so a crash cannot leave a call
+		// that was paid for but recorded as merely RESERVED.
+		if ferr := finish(startedRec); ferr != nil {
+			return ModelResponse{}, fmt.Errorf("model: persist started call: %w", ferr)
+		}
+
 		resp, err := provider.Complete(ctx, req)
 		ended := r.now()
 		if err != nil {
 			// A failed provider may still have billed for the attempt. Count the
 			// estimate against the chain budget so fallback cannot overspend.
-			spent += EstimateCost(info, req).Amount
+			spent += estimate.Amount
 			lastErr = err
-			if rerr := r.record(ctx, req, info, started, ended, EstimateCost(info, req), resp, "PROVIDER_ERROR"); rerr != nil {
-				finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
-					DataClass: req.EffectiveDataClass(), Provider: info.Name, Model: info.Model, Error: "AUDIT_FAILED"})
-				return ModelResponse{}, errors.Join(err, fmt.Errorf("model: audit failed call: %w", rerr))
+			status := CallAmbiguous
+			if errors.Is(err, domain.ErrNotSent) {
+				status = CallFailedBeforeSend
+			} else {
+				sawAmbiguous = true
+			}
+			failed := recordFor(status)
+			failed.Provider = info.Name
+			failed.Model = info.Model
+			failed.PromptHash = PromptHash(req)
+			failed.StartedAt = started
+			failed.EndedAt = ended
+			failed.Error = "PROVIDER_ERROR"
+			lastAttempt = failed
+			if rerr := r.record(ctx, req, info, started, ended, estimate, resp, "PROVIDER_ERROR"); rerr != nil {
+				failed.Error = "AUDIT_FAILED"
+				return ModelResponse{}, joinFinish(
+					errors.Join(err, fmt.Errorf("model: audit failed call: %w", rerr)), finish(failed))
+			}
+			if ferr := finish(failed); ferr != nil {
+				return ModelResponse{}, errors.Join(err,
+					fmt.Errorf("model: persist call status: %w", ferr))
 			}
 			continue
 		}
@@ -310,13 +409,25 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		if req.Budget.Amount > 0 && spent > req.Budget.Amount {
 			berr := fmt.Errorf("%w: accumulated cost %d exceeds budget %d",
 				ErrBudgetExceeded, spent, req.Budget.Amount)
+			rec := recordFor(CallCompleted)
+			rec.Provider = info.Name
+			rec.Model = info.Model
+			rec.PromptHash = PromptHash(req)
+			rec.ResponseHash = ResponseHash(resp.Content)
+			rec.Usage = resp.Usage
+			rec.Cost = cost
+			rec.StartedAt = started
+			rec.EndedAt = ended
+			rec.Error = "BUDGET_EXCEEDED"
 			if rerr := r.record(ctx, req, info, started, ended, cost, resp, "BUDGET_EXCEEDED"); rerr != nil {
-				return ModelResponse{}, errors.Join(berr, fmt.Errorf("model: audit call: %w", rerr))
+				rec.Error = "AUDIT_FAILED"
+				return ModelResponse{}, joinFinish(
+					errors.Join(berr, fmt.Errorf("model: audit call: %w", rerr)), finish(rec))
 			}
-			finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
-				DataClass: req.EffectiveDataClass(), Provider: info.Name, Model: info.Model,
-				Cost: cost, Error: "BUDGET_EXCEEDED", StartedAt: started, EndedAt: ended,
-				PromptHash: PromptHash(req), ResponseHash: ResponseHash(resp.Content), Usage: resp.Usage})
+			if ferr := finish(rec); ferr != nil {
+				return ModelResponse{}, errors.Join(berr,
+					fmt.Errorf("model: persist call status: %w", ferr))
+			}
 			return ModelResponse{}, berr
 		}
 		resp.Provider = info.Name
@@ -325,32 +436,112 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		}
 		resp.Cost = cost
 		resp.Latency = ended.Sub(started)
+		rec := recordFor(CallCompleted)
+		rec.Provider = info.Name
+		rec.Model = info.Model
+		rec.PromptHash = PromptHash(req)
+		rec.ResponseHash = ResponseHash(resp.Content)
+		rec.Usage = resp.Usage
+		rec.Cost = cost
+		rec.StartedAt = started
+		rec.EndedAt = ended
 		if rerr := r.record(ctx, req, info, started, ended, cost, resp, ""); rerr != nil {
 			// The call happened and its content is still useful, but the audit
 			// trail is incomplete. Return both rather than pretending success.
-			finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
-				DataClass: req.EffectiveDataClass(), Provider: info.Name, Model: info.Model,
-				Cost: cost, Error: "AUDIT_FAILED", StartedAt: started, EndedAt: ended,
-				PromptHash: PromptHash(req), ResponseHash: ResponseHash(resp.Content), Usage: resp.Usage})
-			return resp, fmt.Errorf("model: audit call: %w", rerr)
+			rec.Error = "AUDIT_FAILED"
+			return resp, joinFinish(fmt.Errorf("model: audit call: %w", rerr), finish(rec))
 		}
-		finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
-			DataClass: req.EffectiveDataClass(), Provider: info.Name, Model: info.Model,
-			Cost: cost, StartedAt: started, EndedAt: ended,
-			PromptHash: PromptHash(req), ResponseHash: ResponseHash(resp.Content), Usage: resp.Usage})
+		// The provider call completed. If this write fails the content is still
+		// returned, but the caller is told the call receipt is incomplete; the
+		// error is never silently discarded.
+		if ferr := finish(rec); ferr != nil {
+			return resp, fmt.Errorf("model: complete call: %w", ferr)
+		}
 		return resp, nil
 	}
+	// terminal keeps the last provider attempt's details (provider, model,
+	// timing, hashes) while applying the final conservative status.
+	terminal := func(status CallStatus, errKind string) CallRecord {
+		rec := lastAttempt
+		if rec.ID == "" {
+			rec = recordFor(status)
+		}
+		rec.ID = callID
+		rec.Status = status
+		rec.Error = errKind
+		return rec
+	}
 	if budgeted > 0 {
-		finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
-			DataClass: req.EffectiveDataClass(), Error: "BUDGET_EXCEEDED"})
-		return ModelResponse{}, fmt.Errorf("%w: every eligible provider exceeds the remaining request budget", ErrBudgetExceeded)
+		berr := fmt.Errorf("%w: every eligible provider exceeds the remaining request budget", ErrBudgetExceeded)
+		// No request bytes left the process for the blocked candidates. If an
+		// earlier provider was ambiguous, the whole call stays ambiguous.
+		status := CallFailedBeforeSend
+		if sawAmbiguous {
+			status = CallAmbiguous
+		}
+		return ModelResponse{}, joinFinish(berr, finish(terminal(status, "BUDGET_EXCEEDED")))
 	}
 	if lastErr != nil {
-		finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
-			DataClass: req.EffectiveDataClass(), Error: "PROVIDER_ERROR"})
-		return ModelResponse{}, fmt.Errorf("model: all providers failed: %w", lastErr)
+		status := CallFailedBeforeSend
+		if sawAmbiguous {
+			status = CallAmbiguous
+		}
+		return ModelResponse{}, joinFinish(fmt.Errorf("model: all providers failed: %w", lastErr),
+			finish(terminal(status, "PROVIDER_ERROR")))
 	}
-	return ModelResponse{}, ErrNoProvider
+	rec := recordFor(CallFailedBeforeSend)
+	rec.Error = "NO_PROVIDER"
+	return ModelResponse{}, joinFinish(ErrNoProvider, finish(rec))
+}
+
+// reserveCall reserves callID or resolves an existing record. A COMPLETED call
+// is a duplicate. A FAILED_BEFORE_SEND call is reclaimed and reserved again
+// because the provider proved it was never invoked. RESERVED, STARTED and
+// AMBIGUOUS are refused: the provider may have been charged, and only a human
+// can reconcile that.
+func (r *Router) reserveCall(ctx context.Context, callID string, req ModelRequest) error {
+	if r.calls == nil {
+		return nil
+	}
+	reserve := func() (bool, error) {
+		return r.calls.Reserve(ctx, callID, CallRecord{
+			ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
+			DataClass: req.EffectiveDataClass(), Status: CallReserved,
+			PromptHash: PromptHash(req),
+		})
+	}
+	reserved, err := reserve()
+	if err != nil {
+		return fmt.Errorf("model: reserve call: %w", err)
+	}
+	if reserved {
+		return nil
+	}
+	existing, found, err := r.calls.Get(ctx, callID)
+	if err != nil {
+		return fmt.Errorf("model: get existing call: %w", err)
+	}
+	if !found {
+		return fmt.Errorf("%w: %s (reservation exists but record is missing)", ErrCallAmbiguous, callID)
+	}
+	switch existing.Status {
+	case CallCompleted:
+		return fmt.Errorf("%w: %s", ErrDuplicateCall, callID)
+	case CallFailedBeforeSend:
+		if err := r.calls.Reclaim(ctx, callID); err != nil {
+			return fmt.Errorf("model: reclaim call %s: %w", callID, err)
+		}
+		reserved, err := reserve()
+		if err != nil {
+			return fmt.Errorf("model: reserve call after reclaim: %w", err)
+		}
+		if !reserved {
+			return fmt.Errorf("%w: %s: another caller reclaimed the reservation", ErrCallAmbiguous, callID)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: %s (status %s)", ErrCallAmbiguous, callID, existing.Status)
+	}
 }
 
 func (r *Router) provider(name string) Provider {

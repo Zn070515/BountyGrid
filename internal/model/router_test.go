@@ -322,3 +322,210 @@ func TestMaxDataClassCollapsesInvalidToSensitive(t *testing.T) {
 		t.Fatalf("MaxDataClass invalid/invalid = %q", got)
 	}
 }
+
+// oneShotProvider fails once (when Err is set) and succeeds afterwards. It
+// models a transport that can prove ErrNotSent on the first attempt.
+type oneShotProvider struct {
+	Meta     ProviderInfo
+	Err      error
+	Response string
+	Calls    int
+}
+
+func (p *oneShotProvider) Info() ProviderInfo { return p.Meta }
+
+func (p *oneShotProvider) Complete(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	p.Calls++
+	if p.Err != nil {
+		err := p.Err
+		p.Err = nil
+		return ModelResponse{}, err
+	}
+	return ModelResponse{Content: p.Response, Model: p.Meta.Model, Provider: p.Meta.Name, Confidence: 1}, nil
+}
+
+// failingCompleteStore injects a persistence failure for one status transition.
+type failingCompleteStore struct {
+	*MemoryCallStore
+	failStatus CallStatus
+}
+
+func (s *failingCompleteStore) Complete(ctx context.Context, id string, rec CallRecord) error {
+	if rec.Status == s.failStatus {
+		return errors.New("call store unavailable")
+	}
+	return s.MemoryCallStore.Complete(ctx, id, rec)
+}
+
+func callStatus(t *testing.T, store CallStore, id string) CallStatus {
+	t.Helper()
+	rec, ok, err := store.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("call %s not found", id)
+	}
+	return rec.Status
+}
+
+func TestCallStatusSuccessIsCompleted(t *testing.T) {
+	store := NewMemoryCallStore()
+	p := testProvider("p", true, 1, 100, 0, "ok")
+	r, err := New(Options{Providers: []Provider{p}, CallStore: store, Now: func() time.Time { return testNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest(PurposeCode, DataPublic, 10, 0)
+	req.CallID = "call-completed"
+	if _, err := r.Route(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := callStatus(t, store, req.CallID); got != CallCompleted {
+		t.Fatalf("status = %q, want COMPLETED", got)
+	}
+}
+
+func TestCallStatusProviderErrorIsAmbiguous(t *testing.T) {
+	store := NewMemoryCallStore()
+	p := testProvider("p", true, 1, 100, 0, "ok")
+	p.Err = errors.New("read timeout after send")
+	r, err := New(Options{Providers: []Provider{p}, CallStore: store, Now: func() time.Time { return testNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest(PurposeCode, DataPublic, 10, 0)
+	req.CallID = "call-ambiguous"
+	if _, err := r.Route(context.Background(), req); err == nil {
+		t.Fatal("provider error must surface")
+	}
+	if got := callStatus(t, store, req.CallID); got != CallAmbiguous {
+		t.Fatalf("status = %q, want AMBIGUOUS", got)
+	}
+	// A second attempt must not reach the provider again.
+	p.Err = nil
+	if _, err := r.Route(context.Background(), req); !errors.Is(err, ErrCallAmbiguous) {
+		t.Fatalf("retry err = %v, want ErrCallAmbiguous", err)
+	}
+	if p.Calls != 1 {
+		t.Fatalf("provider called %d times, want 1", p.Calls)
+	}
+}
+
+func TestCallStatusErrNotSentIsRetryable(t *testing.T) {
+	store := NewMemoryCallStore()
+	p := &oneShotProvider{
+		Meta:     ProviderInfo{Name: "p", Model: "p-model", Local: true, MaxOutputTokens: 100},
+		Err:      fmt.Errorf("dial failed: %w", domain.ErrNotSent),
+		Response: "ok",
+	}
+	r, err := New(Options{Providers: []Provider{p}, CallStore: store, Now: func() time.Time { return testNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest(PurposeCode, DataPublic, 10, 0)
+	req.CallID = "call-retry"
+	if _, err := r.Route(context.Background(), req); !errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("first err = %v, want domain.ErrNotSent", err)
+	}
+	if got := callStatus(t, store, req.CallID); got != CallFailedBeforeSend {
+		t.Fatalf("status = %q, want FAILED_BEFORE_SEND", got)
+	}
+	resp, err := r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatalf("retry after FAILED_BEFORE_SEND: %v", err)
+	}
+	if resp.Content != "ok" || p.Calls != 2 {
+		t.Fatalf("retry resp=%+v calls=%d", resp, p.Calls)
+	}
+	if got := callStatus(t, store, req.CallID); got != CallCompleted {
+		t.Fatalf("status after retry = %q, want COMPLETED", got)
+	}
+}
+
+func TestCallStatusDuplicateCompletedRejected(t *testing.T) {
+	store := NewMemoryCallStore()
+	p := testProvider("p", true, 1, 100, 0, "ok")
+	r, err := New(Options{Providers: []Provider{p}, CallStore: store, Now: func() time.Time { return testNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest(PurposeCode, DataPublic, 10, 0)
+	req.CallID = "call-duplicate"
+	if _, err := r.Route(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Route(context.Background(), req); !errors.Is(err, ErrDuplicateCall) {
+		t.Fatalf("second call err = %v, want ErrDuplicateCall", err)
+	}
+	if p.Calls != 1 {
+		t.Fatalf("provider called %d times, want 1", p.Calls)
+	}
+	if got := callStatus(t, store, req.CallID); got != CallCompleted {
+		t.Fatalf("status = %q, want COMPLETED", got)
+	}
+}
+
+func TestCallStatusStartWriteFailureSkipsProvider(t *testing.T) {
+	store := &failingCompleteStore{MemoryCallStore: NewMemoryCallStore(), failStatus: CallStarted}
+	p := testProvider("p", true, 1, 100, 0, "ok")
+	r, err := New(Options{Providers: []Provider{p}, CallStore: store, Now: func() time.Time { return testNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest(PurposeCode, DataPublic, 10, 0)
+	req.CallID = "call-start-fail"
+	if _, err := r.Route(context.Background(), req); err == nil {
+		t.Fatal("STARTED persistence failure must surface")
+	}
+	if p.Calls != 0 {
+		t.Fatalf("provider called %d times despite STARTED persistence failure", p.Calls)
+	}
+	if got := callStatus(t, store, req.CallID); got != CallReserved {
+		t.Fatalf("status = %q, want RESERVED", got)
+	}
+}
+
+func TestCallStatusCompleteWriteFailureSurfacesWithResponse(t *testing.T) {
+	store := &failingCompleteStore{MemoryCallStore: NewMemoryCallStore(), failStatus: CallCompleted}
+	p := testProvider("p", true, 1, 100, 0, "ok")
+	r, err := New(Options{Providers: []Provider{p}, CallStore: store, Now: func() time.Time { return testNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest(PurposeCode, DataPublic, 10, 0)
+	req.CallID = "call-complete-fail"
+	resp, err := r.Route(context.Background(), req)
+	if err == nil {
+		t.Fatal("COMPLETED persistence failure must surface")
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("response content = %q, want the completed call", resp.Content)
+	}
+	if got := callStatus(t, store, req.CallID); got != CallStarted {
+		t.Fatalf("status = %q, want STARTED (COMPLETED write failed)", got)
+	}
+}
+
+func TestMemoryCallStoreReclaimOnlyFailedBeforeSend(t *testing.T) {
+	store := NewMemoryCallStore()
+	ctx := context.Background()
+	if _, err := store.Reserve(ctx, "a", CallRecord{ID: "a", Status: CallStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reclaim(ctx, "a"); err == nil {
+		t.Fatal("reclaim of a STARTED call must fail")
+	}
+	if _, ok, _ := store.Get(ctx, "a"); !ok {
+		t.Fatal("STARTED call was deleted by a refused reclaim")
+	}
+	if _, err := store.Reserve(ctx, "b", CallRecord{ID: "b", Status: CallFailedBeforeSend}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reclaim(ctx, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := store.Get(ctx, "b"); ok {
+		t.Fatal("FAILED_BEFORE_SEND call was not reclaimed")
+	}
+}

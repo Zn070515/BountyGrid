@@ -4,10 +4,11 @@
 // submissions and ledger entries).
 //
 // The trace log complements the PostgreSQL audit/state tables; it does not
-// replace them. Callers are responsible for redacting secrets before writing an
-// Event or a raw payload. This package deliberately performs no redaction: a
-// redacted copy is a decision about what may leave the process, and that
-// decision belongs to the caller (see internal/redact and internal/audit).
+// replace them. Callers that write directly to Writer or RawStore are
+// responsible for redacting secrets first. SafeSink is the recommended entry
+// point: it validates the event schema, enforces an optional data class, binds
+// an event to an already-seen parent, and rejects payloads/raw bytes that match
+// internal/redact patterns.
 //
 // Files are JSONL: exactly one Event per line, opened with mode 0600. Writing is
 // append-only; the package never rewrites or truncates an existing line.
@@ -59,6 +60,25 @@ func (k Kind) Valid() bool {
 	}
 }
 
+// DataClass labels the sensitivity of an Event. It is optional on the wire so
+// existing traces remain readable, but SafeSink can require it.
+type DataClass string
+
+const (
+	DataClassPublic    DataClass = "PUBLIC"
+	DataClassInternal  DataClass = "INTERNAL"
+	DataClassSensitive DataClass = "SENSITIVE"
+)
+
+func (d DataClass) Valid() bool {
+	switch d {
+	case DataClassPublic, DataClassInternal, DataClassSensitive:
+		return true
+	default:
+		return false
+	}
+}
+
 // Event is one immutable trace record. ID must be unique within a trace;
 // ParentID links the event to its cause (empty means a root). Seq is assigned by
 // Writer and is monotonic within a trace file. Payload must already be redacted;
@@ -69,6 +89,7 @@ type Event struct {
 	ParentID   string          `json:"parent_id,omitempty"`
 	Seq        int64           `json:"seq"`
 	Kind       Kind            `json:"kind"`
+	DataClass  DataClass       `json:"data_class,omitempty"`
 	EntityType string          `json:"entity_type,omitempty"`
 	EntityID   string          `json:"entity_id,omitempty"`
 	ActorKind  string          `json:"actor_kind,omitempty"`
@@ -92,6 +113,9 @@ func (e Event) Validate() error {
 	}
 	if !e.Kind.Valid() {
 		return fmt.Errorf("trace: event %q: invalid kind %q", e.ID, e.Kind)
+	}
+	if e.DataClass != "" && !e.DataClass.Valid() {
+		return fmt.Errorf("trace: event %q: invalid data class %q", e.ID, e.DataClass)
 	}
 	if e.At.IsZero() {
 		return fmt.Errorf("trace: event %q: at is zero", e.ID)
@@ -123,6 +147,9 @@ func ComputeHash(e Event) (string, error) {
 		ActorID    string          `json:"actor_id"`
 		At         string          `json:"at"`
 		Payload    json.RawMessage `json:"payload,omitempty"`
+		// Appended with omitempty so hashes of existing events without a data
+		// class remain stable, while adding a class changes the hash.
+		DataClass DataClass `json:"data_class,omitempty"`
 	}{
 		ID:         e.ID,
 		TraceID:    e.TraceID,
@@ -135,6 +162,7 @@ func ComputeHash(e Event) (string, error) {
 		ActorID:    e.ActorID,
 		At:         e.At.UTC().Format(time.RFC3339Nano),
 		Payload:    payload,
+		DataClass:  e.DataClass,
 	}
 	b, err := json.Marshal(input)
 	if err != nil {

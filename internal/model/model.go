@@ -25,6 +25,10 @@ var (
 	// ErrDuplicateCall means this logical call already has a reservation. It is
 	// returned instead of invoking a provider again and paying twice.
 	ErrDuplicateCall = errors.New("model: call already recorded")
+	// ErrCallAmbiguous means the recorded call is RESERVED, STARTED or
+	// AMBIGUOUS. The provider may already have been invoked and charged, so a
+	// retry is refused until a human reconciles the call.
+	ErrCallAmbiguous = errors.New("model: call is ambiguous; the provider may have been charged and manual reconciliation is required")
 )
 
 type Purpose string
