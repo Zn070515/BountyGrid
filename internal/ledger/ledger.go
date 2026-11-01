@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
+	"github.com/Zn070515/BountyGrid/internal/collections"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
 
@@ -384,11 +384,7 @@ func (s *Service) Summary(ctx context.Context, platform domain.Platform, program
 	for _, e := range entries {
 		groups[e.ProgramID] = append(groups[e.ProgramID], e)
 	}
-	keys := make([]string, 0, len(groups))
-	for k := range groups {
-		keys = append(keys, string(k))
-	}
-	sort.Strings(keys)
+	keys := collections.SortedKeys(groups)
 	out := Summary{
 		Platform: platform, Currency: "CNY", Programs: len(keys),
 		Expected: cny(0), Submitted: cny(0), GrossAccepted: cny(0),
@@ -396,7 +392,7 @@ func (s *Service) Summary(ctx context.Context, platform domain.Platform, program
 		PaidNet: cny(0), NetCash: cny(0), AvgAccepted: cny(0), AvgPaid: cny(0),
 	}
 	for _, key := range keys {
-		s, err := summarize(groups[domain.ProgramID(key)], targets)
+		s, err := summarize(groups[key], targets)
 		if err != nil {
 			return Summary{}, err
 		}
@@ -581,11 +577,7 @@ func Feedback(entries []domain.LedgerEntry) ([]ProgramFeedback, error) {
 		key := string(e.Platform) + "|" + string(e.ProgramID)
 		groups[key] = append(groups[key], e)
 	}
-	keys := make([]string, 0, len(groups))
-	for k := range groups {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := collections.SortedKeys(groups)
 	out := make([]ProgramFeedback, 0, len(keys))
 	for _, k := range keys {
 		s, err := Summarize(groups[k])

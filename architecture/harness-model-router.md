@@ -208,7 +208,7 @@ type Router interface {
 ## 5.1 Phase 5 实现记录（2026-11-01）
 
 - `internal/harness`：Registry 校验工具名/RequiredAction/重复；Harness 强制 `Evaluate → ALLOW → Budget → Authorize → Execute`，`DENY/REQUIRE_HUMAN` 不调用工具；`DeniedError` 带决策。预算检查在 Authorize 之前，避免预算拒绝消耗一次性审批。
-- Sandbox/Egress：默认拒绝 egress；`-allowed-hosts` 精确匹配，`*.example.org` 只匹配子域；`http/https` 以外拒绝。网络工具只拿到 `harness.Egress`，每个请求与重定向都重新 `CheckURL`；空 allowlist 的网络工具直接拒绝。工具拿不到裸网络客户端。
+- Sandbox/Egress：默认拒绝 egress；`-allowed-hosts` 精确匹配，`*.example.org` 只匹配子域；`http/https` 以外拒绝。网络工具只拿到 `harness.Egress`，每个请求与重定向都重新 `CheckURL`；空 allowlist 的网络工具直接拒绝。`Egress` 使用专用 `http.Transport`（连接/握手/响应头超时、空闲连接上限）并限制响应体大小（默认 8 MiB），工具拿不到裸网络客户端。文件工具只能拿到 `harness.Workspace`，其底层是 `os.Root`，`../` 与指向根外的符号链接由操作系统边界拒绝；没有 workspace 的文件工具直接拒绝。
 - 执行回执：`NetworkEgress`/`WritesFiles`/`Destructive` 工具必须带 `IdempotencyKey`；执行前预占 `execution_receipts`（`STARTED` → `EXECUTED` → `COMPLETED`/`FAILED`）。重试回放结果；`STARTED` 视为未决、拒绝重复执行；工具已执行但审计失败时回执保持 `EXECUTED`，重试只补审计。内置只读工具不需要 key。
 - 内置工具 `view_rules/read_scope/report_draft`：本地只读，不发起网络/扫描/提交。`tool.executed` 写入审计；决策审计由 Action Gateway 负责（PostgreSQL 使用同一事务）。
 - 实测：`view_rules` ALLOW → Authorize → 执行成功；缺失账号 DENY `CONTEXT_NOT_FOUND`，工具未执行；`action_decisions=5`、`tool.executed=1`。

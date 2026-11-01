@@ -152,7 +152,9 @@ internal/sidecar        agent-browser 传输层（不是安全沙箱）：
                         get / state save / close；不提供 click/fill/submit 命令。
                         Eval 可执行任意 JS；Reader 只用于只读观察与分页/弹窗控制，
                         Harness/Model 不得直接持有 Client
-internal/adapter        Reader 接口与快照类型
+internal/adapter        Reader 接口与快照类型；平台 JS 抽取脚本在
+                        internal/adapter/<platform>/scripts/*.js，
+                        通过 //go:embed 编译进二进制
 internal/adapter/vulbox AuthStatus / SyncAccount / SyncPrograms
 cmd/bountygrid sync     -programs / -account / -pages / -page-size / -session
 ```

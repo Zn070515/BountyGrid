@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -197,5 +198,21 @@ func TestInvalidRequestAndDuplicateProvider(t *testing.T) {
 	r, _ := newTestRouter(t, testProvider("a", true, 1, 100, 1, "x"))
 	if _, err := r.Route(context.Background(), ModelRequest{Purpose: "NOPE", DataClass: DataPublic, MaxTokens: 1, Input: []Message{{Role: "user"}}}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("invalid purpose = %v", err)
+	}
+}
+
+func BenchmarkRouterCandidates(b *testing.B) {
+	providers := make([]Provider, 0, 100)
+	for i := 0; i < 100; i++ {
+		providers = append(providers, testProvider(fmt.Sprintf("p-%d", i), i%2 == 0, i%5, 16000, 1, "x"))
+	}
+	r, err := New(Options{Providers: providers, Now: func() time.Time { return testNow }})
+	if err != nil {
+		b.Fatal(err)
+	}
+	req := testRequest(PurposeAnalyze, DataInternal, 1000, 100)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = r.Candidates(req)
 	}
 }

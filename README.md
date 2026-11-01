@@ -188,6 +188,7 @@ go run ./cmd/bountygrid sync -platform vulbox -programs -pages=1 -persist
   - `SCOPE_VISIBILITY` ← `DeriveScopeVisibility`
   - `REGISTRATION_STATE` ← `DeriveRegistrationOpen`（有 canonical 报名窗口时才写）
 - 状态 ID 稳定（`state/<program>/<subject>`），`inputs` 记录 Fact ID；`derived_states.state` 为 JSONB 字符串。
+- 一次加载平台全部 Fact 并按 Program 分组，派生结果用 `pgx.Batch` 一次写入；`-workers` 控制并行派生（默认最多 4，1 = 顺序），输出按 Program 顺序聚合，保证确定性。
 - Fact supersede：PostgreSQL `SupersedeFact` 在同一事务里把 `inputs` 含该 Fact 的 State 的 `valid_until` 置为 `now()`；`inputs` 有 GIN 索引。状态不会悄悄继续使用被推翻的证据。
 - 实测（2026-10-31）：Xianzhi 91 项目 → 273 状态（91/91/91），Vulbox 50 → 100 状态，合计 **373**；`inputs` 为空 0 条、confidence 越界 0 条、已过期 0 条。
   - `xianzhi/324 = RUNNING / GATED_BY_SIGNUP / registration CLOSED`
@@ -348,6 +349,15 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - `go run ./cmd/bountygrid ledger -file <json> [-persist]` 追加；`ledger -summary -platform <p> [-program <id>] [-since/-until]` 汇总；`ledger -reconcile -file <json>` 只报平台/银行差异，不自动改账。
 - 非现金奖励（KB/RYB/积分/荣誉/实物/优惠券）留 `ledger.NonCashRecorder` 接口，v1 不混入金额账本。
 - 未实现：真实平台 SubmitAdapter、非现金奖励记录器、`ReconciliationIssue` 持久化、人工复核 UI。
+
+### Go 工程化与性能（2026-11-01）
+
+- **批量 DB 写入**：`PutFacts` / `PutStates` 使用 `pgx.Batch`，保留 `ON CONFLICT` 幂等语义；`derive` 一次加载平台 Fact、按 Program 分组。
+- **有界并发**：`derive -workers` 默认最多 4 个并行派生 worker；平台 Reader 仍按平台串行（频率限制/sidecar 串行），不做无约束并发。
+- **边界能力**：文件工具通过 `os.Root` 限定在 workspace；网络工具通过 `harness.Egress`（专用 `http.Transport`、重定向检查、8 MiB 响应上限）；出口 IP 用 `net/netip` 解析比较。
+- **时间与取消**：业务日期使用 `timeutil` + `time/tzdata`（Asia/Shanghai 内嵌）；CLI 使用 `signal.NotifyContext`，Ctrl-C 可优雅取消浏览器/DB 操作。
+- **可维护性**：三平台大段 JS 抽取脚本移到 `scripts/*.js` 并用 `//go:embed`；`log/slog` 通过 `BOUNTYGRID_LOG=debug|info|warn|error` 输出到 stderr；`internal/collections` 提供泛型去重/并集/排序键。
+- **质量门**：CI 跑 `go test -race -shuffle=on`、benchmark smoke、`go vet`、`CGO_ENABLED=0 go build`、`govulncheck`；`internal/domain`/`redact`/`report` 提供 fuzz targets；tag `v*` 触发 Linux/Windows 静态二进制 release workflow。
 
 ## 文档入口 · Docs
 

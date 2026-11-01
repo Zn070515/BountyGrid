@@ -1,7 +1,8 @@
 package opportunity
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
@@ -116,15 +117,14 @@ func Schedule(engine Engine, candidates []Candidate, opts Options) Result {
 }
 
 func sortScheduled(s []Scheduled) {
-	sort.SliceStable(s, func(i, j int) bool {
-		si, sj := score(s[i]), score(s[j])
-		if si != sj {
-			return si > sj
+	slices.SortStableFunc(s, func(a, b Scheduled) int {
+		if c := cmp.Compare(score(b), score(a)); c != 0 {
+			return c
 		}
-		if s[i].Opportunity.Confidence != s[j].Opportunity.Confidence {
-			return s[i].Opportunity.Confidence > s[j].Opportunity.Confidence
+		if c := cmp.Compare(b.Opportunity.Confidence, a.Opportunity.Confidence); c != 0 {
+			return c
 		}
-		return s[i].Program.ID < s[j].Program.ID
+		return cmp.Compare(a.Program.ID, b.Program.ID)
 	})
 }
 

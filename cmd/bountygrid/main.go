@@ -4,12 +4,18 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/obs"
 	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 )
+
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -17,8 +23,12 @@ func main() {
 		os.Exit(2)
 	}
 	loadEnvFile(".env.local")
+	obs.Setup(os.Stderr)
+	slog.Debug("command", "name", os.Args[1])
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	base, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(base, 30*time.Second)
 	defer cancel()
 
 	switch os.Args[1] {
@@ -40,42 +50,42 @@ func main() {
 			os.Exit(1)
 		}
 	case "sync":
-		syncCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		syncCtx, cancel := context.WithTimeout(base, 10*time.Minute)
 		defer cancel()
 		if err := runSync(syncCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "sync:", err)
 			os.Exit(1)
 		}
 	case "derive":
-		deriveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		deriveCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
 		if err := runDerive(deriveCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "derive:", err)
 			os.Exit(1)
 		}
 	case "decide":
-		decideCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		decideCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
 		if err := runDecide(decideCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "decide:", err)
 			os.Exit(1)
 		}
 	case "schedule":
-		scheduleCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		scheduleCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
 		if err := runSchedule(scheduleCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "schedule:", err)
 			os.Exit(1)
 		}
 	case "competition":
-		compCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		compCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
 		if err := runCompetition(compCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "competition:", err)
 			os.Exit(1)
 		}
 	case "harness":
-		harnessCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		harnessCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
 		if err := runHarness(harnessCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "harness:", err)
@@ -87,35 +97,35 @@ func main() {
 			os.Exit(1)
 		}
 	case "verify":
-		verifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		verifyCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
 		if err := runVerify(verifyCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "verify:", err)
 			os.Exit(1)
 		}
 	case "report":
-		reportCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		reportCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
 		if err := runReport(reportCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "report:", err)
 			os.Exit(1)
 		}
 	case "submit":
-		submitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		submitCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
 		if err := runSubmit(submitCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "submit:", err)
 			os.Exit(1)
 		}
 	case "ledger":
-		ledgerCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ledgerCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
 		if err := runLedger(ledgerCtx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "ledger:", err)
 			os.Exit(1)
 		}
 	case "version":
-		fmt.Println("bountygrid dev")
+		fmt.Println(version)
 	default:
 		usage()
 		os.Exit(2)

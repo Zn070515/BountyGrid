@@ -261,8 +261,9 @@
 
 ## 11. 每阶段的质量门
 
-- `go test ./...` 通过。
-- `go vet ./...` 通过。
+- `go test -race -shuffle=on -count=1 ./...` 通过（Linux CI；Windows 本地 race 依赖 GCC 12+）。
+- benchmark smoke 与 fuzz seed corpus 通过。
+- `go vet ./...`、`CGO_ENABLED=0 go build ./...`、`govulncheck ./...` 通过。
 - 迁移可回滚。
 - 审计事件完整。
 - 敏感值扫描通过。

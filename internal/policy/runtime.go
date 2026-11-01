@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/timeutil"
 )
 
 // effectiveEligibility recomputes eligibility only when the program carries
@@ -50,7 +51,7 @@ func checkExecutionEnvironment(dc DecisionContext, now time.Time) (domain.Decisi
 		for _, w := range c.AllowedTimeWindows {
 			at := now
 			if w.TZ != "" {
-				if loc, err := time.LoadLocation(w.TZ); err == nil {
+				if loc, err := timeutil.LoadLocation(w.TZ); err == nil {
 					at = now.In(loc)
 				}
 			}

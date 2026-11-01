@@ -185,3 +185,15 @@ func TestEngineCompetitionSamples(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkEvaluate(b *testing.B) {
+	e := NewEngine()
+	p := scoringProgram("p1", 1000, 10000, domain.TypeBrandSRC)
+	comp := testCompetition(0.5, 0.5, 0.5, 0.7)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := e.Evaluate(Input{Program: p, Status: domain.StatusRunning, Competition: comp, Now: testNow}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

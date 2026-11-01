@@ -434,6 +434,24 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err := r.PutSubmission(ctx, secondReal); err == nil {
 		t.Fatal("second real submission for the same report must be rejected")
 	}
+	// Submission intent reservation is exclusive until released.
+	intentReport := reportID + "-intent"
+	if ok, err := r.ReserveSubmissionIntent(ctx, intentReport, "it-approval-intent", now); err != nil || !ok {
+		t.Fatalf("reserve intent = %v %v", ok, err)
+	}
+	if ok, err := r.ReserveSubmissionIntent(ctx, intentReport, "it-approval-intent-2", now); err != nil || ok {
+		t.Fatalf("second reserve = %v %v, want false", ok, err)
+	}
+	if err := r.ReleaseSubmissionIntent(ctx, intentReport); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := r.ReserveSubmissionIntent(ctx, intentReport, "it-approval-intent-3", now); err != nil || !ok {
+		t.Fatalf("reserve after release = %v %v", ok, err)
+	}
+	if err := r.ReleaseSubmissionIntent(ctx, intentReport); err != nil {
+		t.Fatal(err)
+	}
+
 	// RecordSubmission updates the submission and the draft status atomically.
 	report2 := report
 	report2.ID = reportID + "-2"

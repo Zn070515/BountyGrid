@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+
+	"github.com/Zn070515/BountyGrid/internal/timeutil"
 )
 
 func (e Evidence) Validate() error {
@@ -347,6 +349,11 @@ func (c Constraints) Validate() error {
 	for _, w := range c.AllowedTimeWindows {
 		if w.Start.IsZero() || w.End.IsZero() || !w.End.After(w.Start) {
 			return fmt.Errorf("constraints: invalid allowed time window")
+		}
+		if w.TZ != "" {
+			if _, err := timeutil.LoadLocation(w.TZ); err != nil {
+				return fmt.Errorf("constraints: invalid time window tz %q", w.TZ)
+			}
 		}
 	}
 	for _, ip := range c.AllowedEgressIPs {

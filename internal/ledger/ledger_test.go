@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -340,5 +341,21 @@ func TestSummarizeRejectsMixedPrograms(t *testing.T) {
 	entries[1].ProgramID = "p2"
 	if _, err := Summarize(entries); !errors.Is(err, ErrInvalidEntry) {
 		t.Fatalf("err = %v, want ErrInvalidEntry", err)
+	}
+}
+
+func BenchmarkSummarize(b *testing.B) {
+	entries := make([]domain.LedgerEntry, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		e := paidEntry(fmt.Sprintf("e-%d", i), 100)
+
+		e.ExternalRef = fmt.Sprintf("bank-%d", i)
+		entries = append(entries, e)
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := Summarize(entries); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

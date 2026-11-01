@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/collections"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
 
@@ -37,7 +38,7 @@ func (t *Tracker) Record(d Derivation) error {
 	if len(d.Inputs) == 0 {
 		return errors.New("state: derivation inputs are empty")
 	}
-	d.Inputs = uniqueFactIDs(d.Inputs)
+	d.Inputs = collections.Dedup(d.Inputs)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// Re-recording a state replaces its dependency mapping; the old inputs must
@@ -56,19 +57,6 @@ func (t *Tracker) Record(d Derivation) error {
 		t.byFact[f] = append(t.byFact[f], d.StateID)
 	}
 	return nil
-}
-
-func uniqueFactIDs(ids []domain.FactID) []domain.FactID {
-	out := make([]domain.FactID, 0, len(ids))
-	seen := make(map[domain.FactID]struct{}, len(ids))
-	for _, id := range ids {
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	return out
 }
 
 // InvalidateFact removes every state derived from factID and returns the
