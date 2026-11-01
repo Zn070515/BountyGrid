@@ -109,7 +109,18 @@ func buildModelPlan(opts modelOptions) (modelPlan, error) {
 	if !req.Escalation.Valid() {
 		return modelPlan{}, fmt.Errorf("model: invalid escalation reason %q", opts.Escalation)
 	}
-	r, err := model.New(model.Options{Providers: demoProviders()})
+	// These flags come from the operator running the CLI, not from a model or
+	// untrusted request. The CLI is a dry-run planning command, so it installs
+	// an explicit operator resolver; production callers must use a store-backed
+	// PolicyResolver instead of echoing request fields.
+	r, err := model.New(model.Options{
+		Providers: demoProviders(),
+		PolicyResolver: model.PolicyResolverFunc(func(_ context.Context, req model.ModelRequest) (model.ModelPolicy, error) {
+			return model.ModelPolicy{
+				Egress: req.ModelEgress, Redacted: req.Redacted, Escalation: req.Escalation,
+			}, nil
+		}),
+	})
 	if err != nil {
 		return modelPlan{}, err
 	}

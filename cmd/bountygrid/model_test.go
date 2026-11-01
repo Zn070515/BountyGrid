@@ -19,7 +19,7 @@ func TestBuildModelPlanSensitiveUsesLocalOnly(t *testing.T) {
 	}
 }
 
-func TestBuildModelPlanDefaultsLocalFirst(t *testing.T) {
+func TestBuildModelPlanRemoteAllowedWithoutEscalationStaysLocal(t *testing.T) {
 	plan, err := buildModelPlan(modelOptions{
 		Purpose: "PLAN", DataClass: "INTERNAL", MaxTokens: 1000, Budget: 100,
 		ModelEgress: "REMOTE_ALLOWED",
@@ -30,12 +30,13 @@ func TestBuildModelPlanDefaultsLocalFirst(t *testing.T) {
 	if len(plan.Candidates) == 0 || !plan.Candidates[0].Local {
 		t.Fatalf("PLAN candidates = %+v, want a local provider first", plan.Candidates)
 	}
+	// REMOTE_ALLOWED is a ceiling, not an escalation decision: without a
+	// reason the router must not treat a third-party provider as a fallback.
 	for _, c := range plan.Candidates {
 		if c.Provider == "remote-strong" {
-			return
+			t.Fatalf("REMOTE_ALLOWED without escalation included the remote provider: %+v", plan.Candidates)
 		}
 	}
-	t.Fatalf("REMOTE_ALLOWED plan omitted the remote provider: %+v", plan.Candidates)
 }
 
 func TestBuildModelPlanEscalationPrefersRemote(t *testing.T) {
