@@ -80,27 +80,28 @@ func (s Scope) Revision() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// FreshAt reports whether the account's observed capability may be used to
-// authorize execution now.
+// CapabilityFreshAt reports whether the account's observed capability may be
+// used to authorize execution now. A zero EvaluatedAt is unknown, not "fresh
+// because the account row was re-synced": fresh nickname/rank data must not
+// refresh an old capability evaluation.
 func (a Account) CapabilityFreshAt(now time.Time) bool {
-	at := a.capabilityObservedAt()
-	return freshAt(at, a.Capability.ValidUntil, AccountCapabilityMaxAge, now)
+	if a.Capability.EvaluatedAt.IsZero() {
+		return false
+	}
+	return freshAt(a.Capability.EvaluatedAt, a.Capability.ValidUntil, AccountCapabilityMaxAge, now)
 }
 
-// CapabilityFreshUntil is the absolute deadline for the account capability.
+// CapabilityFreshUntil is the absolute deadline for the account capability. A
+// zero time means the capability was never evaluated.
 func (a Account) CapabilityFreshUntil() time.Time {
-	deadline := a.capabilityObservedAt().Add(AccountCapabilityMaxAge)
+	if a.Capability.EvaluatedAt.IsZero() {
+		return time.Time{}
+	}
+	deadline := a.Capability.EvaluatedAt.Add(AccountCapabilityMaxAge)
 	if !a.Capability.ValidUntil.IsZero() && a.Capability.ValidUntil.Before(deadline) {
 		deadline = a.Capability.ValidUntil
 	}
 	return deadline
-}
-
-func (a Account) capabilityObservedAt() time.Time {
-	if !a.Capability.EvaluatedAt.IsZero() {
-		return a.Capability.EvaluatedAt
-	}
-	return a.ObservedAt
 }
 
 // PolicyFreshAt reports whether the program's automation/constraints snapshot

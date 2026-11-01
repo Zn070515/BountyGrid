@@ -20,6 +20,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
@@ -79,6 +80,25 @@ type Example struct {
 	Path    string           `json:"path,omitempty"`
 }
 
+// Source is the authority behind a rule. Operator guardrails may only tighten;
+// a platform-evidence rule may specifically authorize inside the platform's
+// conditional ceiling, but never override a hard DENY.
+type Source string
+
+const (
+	SourceOperator         Source = "operator"
+	SourcePlatformEvidence Source = "platform_evidence"
+)
+
+func (s Source) Valid() bool {
+	switch s {
+	case SourceOperator, SourcePlatformEvidence:
+		return true
+	default:
+		return false
+	}
+}
+
 type Rule struct {
 	ID string `json:"id"`
 	// Empty selector lists mean "any"; every non-empty selector must match.
@@ -88,6 +108,15 @@ type Rule struct {
 	Methods      []string           `json:"methods,omitempty"`
 	PathPrefixes []string           `json:"path_prefixes,omitempty"`
 	Decision     Decision           `json:"decision"`
+	// Source defaults to operator. Only platform_evidence rules with explicit
+	// evidence/freshness may relax a platform-conditional action.
+	Source Source `json:"source,omitempty"`
+	// Platform-evidence provenance. Required when Source is platform_evidence;
+	// forbidden for operator guardrails.
+	EvidenceRefs   []domain.EvidenceID `json:"evidence_refs,omitempty"`
+	ObservedAt     time.Time           `json:"observed_at,omitempty"`
+	ValidUntil     time.Time           `json:"valid_until,omitempty"`
+	PolicyRevision string              `json:"policy_revision,omitempty"`
 	// Justification is required for forbid/require_human rules and is shown in
 	// approval/rejection output.
 	Justification string    `json:"justification,omitempty"`
@@ -106,6 +135,8 @@ type Request struct {
 	Asset   string           `json:"asset,omitempty"`
 	Method  string           `json:"method,omitempty"`
 	Path    string           `json:"path,omitempty"`
+	// Now is used to expire platform-evidence rules. Zero means time.Now().
+	Now time.Time `json:"-"`
 }
 
 type MatchedRule struct {
@@ -118,6 +149,10 @@ type MatchedRule struct {
 type Result struct {
 	Decision Decision      `json:"decision,omitempty"`
 	Matched  []MatchedRule `json:"matched_rules,omitempty"`
+	// CanRelax is true only when a matched, unexpired platform-evidence allow
+	// rule specifically authorizes the request. Operator guardrails never set
+	// it, so they cannot raise a REQUIRE_HUMAN/DENY decision.
+	CanRelax bool `json:"can_relax,omitempty"`
 }
 
 func (r Result) IDs() []string {
@@ -187,6 +222,30 @@ func (s *RuleSet) Validate() error {
 			return fmt.Errorf("rules: rule %s: %w", r.ID, err)
 		}
 		r.Decision = decision
+		source := r.Source
+		if source == "" {
+			source = SourceOperator
+		}
+		if !source.Valid() {
+			return fmt.Errorf("rules: rule %s: invalid source %q", r.ID, r.Source)
+		}
+		r.Source = source
+		if source == SourcePlatformEvidence {
+			if len(r.EvidenceRefs) == 0 {
+				return fmt.Errorf("rules: rule %s: platform_evidence requires evidence_refs", r.ID)
+			}
+			if r.ObservedAt.IsZero() {
+				return fmt.Errorf("rules: rule %s: platform_evidence requires observed_at", r.ID)
+			}
+			if r.ValidUntil.IsZero() || !r.ValidUntil.After(r.ObservedAt) {
+				return fmt.Errorf("rules: rule %s: platform_evidence requires valid_until after observed_at", r.ID)
+			}
+			if strings.TrimSpace(r.PolicyRevision) == "" {
+				return fmt.Errorf("rules: rule %s: platform_evidence requires policy_revision", r.ID)
+			}
+		} else if len(r.EvidenceRefs) > 0 || !r.ObservedAt.IsZero() || !r.ValidUntil.IsZero() || r.PolicyRevision != "" {
+			return fmt.Errorf("rules: rule %s: operator guardrails must not carry platform-evidence provenance", r.ID)
+		}
 		if r.Decision != DecisionAllow && strings.TrimSpace(r.Justification) == "" {
 			return fmt.Errorf("rules: rule %s: justification is required for %s", r.ID, r.Decision)
 		}
@@ -236,10 +295,17 @@ func (s *RuleSet) Validate() error {
 		base := *r
 		base.Match = nil
 		base.NotMatch = nil
+		// Platform-evidence examples are checked at the rule's observation time,
+		// not at load time, so a rule that is valid when written can still be
+		// loaded after its valid_until passes (evaluation will expire it).
+		exampleNow := time.Time{}
+		if source == SourcePlatformEvidence {
+			exampleNow = r.ObservedAt
+		}
 		for _, ex := range r.Match {
 			req, err := normalizeRequest(Request{
 				Action: ex.Action, Program: ex.Program, Asset: ex.Asset,
-				Method: ex.Method, Path: ex.Path,
+				Method: ex.Method, Path: ex.Path, Now: exampleNow,
 			})
 			if err != nil {
 				return fmt.Errorf("rules: rule %s: match example asset: %w", r.ID, err)
@@ -251,7 +317,7 @@ func (s *RuleSet) Validate() error {
 		for _, ex := range r.NotMatch {
 			req, err := normalizeRequest(Request{
 				Action: ex.Action, Program: ex.Program, Asset: ex.Asset,
-				Method: ex.Method, Path: ex.Path,
+				Method: ex.Method, Path: ex.Path, Now: exampleNow,
 			})
 			if err != nil {
 				return fmt.Errorf("rules: rule %s: not_match example asset: %w", r.ID, err)
@@ -284,6 +350,9 @@ func (s *RuleSet) Evaluate(req Request) (Result, error) {
 			ID: r.ID, Decision: r.Decision, Justification: r.Justification,
 			MatchedOn: matchedOn,
 		})
+		if r.Decision == DecisionAllow && r.Source == SourcePlatformEvidence {
+			out.CanRelax = true
+		}
 		if r.Decision.rank() > out.Decision.rank() {
 			out.Decision = r.Decision
 		}
@@ -312,12 +381,17 @@ type normalizedRequest struct {
 	host    string
 	path    string
 	method  string
+	now     time.Time
 }
 
 func normalizeRequest(req Request) (normalizedRequest, error) {
 	out := normalizedRequest{
 		action:  req.Action,
 		program: domain.ProgramID(strings.TrimSpace(string(req.Program))),
+		now:     req.Now,
+	}
+	if out.now.IsZero() {
+		out.now = time.Now().UTC()
 	}
 	if out.action != "" && !out.action.Valid() {
 		return out, fmt.Errorf("invalid action %q", out.action)
@@ -349,6 +423,15 @@ func normalizeRequest(req Request) (normalizedRequest, error) {
 
 func (r Rule) matches(req normalizedRequest) (bool, []string) {
 	var matchedOn []string
+
+	if r.Source == SourcePlatformEvidence {
+		if r.ValidUntil.IsZero() || !r.ValidUntil.After(req.now) {
+			return false, nil
+		}
+		if r.ObservedAt.After(req.now.Add(time.Minute)) {
+			return false, nil
+		}
+	}
 
 	if len(r.Actions) > 0 {
 		found := false
@@ -405,7 +488,7 @@ func (r Rule) matches(req normalizedRequest) (bool, []string) {
 	if len(r.PathPrefixes) > 0 {
 		found := false
 		for _, p := range r.PathPrefixes {
-			if req.path != "" && strings.HasPrefix(req.path, p) {
+			if req.path != "" && PathWithin(p, req.path) {
 				found = true
 				matchedOn = append(matchedOn, "path_prefix="+p)
 				break
@@ -480,9 +563,34 @@ func normalizePathPrefix(raw string) (string, error) {
 	if strings.ContainsAny(p, "?#") {
 		return "", fmt.Errorf("path prefix %q must not contain a query or fragment", raw)
 	}
-	if decoded, err := url.PathUnescape(p); err == nil {
-		p = decoded
+	return CanonicalPath(p)
+}
+
+// CanonicalPath normalizes a URL path for policy matching. It percent-decodes
+// once, rejects encoded separators that remain after decoding (for example a
+// double-encoded %252f), treats backslashes as separators, forces a leading
+// slash, and removes dot segments with path.Clean.
+func CanonicalPath(raw string) (string, error) {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return "/", nil
 	}
+	if strings.ContainsAny(p, "?#") {
+		return "", fmt.Errorf("path %q must not contain a query or fragment", raw)
+	}
+	decoded, err := url.PathUnescape(p)
+	if err != nil {
+		return "", fmt.Errorf("path %q: invalid escape: %w", raw, err)
+	}
+	p = decoded
+	lower := strings.ToLower(p)
+	if strings.Contains(lower, "%2f") || strings.Contains(lower, "%2e") || strings.Contains(lower, "%5c") {
+		return "", fmt.Errorf("path %q contains an encoded separator or dot segment", raw)
+	}
+	if strings.ContainsAny(p, "?#") {
+		return "", fmt.Errorf("path %q must not contain a query or fragment", raw)
+	}
+	p = strings.ReplaceAll(p, "\\", "/")
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
@@ -494,6 +602,24 @@ func normalizePathPrefix(raw string) (string, error) {
 		p = "/" + p
 	}
 	return p, nil
+}
+
+// PathWithin reports whether path is prefix itself or a descendant of prefix.
+// It is segment-aware: /api matches /api and /api/users, never /apix or
+// /api-admin. Both arguments are canonicalized first.
+func PathWithin(prefix, path string) bool {
+	pre, err := CanonicalPath(prefix)
+	if err != nil {
+		return false
+	}
+	got, err := CanonicalPath(path)
+	if err != nil {
+		return false
+	}
+	if pre == "/" {
+		return true
+	}
+	return got == pre || strings.HasPrefix(got, pre+"/")
 }
 
 func parseAsset(raw string) (string, string, error) {
@@ -513,19 +639,9 @@ func parseAsset(raw string) (string, string, error) {
 	if host == "" {
 		return "", "", fmt.Errorf("asset %q has no host", raw)
 	}
-	p := u.EscapedPath()
-	if decoded, err := url.PathUnescape(p); err == nil {
-		p = decoded
-	}
-	if p == "" {
-		p = "/"
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	p = path.Clean(p)
-	if p == "." {
-		p = "/"
+	p, err := CanonicalPath(u.EscapedPath())
+	if err != nil {
+		return "", "", fmt.Errorf("asset %q: %w", raw, err)
 	}
 	return host, p, nil
 }

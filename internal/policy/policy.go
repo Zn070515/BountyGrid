@@ -336,6 +336,7 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 			Program: dc.Request.ProgramID,
 			Asset:   assetTarget,
 			Method:  dc.Request.Method,
+			Now:     now,
 		})
 		if rerr != nil {
 			return decide(domain.DecisionDeny, "RULE_REQUEST_INVALID"), nil
@@ -352,7 +353,10 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 				base = domain.DecisionRequireHuman
 			}
 		case rules.DecisionAllow:
-			if base != domain.DecisionDeny && overridableByAutomation(dc.Request.Action) {
+			// Operator guardrails may only keep an existing ALLOW. Only an
+			// unexpired platform-evidence allow rule may specifically relax a
+			// platform-conditional action; it still cannot override a hard DENY.
+			if rr.CanRelax && base != domain.DecisionDeny && overridableByAutomation(dc.Request.Action) {
 				base = domain.DecisionAllow
 			}
 		}

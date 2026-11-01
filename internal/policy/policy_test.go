@@ -1016,14 +1016,36 @@ func ruleSet(t *testing.T, decision, justification string) *rules.RuleSet {
 	return rs
 }
 
-func TestRulesCanLoosenConditionalAutomation(t *testing.T) {
-	e := NewEngineWithRules(ruleSet(t, "allow", "rule explicitly permits read"))
+func platformRuleSet(t *testing.T) *rules.RuleSet {
+	t.Helper()
+	rs, err := rules.Parse([]byte(`{"rules":[{
+		"id":"platform-rule",
+		"actions":["ACTIVE_HTTP"],
+		"hosts":["api.example.com"],
+		"methods":["GET"],
+		"decision":"allow",
+		"source":"platform_evidence",
+		"evidence_refs":["ev-1"],
+		"observed_at":"2026-10-31T00:00:00Z",
+		"valid_until":"2026-11-01T00:00:00Z",
+		"policy_revision":"sha256:rev",
+		"justification":"platform evidence explicitly permits this endpoint",
+		"match":[{"action":"ACTIVE_HTTP","asset":"https://api.example.com/v1/items","method":"GET"}]
+	}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rs
+}
+
+func TestOperatorRulesCannotLoosenConditionalAutomation(t *testing.T) {
+	e := NewEngineWithRules(ruleSet(t, "allow", "operator guardrail"))
 	d, err := e.Decide(context.Background(), executionRuleContext(domain.ActionActiveHTTP, domain.CapConditional))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Decision != domain.DecisionAllow {
-		t.Fatalf("decision = %s %v", d.Decision, d.Reasons)
+	if d.Decision != domain.DecisionRequireHuman {
+		t.Fatalf("operator allow loosened CONDITIONAL: %s %v", d.Decision, d.Reasons)
 	}
 	if len(d.RuleIDs) != 1 || d.RuleIDs[0] != "test-rule" {
 		t.Fatalf("rule ids = %v", d.RuleIDs)
@@ -1031,8 +1053,59 @@ func TestRulesCanLoosenConditionalAutomation(t *testing.T) {
 	if !containsString(d.Reasons, "RULE_ALLOW:test-rule") {
 		t.Fatalf("reasons = %v", d.Reasons)
 	}
-	if d.RuleSetFingerprint == "" || d.RuleSetFingerprint != ruleSet(t, "allow", "rule explicitly permits read").Fingerprint() {
-		t.Fatalf("rule set fingerprint = %q", d.RuleSetFingerprint)
+}
+
+func TestPlatformEvidenceRuleCanLoosenConditionalAutomation(t *testing.T) {
+	e := NewEngineWithRules(platformRuleSet(t))
+	d, err := e.Decide(context.Background(), executionRuleContext(domain.ActionActiveHTTP, domain.CapConditional))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow {
+		t.Fatalf("platform evidence did not relax CONDITIONAL: %s %v", d.Decision, d.Reasons)
+	}
+	if len(d.RuleIDs) != 1 || d.RuleIDs[0] != "platform-rule" {
+		t.Fatalf("rule ids = %v", d.RuleIDs)
+	}
+}
+
+func TestOperatorAllowKeepsExistingAllow(t *testing.T) {
+	e := NewEngineWithRules(ruleSet(t, "allow", "operator guardrail"))
+	d, err := e.Decide(context.Background(), executionRuleContext(domain.ActionActiveHTTP, domain.CapAllowed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow {
+		t.Fatalf("operator allow changed an existing ALLOW: %s %v", d.Decision, d.Reasons)
+	}
+}
+
+func TestPlatformEvidenceCannotOverrideHardDeny(t *testing.T) {
+	rs, err := rules.Parse([]byte(`{"rules":[{
+		"id":"platform-dos",
+		"actions":["DOS"],
+		"hosts":["api.example.com"],
+		"methods":["GET"],
+		"decision":"allow",
+		"source":"platform_evidence",
+		"evidence_refs":["ev-1"],
+		"observed_at":"2026-10-31T00:00:00Z",
+		"valid_until":"2026-11-01T00:00:00Z",
+		"policy_revision":"sha256:rev",
+		"justification":"platform evidence for this endpoint",
+		"match":[{"action":"DOS","asset":"https://api.example.com/v1/items","method":"GET"}]
+	}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc := executionRuleContext(domain.ActionDoS, domain.CapAllowed)
+	dc.Program.Automation.DoS = domain.CapAllowed
+	d, err := NewEngineWithRules(rs).Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny {
+		t.Fatalf("platform evidence loosened a hard deny: %s %v", d.Decision, d.Reasons)
 	}
 }
 
@@ -1103,4 +1176,17 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestZeroCapabilityEvaluatedAtIsStale(t *testing.T) {
+	dc := executionRuleContext(domain.ActionActiveHTTP, domain.CapAllowed)
+	dc.Account.ObservedAt = testNow
+	dc.Account.Capability.EvaluatedAt = time.Time{}
+	d, err := NewEngine().Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireMoreEvidence || len(d.Reasons) == 0 || d.Reasons[0] != "STALE_ACCOUNT_CAPABILITY" {
+		t.Fatalf("decision = %s %v", d.Decision, d.Reasons)
+	}
 }

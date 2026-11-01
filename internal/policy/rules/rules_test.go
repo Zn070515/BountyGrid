@@ -3,9 +3,12 @@ package rules
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
+
+var testNow = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 
 const allowRuleSet = `{
   "version": "test-v1",
@@ -298,5 +301,118 @@ func TestExampleRuleFileLoads(t *testing.T) {
 	}
 	if rs.Version == "" || len(rs.Rules) == 0 {
 		t.Fatalf("example = %+v", rs)
+	}
+}
+
+func platformRuleJSON(validUntil string) string {
+	return `{"rules":[{
+		"id":"platform-allow",
+		"actions":["ACTIVE_HTTP"],
+		"hosts":["api.example.com"],
+		"methods":["GET"],
+		"decision":"allow",
+		"source":"platform_evidence",
+		"evidence_refs":["ev-1"],
+		"observed_at":"2026-11-01T00:00:00Z",
+		"valid_until":"` + validUntil + `",
+		"policy_revision":"sha256:rev",
+		"justification":"platform evidence explicitly permits this endpoint",
+		"match":[{"action":"ACTIVE_HTTP","asset":"https://api.example.com/v1","method":"GET"}]
+	}]}`
+}
+
+func TestOperatorAllowCannotRelax(t *testing.T) {
+	rs := mustParse(t, allowRuleSet)
+	res, err := rs.Evaluate(Request{
+		Action: domain.ActionActiveHTTP, Asset: "https://api.example.com/v1", Method: "GET", Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision != DecisionAllow || res.CanRelax {
+		t.Fatalf("operator allow = %+v", res)
+	}
+}
+
+func TestPlatformEvidenceAllowCanRelax(t *testing.T) {
+	rs := mustParse(t, platformRuleJSON("2026-11-02T00:00:00Z"))
+	res, err := rs.Evaluate(Request{
+		Action: domain.ActionActiveHTTP, Asset: "https://api.example.com/v1", Method: "GET", Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision != DecisionAllow || !res.CanRelax {
+		t.Fatalf("platform allow = %+v", res)
+	}
+}
+
+func TestExpiredPlatformEvidenceDoesNotMatch(t *testing.T) {
+	rs := mustParse(t, platformRuleJSON("2026-11-01T00:30:00Z"))
+	res, err := rs.Evaluate(Request{
+		Action: domain.ActionActiveHTTP, Asset: "https://api.example.com/v1", Method: "GET", Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision != DecisionNone || res.CanRelax {
+		t.Fatalf("expired platform rule = %+v", res)
+	}
+}
+
+func TestPlatformEvidenceRequiresProvenance(t *testing.T) {
+	cases := []string{
+		`{"rules":[{"id":"p","actions":["ACTIVE_HTTP"],"decision":"allow","source":"platform_evidence","justification":"x"}]}`,
+		`{"rules":[{"id":"p","actions":["ACTIVE_HTTP"],"decision":"allow","source":"platform_evidence","evidence_refs":["ev"],"justification":"x"}]}`,
+		`{"rules":[{"id":"p","actions":["ACTIVE_HTTP"],"decision":"allow","source":"platform_evidence","evidence_refs":["ev"],"observed_at":"2026-11-01T00:00:00Z","justification":"x"}]}`,
+		`{"rules":[{"id":"p","actions":["ACTIVE_HTTP"],"decision":"allow","source":"platform_evidence","evidence_refs":["ev"],"observed_at":"2026-11-01T00:00:00Z","valid_until":"2026-11-02T00:00:00Z","justification":"x"}]}`,
+	}
+	for _, raw := range cases {
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Fatalf("platform rule without provenance loaded: %s", raw)
+		}
+	}
+}
+
+func TestOperatorRuleRejectsPlatformProvenance(t *testing.T) {
+	raw := `{"rules":[{"id":"o","actions":["ACTIVE_HTTP"],"decision":"allow","evidence_refs":["ev"],"justification":"x"}]}`
+	if _, err := Parse([]byte(raw)); err == nil || !strings.Contains(err.Error(), "operator") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPathWithinSegmentBoundaries(t *testing.T) {
+	cases := []struct {
+		prefix, path string
+		want         bool
+	}{
+		{"/api", "/api", true},
+		{"/api", "/api/users", true},
+		{"/api", "/api/", true},
+		{"/api", "/apix", false},
+		{"/api", "/api2", false},
+		{"/api", "/api-admin", false},
+		{"/api", "/api/%2e%2e/admin", false},
+		{"/api", "/api%2f..%2fadmin", false},
+		{"/api", "/api\\..\\admin", false},
+		{"/", "/anything", true},
+	}
+	for _, c := range cases {
+		if got := PathWithin(c.prefix, c.path); got != c.want {
+			t.Fatalf("PathWithin(%q,%q) = %v, want %v", c.prefix, c.path, got, c.want)
+		}
+	}
+}
+
+func TestCanonicalPathRejectsInvalidEscapes(t *testing.T) {
+	if _, err := CanonicalPath("/api/%zz"); err == nil {
+		t.Fatal("invalid escape should fail")
+	}
+	if _, err := CanonicalPath("/api/%252e%252e/admin"); err == nil {
+		t.Fatal("double-encoded dot segment should fail")
+	}
+	got, err := CanonicalPath("/api/../admin")
+	if err != nil || got != "/admin" {
+		t.Fatalf("clean = %q, %v", got, err)
 	}
 }
