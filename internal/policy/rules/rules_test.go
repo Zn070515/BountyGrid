@@ -302,6 +302,13 @@ func TestExampleRuleFileLoads(t *testing.T) {
 	if rs.Version == "" || len(rs.Rules) == 0 {
 		t.Fatalf("example = %+v", rs)
 	}
+	platform, err := LoadFile("../../../rules/platform-evidence.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(platform.Rules) != 1 || platform.Rules[0].Source != SourcePlatformEvidence {
+		t.Fatalf("platform example = %+v", platform)
+	}
 }
 
 func platformRuleJSON(validUntil string) string {

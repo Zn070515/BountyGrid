@@ -74,6 +74,9 @@ func TestExecutePolicyCheckAllow(t *testing.T) {
 	if out.Decision != "allow" || len(out.Matched) != 1 || out.Matched[0].ID != "allow-read" {
 		t.Fatalf("out = %+v", out)
 	}
+	if out.CanRelax || out.Matched[0].Source != "operator" {
+		t.Fatalf("operator rule exposed relax authority: %+v", out)
+	}
 	if out.Version != "cli-v1" || out.Fingerprint == "" {
 		t.Fatalf("metadata = %+v", out)
 	}
