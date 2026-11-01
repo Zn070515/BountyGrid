@@ -45,6 +45,7 @@ func TestRepoRoundTrip(t *testing.T) {
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM ledger_entries WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM submissions WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM report_drafts WHERE program_id=$1`, progID)
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM verifications WHERE finding_id IN (SELECT id FROM findings WHERE program_id=$1)`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM findings WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM research_tasks WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM competition_snapshots WHERE id=$1`, "it-comp-"+suffix)
@@ -367,6 +368,19 @@ func TestRepoRoundTrip(t *testing.T) {
 	finding := domain.Finding{ID: findingID, TaskID: taskID, ProgramID: progID, Title: "it", Status: "CANDIDATE", CreatedAt: now}
 	if err := r.PutFinding(ctx, finding); err != nil {
 		t.Fatal(err)
+	}
+	verification := domain.Verification{
+		ID: "it-ver-" + suffix, FindingID: findingID, Verdict: domain.VerdictNeedsEvidence,
+		Reproduced: true, InScope: true, ImpactVerified: false, DataMinimized: true,
+		DuplicateRisk: 0.2, VerifiedBy: "rule/verify@test", VerifiedAt: now,
+		Reasons: []string{"IMPACT_NOT_VERIFIED"}, Evidence: []domain.EvidenceID{evID},
+	}
+	if err := r.PutVerification(ctx, verification); err != nil {
+		t.Fatal(err)
+	}
+	gotVerification, err := r.GetVerification(ctx, verification.ID)
+	if err != nil || gotVerification.FindingID != findingID || gotVerification.Verdict != verification.Verdict {
+		t.Fatalf("verification roundtrip = %+v %v", gotVerification, err)
 	}
 	report := domain.ReportDraft{ID: reportID, FindingID: findingID, ProgramID: progID, Status: "DRAFT", CreatedAt: now}
 	if err := r.PutReportDraft(ctx, report); err != nil {

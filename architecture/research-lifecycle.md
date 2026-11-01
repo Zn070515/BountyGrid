@@ -75,12 +75,33 @@ REJECTED             拒绝
 ### 3.3 验证器
 
 ```go
+type Input struct {
+    Finding  domain.Finding
+    Program  domain.Program
+    Decision *domain.ActionDecision
+    Reproduced bool
+    ReproductionEvidence []domain.EvidenceID
+    ImpactVerified bool
+    ImpactEvidence []domain.EvidenceID
+    DataMinimized *bool // nil = unknown, false = violation
+    DuplicateChecked bool
+    DuplicateRisk float64
+    PubliclyKnown bool
+    AIAssisted bool
+    HumanVerified bool
+    HumanVerificationRef string
+    VerifiedBy string
+    Now time.Time
+}
+
 type Verifier interface {
-    Verify(ctx context.Context, f domain.Finding) (domain.Verification, error)
+    Verify(ctx context.Context, in Input) (domain.Verification, error)
 }
 ```
 
 验证器可以是规则 + 人工，不得由模型单独判定 `VERIFIED`。
+
+**当前实现（2026-11-01）**：`internal/verify.RuleVerifier` 实现规则验证，接受 `Finding + Program + ActionDecision + 复现/影响证据 + 数据最小化 + 重复风险 + AI 披露`。判定顺序：Finding 完整性 → Program 一致性 → Scope（`ResolveAsset` + `CheckAsset`，conditional 为 `NEEDS_MORE_EVIDENCE`）→ 授权决策（必须 ALLOW、Context 完整、动作属于 scope 执行类）→ 数据最小化/公开已知 → 重复检查 → AI 人工验证 → 复现/影响证据。`VERIFIED` 必须同时满足 `Reproduced/InScope/ImpactVerified/DataMinimized` 且有 Evidence；模型无法单独产生。`bountygrid verify -file <json> [-persist]` 从 PostgreSQL 加载 Program/Decision，写 `verifications`。
 
 ## 4. ReportDraft
 

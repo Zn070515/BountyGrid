@@ -491,6 +491,38 @@ func (d ActionDecision) Validate() error {
 	return nil
 }
 
+func (v Verification) Validate() error {
+	if v.ID == "" || v.FindingID == "" {
+		return fmt.Errorf("verification: id/finding_id required")
+	}
+	if !v.Verdict.Valid() {
+		return fmt.Errorf("verification %s: invalid verdict %q", v.ID, v.Verdict)
+	}
+	if v.VerifiedBy == "" {
+		return fmt.Errorf("verification %s: verified_by is empty", v.ID)
+	}
+	if v.VerifiedAt.IsZero() {
+		return fmt.Errorf("verification %s: verified_at is zero", v.ID)
+	}
+	if v.DuplicateRisk < 0 || v.DuplicateRisk > 1 {
+		return fmt.Errorf("verification %s: duplicate_risk out of range", v.ID)
+	}
+	if v.Verdict == VerdictOutOfScope && v.InScope {
+		return fmt.Errorf("verification %s: OUT_OF_SCOPE cannot be in_scope", v.ID)
+	}
+	if v.Verdict == VerdictVerified {
+		// VERIFIED is executable downstream: every dimension must be present and
+		// evidence-backed. Rules may set this; a model alone cannot.
+		if !v.Reproduced || !v.InScope || !v.ImpactVerified || !v.DataMinimized {
+			return fmt.Errorf("verification %s: VERIFIED requires reproduced/in_scope/impact/data_minimized", v.ID)
+		}
+		if len(v.Evidence) == 0 {
+			return fmt.Errorf("verification %s: VERIFIED requires evidence", v.ID)
+		}
+	}
+	return nil
+}
+
 func (s Submission) Validate() error {
 	if s.ID == "" || s.ReportID == "" || s.ProgramID == "" {
 		return fmt.Errorf("submission: id/report_id/program_id required")
