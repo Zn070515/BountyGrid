@@ -79,6 +79,48 @@ func (s *SafeSink) Resume(path string) error {
 	return nil
 }
 
+// ResumeValidated is Resume with integrity checks: every existing event must
+// validate, its stored hash must match a recomputation, and the whole file must
+// reduce (unique IDs, one trace ID, no cycles) before any event is accepted as
+// a valid parent. Prefer it over Resume for a file that may have been edited or
+// partially written.
+func (s *SafeSink) ResumeValidated(path string) error {
+	if s == nil {
+		return ErrWriterMissing
+	}
+	events, err := Read(path)
+	if err != nil {
+		return err
+	}
+	for _, e := range events {
+		if err := e.Validate(); err != nil {
+			return err
+		}
+		if e.Hash == "" {
+			return fmt.Errorf("trace: %s: event %q has no hash", path, e.ID)
+		}
+		want, err := ComputeHash(e)
+		if err != nil {
+			return err
+		}
+		if want != e.Hash {
+			return fmt.Errorf("trace: %s: event %q hash mismatch", path, e.ID)
+		}
+	}
+	if _, err := Reduce(events); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.seen == nil {
+		s.seen = make(map[string]struct{})
+	}
+	for _, e := range events {
+		s.seen[e.ID] = struct{}{}
+	}
+	return nil
+}
+
 // Append validates and redacts-scans e, checks parent binding, then appends it
 // through the underlying Writer. The event ID is recorded only after a
 // successful append, so a failed write does not make the event a valid parent.
