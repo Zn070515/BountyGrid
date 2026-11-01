@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 )
@@ -57,7 +55,9 @@ func runRevoke(ctx context.Context, args []string) error {
 	defer pool.Close()
 	repo := postgres.NewRepo(pool)
 
-	epoch, err := repo.BumpRevocationEpoch(ctx, domain.ProgramID(opts.Program))
+	// The epoch bump and the audit event commit together; if the audit payload
+	// is rejected, the revocation is rolled back too.
+	epoch, err := repo.RevokeProgramWithAudit(ctx, domain.ProgramID(opts.Program), opts.Reason, time.Now().UTC())
 	if err != nil {
 		return err
 	}
@@ -72,23 +72,5 @@ func runRevoke(ctx context.Context, args []string) error {
 		return err
 	}
 
-	payload, err := json.Marshal(struct {
-		Epoch  uint64 `json:"epoch"`
-		Reason string `json:"reason,omitempty"`
-	}{Epoch: epoch, Reason: opts.Reason})
-	if err != nil {
-		return err
-	}
-	if _, err := postgres.NewAuditStore(pool).Append(ctx, audit.Event{
-		Type:       "grant.revoked",
-		EntityType: "program",
-		EntityID:   opts.Program,
-		ActorKind:  string(domain.ActorHuman),
-		ActorID:    "cli",
-		Payload:    payload,
-		RecordedAt: time.Now().UTC(),
-	}); err != nil {
-		return fmt.Errorf("revoke: epoch bumped to %d but audit failed: %w", epoch, err)
-	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy/rules"
+	"github.com/Zn070515/BountyGrid/internal/redact"
 )
 
 var testNow = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
@@ -61,7 +62,34 @@ func (f fakeStore) GetEvidence(_ context.Context, id domain.EvidenceID) (domain.
 	return ev, nil
 }
 
-const testEvidenceHash = "sha256:policy-content"
+const testPermissionLine = "PERMISSION program=p1 action=ACTIVE_HTTP hosts=api.example.com methods=GET paths=/v1"
+
+const testPolicyContent = testPermissionLine + "\n"
+
+var testEvidenceHash = redact.Hash([]byte(testPolicyContent))
+
+type fakeContents struct {
+	content map[domain.EvidenceID]string
+	err     error
+}
+
+func (f fakeContents) ReadContent(_ context.Context, ev domain.Evidence) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	content, ok := f.content[ev.ID]
+	if !ok {
+		return "", domain.ErrNotFound
+	}
+	return content, nil
+}
+
+func validContents() fakeContents {
+	return fakeContents{content: map[domain.EvidenceID]string{
+		"ev-1": testPolicyContent,
+		"ev-2": testPolicyContent,
+	}}
+}
 
 func testEvidence(id domain.EvidenceID, sourceType domain.SourceType) domain.Evidence {
 	return domain.Evidence{
@@ -81,6 +109,7 @@ func testPermission(program domain.Program) PermissionFact {
 	return PermissionFact{
 		EvidenceID:          "ev-1",
 		EvidenceContentHash: testEvidenceHash,
+		EvidenceQuote:       testPermissionLine,
 		Platform:            program.Platform,
 		ProgramID:           program.ID,
 		Action:              domain.ActionActiveHTTP,
@@ -99,7 +128,7 @@ func buildPolicy(t *testing.T, program domain.Program, permissions ...Permission
 	if len(permissions) == 0 {
 		permissions = []PermissionFact{testPermission(program)}
 	}
-	pp, err := BuildPlatformPolicy(context.Background(), program, permissions, validStore(), testNow)
+	pp, err := BuildPlatformPolicy(context.Background(), program, permissions, validStore(), validContents(), testNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +274,7 @@ func TestVerifyPlatformEvidenceAcceptsPolicyAndAnnouncement(t *testing.T) {
 			permission := testPermission(p)
 			permission.EvidenceID = c.evID
 			permission.ObservedAt = c.observed
-			if err := VerifyPlatformEvidence(context.Background(), permission, p, validStore(), testNow); err != nil {
+			if err := VerifyPlatformEvidence(context.Background(), permission, p, validStore(), validContents(), testNow); err != nil {
 				t.Fatalf("valid permission rejected: %v", err)
 			}
 		})
@@ -391,7 +420,7 @@ func TestVerifyPlatformEvidenceRejects(t *testing.T) {
 			if store.evidence == nil && store.err == nil {
 				store = validStore()
 			}
-			err := VerifyPlatformEvidence(context.Background(), permission, p, store, testNow)
+			err := VerifyPlatformEvidence(context.Background(), permission, p, store, validContents(), testNow)
 			if err == nil || !c.check(err) {
 				t.Fatalf("err = %v", err)
 			}
@@ -408,7 +437,7 @@ func TestVerifyPlatformEvidenceRejectsNonAuthorizingSourceTypes(t *testing.T) {
 			store := fakeStore{evidence: map[domain.EvidenceID]domain.Evidence{
 				"ev-1": testEvidence("ev-1", sourceType),
 			}}
-			err := VerifyPlatformEvidence(context.Background(), testPermission(p), p, store, testNow)
+			err := VerifyPlatformEvidence(context.Background(), testPermission(p), p, store, validContents(), testNow)
 			if !reasonIs(ReasonEvidenceSourceTypeNotAuthorizing)(err) {
 				t.Fatalf("%s evidence accepted: %v", sourceType, err)
 			}
@@ -419,7 +448,7 @@ func TestVerifyPlatformEvidenceRejectsNonAuthorizingSourceTypes(t *testing.T) {
 func TestVerifyPlatformEvidenceFailsClosedOnMissingStoreOrStalePolicy(t *testing.T) {
 	p := testProgram()
 	permission := testPermission(p)
-	if err := VerifyPlatformEvidence(context.Background(), permission, p, nil, testNow); !reasonIs(ReasonEvidenceStoreMissing)(err) {
+	if err := VerifyPlatformEvidence(context.Background(), permission, p, nil, validContents(), testNow); !reasonIs(ReasonEvidenceStoreMissing)(err) {
 		t.Fatalf("nil store err = %v", err)
 	}
 
@@ -428,7 +457,7 @@ func TestVerifyPlatformEvidenceFailsClosedOnMissingStoreOrStalePolicy(t *testing
 	// The permission revision must match the stale program for this to reach
 	// the freshness check.
 	permission = testPermission(stale)
-	err := VerifyPlatformEvidence(context.Background(), permission, stale, validStore(), testNow)
+	err := VerifyPlatformEvidence(context.Background(), permission, stale, validStore(), validContents(), testNow)
 	var fe *FreshnessError
 	if !errors.As(err, &fe) || fe.Reason != ReasonStaleAutomationPolicy {
 		t.Fatalf("stale policy err = %v", err)
@@ -438,7 +467,7 @@ func TestVerifyPlatformEvidenceFailsClosedOnMissingStoreOrStalePolicy(t *testing
 func TestVerifyPlatformEvidenceSurfacesStoreErrors(t *testing.T) {
 	p := testProgram()
 	infra := errors.New("database unavailable")
-	err := VerifyPlatformEvidence(context.Background(), testPermission(p), p, fakeStore{err: infra}, testNow)
+	err := VerifyPlatformEvidence(context.Background(), testPermission(p), p, fakeStore{err: infra}, validContents(), testNow)
 	var rejected *RejectedError
 	if !errors.Is(err, infra) || errors.As(err, &rejected) {
 		t.Fatalf("infrastructure error was misclassified: %v", err)
@@ -448,7 +477,7 @@ func TestVerifyPlatformEvidenceSurfacesStoreErrors(t *testing.T) {
 func TestBuildPlatformPolicyRejectsFakeEvidence(t *testing.T) {
 	p := testProgram()
 	_, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{testPermission(p)},
-		fakeStore{evidence: map[domain.EvidenceID]domain.Evidence{}}, testNow)
+		fakeStore{evidence: map[domain.EvidenceID]domain.Evidence{}}, validContents(), testNow)
 	if !reasonIs(ReasonEvidenceMissing)(err) {
 		t.Fatalf("fake evidence accepted: %v", err)
 	}
@@ -516,7 +545,7 @@ func TestPlatformPolicyRequiresExplicitHostsAndMethods(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			permission := testPermission(p)
 			c.mutate(&permission)
-			if _, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{permission}, validStore(), testNow); err == nil {
+			if _, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{permission}, validStore(), validContents(), testNow); err == nil {
 				t.Fatal("permission without an explicit allow shape was accepted")
 			}
 		})
@@ -542,7 +571,7 @@ func TestPlatformPolicyFingerprintCoversProvenance(t *testing.T) {
 
 	permission = testPermission(p)
 	permission.EvidenceContentHash = "sha256:other"
-	if _, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{permission}, validStore(), testNow); err == nil {
+	if _, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{permission}, validStore(), validContents(), testNow); err == nil {
 		t.Fatal("a mismatched content hash was accepted")
 	}
 
@@ -555,7 +584,7 @@ func TestPlatformPolicyFingerprintCoversProvenance(t *testing.T) {
 
 	permission = testPermission(p)
 	permission.PolicyRevision = "sha256:other"
-	if _, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{permission}, validStore(), testNow); err == nil {
+	if _, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{permission}, validStore(), validContents(), testNow); err == nil {
 		t.Fatal("a non-matching revision was accepted")
 	}
 }
@@ -584,8 +613,111 @@ func TestPermissionRejectsEmptyPathPrefix(t *testing.T) {
 	p := testProgram()
 	permission := testPermission(p)
 	permission.PathPrefixes = []string{" "}
-	if _, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{permission}, validStore(), testNow); err == nil {
+	if _, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{permission}, validStore(), validContents(), testNow); err == nil {
 		t.Fatal("an empty path prefix was accepted (it would allow every path)")
+	}
+}
+
+func TestPermissionRequiresQuotedEvidenceLine(t *testing.T) {
+	p := testProgram()
+	cases := []struct {
+		name     string
+		mutate   func(*PermissionFact)
+		contents EvidenceContentReader
+		want     string
+	}{
+		{
+			"missing quote",
+			func(pf *PermissionFact) { pf.EvidenceQuote = "" },
+			validContents(), ReasonPermissionQuoteMissing,
+		},
+		{
+			"quote not in evidence",
+			func(pf *PermissionFact) {
+				pf.EvidenceQuote = "PERMISSION program=p1 action=ACTIVE_HTTP hosts=evil.example.com methods=GET"
+			},
+			validContents(), ReasonPermissionNotInEvidence,
+		},
+		{
+			"selectors differ from quote",
+			func(pf *PermissionFact) { pf.Hosts = []string{"other.example.com"} },
+			validContents(), ReasonPermissionNotInEvidence,
+		},
+		{
+			"no content reader",
+			func(*PermissionFact) {},
+			nil, ReasonEvidenceContentMissing,
+		},
+		{
+			"content hash mismatch",
+			func(*PermissionFact) {},
+			fakeContents{content: map[domain.EvidenceID]string{
+				"ev-1": "PERMISSION program=p1 action=ACTIVE_HTTP hosts=api.example.com methods=GET\n",
+			}},
+			ReasonEvidenceContentHashMismatch,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			permission := testPermission(p)
+			tc.mutate(&permission)
+			err := VerifyPlatformEvidence(context.Background(), permission, p, validStore(), tc.contents, testNow)
+			if !reasonIs(tc.want)(err) {
+				t.Fatalf("err = %v, want %s", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractPermissionsStrictGrammar(t *testing.T) {
+	content := "平台政策页面正文\n" + testPermissionLine +
+		"\nPERMISSION program=p1 action=ACTIVE_HTTP hosts=*.example.com methods=GET,POST paths=/v1,/v2\n"
+	got, err := ExtractPermissions(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("permissions = %d, want 2", len(got))
+	}
+	if got[0].Quote != testPermissionLine || got[0].Hosts[0] != "api.example.com" ||
+		got[0].Methods[0] != "GET" || got[0].PathPrefixes[0] != "/v1" {
+		t.Fatalf("first permission = %+v", got[0])
+	}
+	if got[1].Hosts[0] != "*.example.com" || len(got[1].Methods) != 2 || len(got[1].PathPrefixes) != 2 {
+		t.Fatalf("second permission = %+v", got[1])
+	}
+
+	for _, bad := range []string{
+		"PERMISSION program=p1 action=ACTIVE_HTTP hosts=* methods=GET",
+		"PERMISSION program=p1 action=ACTIVE_HTTP methods=GET",
+		"PERMISSION program=p1 action=BOGUS hosts=api.example.com methods=GET",
+		"PERMISSION program=p1 action=ACTIVE_HTTP hosts=api.example.com methods=GET unknown=x",
+		"PERMISSION program=p1 action=ACTIVE_HTTP hosts=api.example.com methods=GET duplicates=1",
+	} {
+		if _, err := ExtractPermissions(bad); err == nil {
+			t.Fatalf("malformed permission line accepted: %q", bad)
+		}
+	}
+}
+
+func TestRestrictedPermissionLineCannotRelax(t *testing.T) {
+	p := testProgram()
+	restricted := "PERMISSION program=p1 action=ACTIVE_HTTP hosts=api.example.com methods=GET restrictions=human_review\n"
+	hash := redact.Hash([]byte(restricted))
+	store := fakeStore{evidence: map[domain.EvidenceID]domain.Evidence{
+		"ev-1": {
+			ID: "ev-1", Platform: p.Platform, SourceType: domain.SourcePolicy,
+			CapturedAt: testNow, ContentHash: hash,
+		},
+	}}
+	permission := testPermission(p)
+	permission.EvidenceContentHash = hash
+	permission.EvidenceQuote = strings.TrimSpace(restricted)
+	permission.PathPrefixes = nil // the restricted line has no paths field
+	_, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{permission},
+		store, fakeContents{content: map[domain.EvidenceID]string{"ev-1": restricted}}, testNow)
+	if !reasonIs(ReasonPermissionRestrictionsPresent)(err) {
+		t.Fatalf("restricted line err = %v, want %s", err, ReasonPermissionRestrictionsPresent)
 	}
 }
 
@@ -611,7 +743,7 @@ func (m *mutableStore) GetEvidence(_ context.Context, id domain.EvidenceID) (dom
 func TestPlatformPolicyRechecksEvidenceAtDecisionTime(t *testing.T) {
 	p := testProgram()
 	store := &mutableStore{evidence: validStore().evidence}
-	pp, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{testPermission(p)}, store, testNow)
+	pp, err := BuildPlatformPolicy(context.Background(), p, []PermissionFact{testPermission(p)}, store, validContents(), testNow)
 	if err != nil {
 		t.Fatal(err)
 	}

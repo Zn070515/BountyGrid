@@ -42,9 +42,10 @@ type FileSessionStore struct {
 }
 
 type sessionEnvelope struct {
-	Version int             `json:"version"`
-	SavedAt time.Time       `json:"saved_at"`
-	Session ResearchSession `json:"session"`
+	Version  int             `json:"version"`
+	Revision uint64          `json:"revision"`
+	SavedAt  time.Time       `json:"saved_at"`
+	Session  ResearchSession `json:"session"`
 }
 
 func NewFileSessionStore(dir string) (*FileSessionStore, error) {
@@ -72,8 +73,43 @@ func (s *FileSessionStore) Save(ctx context.Context, session *ResearchSession) e
 	if err != nil {
 		return err
 	}
+	return s.withLock(ctx, path, func() error {
+		return s.saveLocked(session, path)
+	})
+}
+
+// saveLocked performs a revision CAS and atomic replace while holding the
+// per-session writer lock.
+func (s *FileSessionStore) saveLocked(session *ResearchSession, path string) error {
+	next := session.Revision + 1
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		var env sessionEnvelope
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return fmt.Errorf("reliability: decode existing session %s: %w", session.ID, err)
+		}
+		if env.Version != sessionSchemaVersion {
+			return fmt.Errorf("reliability: session %s has unsupported version %d", session.ID, env.Version)
+		}
+		if env.Session.ID != session.ID {
+			return fmt.Errorf("reliability: session %s file contains id %s", session.ID, env.Session.ID)
+		}
+		if env.Revision != session.Revision {
+			return fmt.Errorf("%w: session %s revision %d, file has %d",
+				ErrSessionConflict, session.ID, session.Revision, env.Revision)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		if session.Revision != 0 {
+			return fmt.Errorf("%w: session %s revision %d but no file exists",
+				ErrSessionConflict, session.ID, session.Revision)
+		}
+	default:
+		return fmt.Errorf("reliability: read existing session %s: %w", session.ID, err)
+	}
+
 	payload, err := json.MarshalIndent(sessionEnvelope{
-		Version: sessionSchemaVersion, SavedAt: time.Now().UTC(), Session: *session,
+		Version: sessionSchemaVersion, Revision: next, SavedAt: time.Now().UTC(), Session: *session,
 	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("reliability: marshal session %s: %w", session.ID, err)
@@ -98,7 +134,55 @@ func (s *FileSessionStore) Save(ctx context.Context, session *ResearchSession) e
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("reliability: commit session %s: %w", session.ID, err)
 	}
+	// Best-effort directory sync; directory fsync is not supported everywhere
+	// (notably Windows), so a failure here does not undo a committed rename.
+	if dir, err := os.Open(s.Dir); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	session.Revision = next
 	return nil
+}
+
+const (
+	sessionLockSuffix = ".lock"
+	// sessionLockStale is when a lock left by a crashed writer may be broken.
+	// Saves are small; a live save should never take this long.
+	sessionLockStale = 30 * time.Second
+)
+
+// withLock serializes writers for one session. The lock file makes the
+// read-compare-write CAS safe across processes on a single machine; a stale
+// lock older than sessionLockStale is broken so a crash cannot block recovery.
+func (s *FileSessionStore) withLock(ctx context.Context, path string, fn func() error) error {
+	lockPath := path + sessionLockSuffix
+	waitCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, _ = fmt.Fprintf(f, "%d %d", os.Getpid(), time.Now().Unix())
+			_ = f.Close()
+			defer func() { _ = os.Remove(lockPath) }()
+			return fn()
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("reliability: acquire session lock: %w", err)
+		}
+		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > sessionLockStale {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("reliability: wait for session lock: %w", waitCtx.Err())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 func (s *FileSessionStore) Load(ctx context.Context, id string) (*ResearchSession, error) {
@@ -133,6 +217,7 @@ func (s *FileSessionStore) Load(ctx context.Context, id string) (*ResearchSessio
 		return nil, err
 	}
 	session := env.Session
+	session.Revision = env.Revision
 	return &session, nil
 }
 
@@ -193,6 +278,11 @@ func decodeSessionFileName(name string) (string, bool) {
 
 // ErrNotFound is returned when a persisted session does not exist.
 var ErrNotFound = errors.New("reliability: not found")
+
+// ErrSessionConflict means the in-memory session revision is older than the
+// persisted revision. The caller must reload and reapply its changes instead
+// of overwriting a newer snapshot.
+var ErrSessionConflict = errors.New("reliability: session revision conflict")
 
 func contextErr(ctx context.Context) error {
 	if ctx == nil {

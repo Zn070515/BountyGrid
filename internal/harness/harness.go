@@ -366,8 +366,17 @@ func (e *Egress) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	if err := e.validateGrant(ctx); err != nil {
 		return nil, err
 	}
-	release, err := e.acquire(ctx)
+	// Waiting for an RPS/concurrency slot can outlive the grant. Bound the wait
+	// by the lease/expiry and re-validate after the wait, immediately before
+	// the request would be sent.
+	acquireCtx, cancel := e.acquireContext(ctx)
+	release, err := e.acquire(acquireCtx)
+	cancel()
 	if err != nil {
+		return nil, err
+	}
+	if err := e.validateGrant(ctx); err != nil {
+		release()
 		return nil, err
 	}
 	resp, err := e.client.Do(req.WithContext(ctx))
@@ -423,6 +432,32 @@ func (e *Egress) validateGrant(ctx context.Context) error {
 		return ErrGrantValidatorRequired
 	}
 	return e.validator.ValidateGrant(ctx, *e.grant)
+}
+
+// acquireContext bounds a broker wait by the grant's lease and decision
+// expiry. A grant that expires while queued must not result in a request.
+func (e *Egress) acquireContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if e.grant == nil {
+		return ctx, func() {}
+	}
+	deadline := e.grant.ExpiresAt
+	if !e.grant.LeaseUntil.IsZero() && (deadline.IsZero() || e.grant.LeaseUntil.Before(deadline)) {
+		deadline = e.grant.LeaseUntil
+	}
+	if deadline.IsZero() {
+		return ctx, func() {}
+	}
+	// An already-past recorded deadline is a validator concern: creating an
+	// immediately-cancelled wait context would hide the authoritative rejection
+	// (and breaks injected-clock tests). The validator still runs before and
+	// after the wait.
+	if !deadline.After(time.Now()) {
+		return ctx, func() {}
+	}
+	if d, ok := ctx.Deadline(); ok && !d.After(deadline) {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, deadline)
 }
 
 // acquire takes a shared capability lease for one request. The grant's

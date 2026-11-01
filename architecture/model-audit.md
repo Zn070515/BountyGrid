@@ -50,8 +50,10 @@ type ModelCall struct {
     attempt 可能已发送 → `AMBIGUOUS`，全部证明未发送 → `FAILED_BEFORE_SEND`）。
     这样并发重试无法在链中途 `Reclaim` 同一个 CallID。
   - 状态迁移是 CAS：`CallStore.Complete` 只允许 `RESERVED/STARTED → STARTED/终态`，
-    已终态的行不能被迟到 writer 覆盖（`ErrInvalidCallTransition`）。PostgreSQL
-    实现用 `WHERE status IN ('RESERVED','STARTED')` + 回读判定。
+    已终态的行不能被迟到 writer 覆盖（`ErrInvalidCallTransition`）。目标
+    `RESERVED` 不是合法迁移，即使它是合法状态；PostgreSQL 实现同时用
+    `WHERE status IN ('RESERVED','STARTED') AND $8 IN ('STARTED','COMPLETED','AMBIGUOUS','FAILED_BEFORE_SEND')`
+    + 回读判定，数据库与内存的迁移矩阵一致。
 - `TotalCost`：已完成尝试的**实际**成本 + ambiguous 尝试的**估算**成本。
   `FAILED_BEFORE_SEND` 尝试不计费。该值用于预算复核与人工对账，不是收入。
 - `HasAmbiguousAttempt`：只要任一次尝试为 `AMBIGUOUS` 就为 true，即使逻辑
@@ -161,10 +163,17 @@ req.CallID = model.StableCallID(req.TaskID, req.StepID, req.Purpose, model.Promp
 `FAILED_BEFORE_SEND`。逻辑表的状态约束保持
 `RESERVED/STARTED/COMPLETED/AMBIGUOUS/FAILED_BEFORE_SEND`。
 
+`model_call_attempt_history`（迁移 `0016_model_call_attempt_history.sql`）是
+attempt 的归档账本。`ReclaimModelCall` 在同一事务里先把当前 attempts 复制到
+history（`ON CONFLICT DO NOTHING`），再删除 `FAILED_BEFORE_SEND` 的逻辑调用；
+外键级联删除原 attempts，但 history 保留“这个 CallID 曾经调用过哪些 Provider、
+每次可能花了多少”的不可变记录。`Repo.ListModelCallAttemptHistory` 可读取。
+
 ## 7. 对账与限制
 
-- `FAILED_BEFORE_SEND` 的逻辑调用可以被 `Reclaim`；级联删除其尝试后，同一
-  `CallID` 可以重新预占。
+- `FAILED_BEFORE_SEND` 的逻辑调用可以被 `Reclaim`；当前尝试先归档到
+  `model_call_attempt_history`，再级联删除，同一 `CallID` 可以重新预占，而旧
+  尝试仍可审计。
 - `AMBIGUOUS` 逻辑调用不可自动重试；尝试账本保留每次估算成本，供人工与平台
   账单对账。
 - 逻辑调用 `COMPLETED` 但 `HasAmbiguousAttempt=true` 时，成功结果可以继续

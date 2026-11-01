@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/authz"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy/rules"
+	"github.com/Zn070515/BountyGrid/internal/redact"
 )
 
 var testNow = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
@@ -1034,17 +1036,27 @@ func (f fakeEvidenceStore) GetEvidence(_ context.Context, id domain.EvidenceID) 
 	return ev, nil
 }
 
+type fakeContents struct{ content string }
+
+func (f fakeContents) ReadContent(context.Context, domain.Evidence) (string, error) {
+	return f.content, nil
+}
+
 func platformPolicy(t *testing.T, prog domain.Program, action domain.Action) *authz.PlatformPolicy {
 	t.Helper()
+	line := fmt.Sprintf("PERMISSION program=%s action=%s hosts=api.example.com methods=GET", prog.ID, action)
+	content := line + "\n"
+	hash := redact.Hash([]byte(content))
 	store := fakeEvidenceStore{evidence: map[domain.EvidenceID]domain.Evidence{
 		"ev-1": {
 			ID: "ev-1", Platform: prog.Platform, SourceType: domain.SourcePolicy,
-			CapturedAt: testNow, ContentHash: "sha256:policy-content",
+			CapturedAt: testNow, ContentHash: hash,
 		},
 	}}
 	pp, err := authz.BuildPlatformPolicy(context.Background(), prog, []authz.PermissionFact{{
 		EvidenceID:          "ev-1",
-		EvidenceContentHash: "sha256:policy-content",
+		EvidenceContentHash: hash,
+		EvidenceQuote:       line,
 		Platform:            prog.Platform,
 		ProgramID:           prog.ID,
 		Action:              action,
@@ -1054,7 +1066,7 @@ func platformPolicy(t *testing.T, prog domain.Program, action domain.Action) *au
 		ValidUntil:          testNow.Add(time.Hour),
 		PolicyRevision:      prog.PolicyRevision(),
 		Justification:       "platform policy explicitly permits this endpoint",
-	}}, store, testNow)
+	}}, store, fakeContents{content: content}, testNow)
 	if err != nil {
 		t.Fatal(err)
 	}

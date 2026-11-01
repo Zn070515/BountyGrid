@@ -17,6 +17,7 @@ func TestModelCallLifecycle(t *testing.T) {
 	id := "it-call-" + suffix
 	t.Cleanup(func() {
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM model_calls WHERE id=$1`, id)
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM model_call_attempt_history WHERE call_id=$1`, id)
 	})
 
 	rec := model.ModelCall{

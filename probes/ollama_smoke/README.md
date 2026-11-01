@@ -68,6 +68,25 @@ go run ./probes/ollama_smoke -suite repeat -n 5 > /tmp/ollama-smoke/repeat.json
 python -I probes/ollama_smoke/summarize.py /tmp/ollama-smoke
 ```
 
+## Versioned evaluation dataset
+
+`run_eval.py` runs every suite N times and records a reproducible dataset
+(model, Ollama/Go versions, `ollama show`, suite configuration, raw JSON and
+SHA-256, plus an aggregate summary). Output goes to the gitignored
+`probes/out/ollama-eval/<timestamp>/`.
+
+```bash
+python -I probes/ollama_smoke/run_eval.py --model qwen25-0.5b-local --runs 3
+```
+
+Files: `manifest.json` (configuration and raw-file hashes), `summary.json`
+(aggregate pass rates / token ratios / loop stops), `<suite>-<n>.json` (raw
+results), `<suite>-<n>.stderr`.
+
+This is a smoke-level dataset, not a benchmark. The target model
+(Qwen3.8-Flash-Next IQ3_S) differs in scale, architecture, quantization and
+serving stack; its run still needs the same manifest for a valid comparison.
+
 ## What the smoke showed
 
 On an RTX 5060 Laptop (8 GB), Q4_K_M:

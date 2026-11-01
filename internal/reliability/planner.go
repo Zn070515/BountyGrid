@@ -63,6 +63,37 @@ type Proposer interface {
 // Planner is an alias for Proposer kept for callers that use the planning term.
 type Planner = Proposer
 
+// ProposerUsage is the model/provider usage for one planning call. The Loop
+// adds it to the session budget; executor tokens are still accounted
+// separately from ExecutionResult.Tokens.
+type ProposerUsage struct {
+	InputTokens  int
+	OutputTokens int
+}
+
+// Total returns the tokens charged to the session budget.
+func (u ProposerUsage) Total() int {
+	if u.InputTokens < 0 || u.OutputTokens < 0 {
+		return 0
+	}
+	return u.InputTokens + u.OutputTokens
+}
+
+// UsageProposer is implemented by proposers that can report their own model
+// usage. The plain Proposer interface stays backward compatible; a proposer
+// that does not implement this interface simply reports no usage.
+type UsageProposer interface {
+	ProposeWithUsage(ctx context.Context, in ProposeInput) ([]ActionProposal, ProposerUsage, error)
+}
+
+func (l *Loop) propose(ctx context.Context, in ProposeInput) ([]ActionProposal, ProposerUsage, error) {
+	if up, ok := l.proposer.(UsageProposer); ok {
+		return up.ProposeWithUsage(ctx, in)
+	}
+	proposals, err := l.proposer.Propose(ctx, in)
+	return proposals, ProposerUsage{}, err
+}
+
 // SessionSnapshot is an immutable-by-value copy of the research session. A
 // proposer may inspect or mutate its own copy; it cannot mutate the live
 // session because it never receives a pointer to it.
@@ -135,6 +166,9 @@ type ExecutedStep struct {
 	Failure     *FailureSignature
 	Detection   Detection
 	ErrClass    string
+	// Usage is the proposer's model usage for this step (zero if the
+	// proposer does not implement UsageProposer).
+	Usage ProposerUsage
 }
 
 // Step is one executor-backed iteration. It is an alias for ExecutedStep.
@@ -170,7 +204,10 @@ type LoopConfig struct {
 	// a STALLED/PARKED/HANDOFF session survives a process restart. Nil keeps
 	// the loop in-memory only.
 	Store SessionStore
-	Now   func() time.Time
+	// RequireStore makes a non-nil Store mandatory. Production workers must set
+	// this so the pre-execution checkpoint is a guaranteed invariant.
+	RequireStore bool
+	Now          func() time.Time
 }
 
 // Loop is the deterministic short-horizon controller.
@@ -194,6 +231,9 @@ func NewLoop(cfg LoopConfig) (*Loop, error) {
 	}
 	if cfg.Executor == nil {
 		return nil, fmt.Errorf("%w: executor is nil", ErrLoopConfiguration)
+	}
+	if cfg.RequireStore && cfg.Store == nil {
+		return nil, fmt.Errorf("%w: LoopConfig.Store is nil", ErrSessionStoreRequired)
 	}
 	if err := cfg.Authorization.Validate(); err != nil {
 		return nil, err
@@ -289,7 +329,7 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 		if err != nil {
 			return result, err
 		}
-		proposals, err := l.proposer.Propose(ctx, ProposeInput{
+		proposals, usage, err := l.propose(ctx, ProposeInput{
 			Session:         session.Snapshot(),
 			Context:         compiled,
 			Authorization:   l.authorization,
@@ -300,6 +340,14 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 		})
 		if err != nil {
 			return result, fmt.Errorf("reliability: proposer: %w", err)
+		}
+		// Planning itself consumes the model budget. Charge it before executing
+		// any proposal, and stop if the call exhausted the token ceiling: the
+		// proposal was produced under an over-budget request.
+		session.Budget.AddTokens(usage.Total())
+		if session.Budget.MaxTokens > 0 && session.Budget.TokensUsed >= session.Budget.MaxTokens {
+			result.Stop = StopBudgetExhausted
+			break
 		}
 		if len(proposals) == 0 {
 			result.Stop = StopNoProposals
@@ -469,6 +517,7 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 			Failure:     cloneFailurePtr(failure),
 			Detection:   detection,
 			ErrClass:    errClass,
+			Usage:       usage,
 		})
 		lastObservation = &obs
 		lastFailure = cloneFailurePtr(failure)

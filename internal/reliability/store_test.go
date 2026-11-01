@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -230,26 +231,120 @@ func TestFileSessionStoreOverwritesAtomically(t *testing.T) {
 	if err := store.Save(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
+	if s.Revision != 1 {
+		t.Fatalf("revision after first save = %d, want 1", s.Revision)
+	}
 	s.Objective = "second version"
 	s.UpdatedAt = testNow.Add(time.Minute)
 	if err := store.Save(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
+	if s.Revision != 2 {
+		t.Fatalf("revision after second save = %d, want 2", s.Revision)
+	}
 	got, err := store.Load(t.Context(), s.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Objective != "second version" {
-		t.Fatalf("objective = %q", got.Objective)
+	if got.Objective != "second version" || got.Revision != 2 {
+		t.Fatalf("reloaded objective/revision = %q/%d", got.Objective, got.Revision)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".tmp") {
-			t.Fatalf("leftover temp file %s", entry.Name())
+		if strings.HasSuffix(entry.Name(), ".tmp") || strings.HasSuffix(entry.Name(), ".lock") {
+			t.Fatalf("leftover temp/lock file %s", entry.Name())
 		}
+	}
+}
+
+func TestFileSessionStoreRejectsStaleRevision(t *testing.T) {
+	store, err := NewFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewResearchSession("sess/cas", "task-cas", testNow)
+	if err := store.Save(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Load(t.Context(), s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Load(t.Context(), s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision != 1 || second.Revision != 1 {
+		t.Fatalf("loaded revisions = %d/%d, want 1/1", first.Revision, second.Revision)
+	}
+
+	first.Objective = "first writer"
+	first.UpdatedAt = testNow.Add(time.Minute)
+	if err := store.Save(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	second.Objective = "stale writer"
+	second.UpdatedAt = testNow.Add(2 * time.Minute)
+	if err := store.Save(t.Context(), second); !errors.Is(err, ErrSessionConflict) {
+		t.Fatalf("stale save err = %v, want ErrSessionConflict", err)
+	}
+	got, err := store.Load(t.Context(), s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Objective != "first writer" || got.Revision != 2 {
+		t.Fatalf("winner = %q rev=%d, want first writer/2", got.Objective, got.Revision)
+	}
+}
+
+func TestFileSessionStoreConcurrentSavesHaveOneWinner(t *testing.T) {
+	store, err := NewFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewResearchSession("sess/concurrent", "task-concurrent", testNow)
+	if err := store.Save(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	const writers = 8
+	copies := make([]*ResearchSession, writers)
+	for i := range copies {
+		copies[i], err = store.Load(t.Context(), s.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copies[i].Objective = fmt.Sprintf("writer-%d", i)
+		copies[i].UpdatedAt = testNow.Add(time.Duration(i+1) * time.Minute)
+	}
+	results := make(chan error, writers)
+	for _, copySession := range copies {
+		go func(session *ResearchSession) {
+			results <- store.Save(context.Background(), session)
+		}(copySession)
+	}
+	successes, conflicts := 0, 0
+	for i := 0; i < writers; i++ {
+		switch err := <-results; {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrSessionConflict):
+			conflicts++
+		default:
+			t.Fatalf("unexpected save error: %v", err)
+		}
+	}
+	if successes != 1 || conflicts != writers-1 {
+		t.Fatalf("successes=%d conflicts=%d, want 1/%d", successes, conflicts, writers-1)
+	}
+	got, err := store.Load(t.Context(), s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != 2 {
+		t.Fatalf("final revision = %d, want 2", got.Revision)
 	}
 }
 

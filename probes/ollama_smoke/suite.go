@@ -229,18 +229,26 @@ type ollamaProposer struct {
 }
 
 func (p *ollamaProposer) Propose(ctx context.Context, in reliability.ProposeInput) ([]reliability.ActionProposal, error) {
+	proposals, _, err := p.ProposeWithUsage(ctx, in)
+	return proposals, err
+}
+
+// ProposeWithUsage feeds the provider's actual prompt/output token counts into
+// the reliability session budget.
+func (p *ollamaProposer) ProposeWithUsage(ctx context.Context, in reliability.ProposeInput) ([]reliability.ActionProposal, reliability.ProposerUsage, error) {
 	resp, err := chat(ctx, p.addr, p.model, proposalInstruction+in.Context.Text)
 	if err != nil {
-		return nil, err
+		return nil, reliability.ProposerUsage{}, err
 	}
 	p.calls++
 	p.raws = append(p.raws, resp.Content)
+	usage := reliability.ProposerUsage{InputTokens: resp.PromptEvalCount, OutputTokens: resp.EvalCount}
 	parsed, parseErr := parseProposals(resp.Content)
 	if parseErr != nil {
 		p.parseFailures++
-		return nil, nil
+		return nil, usage, nil
 	}
-	return toProposals(parsed), nil
+	return toProposals(parsed), usage, nil
 }
 
 type noProgressExecutor struct{ calls int }
@@ -278,12 +286,17 @@ func runLoopSuite(ctx context.Context, addr, model string) (any, error) {
 			"step": st.Step, "action": st.Proposal.Action, "tool": st.Proposal.Tool,
 			"verdict": st.Detection.Verdict, "detector_action": st.Detection.Action,
 			"reasons": st.Detection.Reasons, "err_class": st.ErrClass,
+			"usage": map[string]int{
+				"input_tokens": st.Usage.InputTokens, "output_tokens": st.Usage.OutputTokens,
+			},
 		})
 	}
 	return map[string]any{
 		"stop": result.Stop, "stall_action": result.StallAction,
 		"steps": len(result.Steps), "executor_calls": executor.calls,
 		"proposer_calls": proposer.calls, "parse_failures": proposer.parseFailures,
+		"tokens_used": session.Budget.TokensUsed,
+		"token_limit": session.Budget.MaxTokens,
 		"last_detection": map[string]any{
 			"verdict": result.LastDetection.Verdict,
 			"action":  result.LastDetection.Action,

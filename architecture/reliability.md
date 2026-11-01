@@ -57,7 +57,8 @@ type ResearchSession struct {
 - `ResearchState`：`CREATED / RUNNING / STALLED / PARKED / COMPLETED / ABORTED`。`STALLED` 与 `PARKED` 由循环在检测到停滞/预算耗尽时设置；`Resume` 只允许把 `STALLED/PARKED` 重新置为 `RUNNING`，预算、attempts、observation 与失败历史保留。
 - 所有时间统一 UTC。ID 通过 `StableID(prefix, parts...)` 从内容派生；相同输入在重放中得到相同 ID。
 - `Add*` 方法先校验再追加；`Validate` 检查时间顺序、重复事实/observation ID、证据 ID 非空以及敏感值。
-- `SessionStore` + `FileSessionStore`（`store.go`）把 session 持久化为 `0600`、原子写入（temp + rename）的 JSON；文件名使用 base64url 编码的 session ID，因此 `sess/...` 这类含 `/` 的默认 ID 也可落盘。`LoopConfig.Store` 非空时，循环在**每个已记录 step 之后和退出时** checkpoint；持久化失败会中止运行，不静默继续。
+- `SessionStore` + `FileSessionStore`（`store.go`）把 session 持久化为 `0600`、原子写入（temp + rename）的 JSON；文件名使用 base64url 编码的 session ID，因此 `sess/...` 这类含 `/` 的默认 ID 也可落盘。`LoopConfig.Store` 非空时，循环在**每个已记录 step 之后和退出时** checkpoint；持久化失败会中止运行，不静默继续。`LoopConfig.RequireStore=true`（生产 Worker 应设置）会让 `NewLoop` 拒绝 nil Store。
+- `ResearchSession.Revision` 是持久化乐观并发版本：`Save` 在 `SELECT` 读到的 revision 与内存不一致时返回 `ErrSessionConflict`，成功写入后递增。`FileSessionStore` 用 per-session `.lock` 文件把 read-compare-write 串行化（跨进程、单机；超过 30s 的陈旧锁会被打破），因此旧快照不能覆盖新 Attempts/Budget/Evidence。它仍是单机单写者原型，不是多 Worker 权威存储。
 
 ### 2.2 Budget
 
@@ -197,7 +198,7 @@ type Executor interface {
   - `NeedsAsset()` 动作必须有 authorization 提供的权威 asset，且 proposal 的 asset 必须一致；模型不能自带 asset；
   - proposal 参数必须是合法 JSON 且不含敏感值（普通扫描 + JSON 去引号扫描，覆盖 `"token":"..."` 形态）。
   - 排序：confidence 降序 → estimated cost 升序 → 原始顺序。
-- `Loop.Run` 每轮：`Compile` → `Propose` → `RankProposals` → 过滤“同 tool+args 已 `INTERRUPTED`”的提案 → 取第 1 个 → 消耗 step/tool-call → **写 `STARTED` attempt 并 checkpoint** → `Executor.Execute` → 用 `ReplaceAttempt` 记录 observation/fact/failure → `LoopDetector.Observe` → 下一轮重新编译。
+- `Loop.Run` 每轮：`Compile` → `Propose`（若实现 `UsageProposer`，同时返回输入/输出 token）→ 把 usage 计入 `session.Budget`，若达到 `MaxTokens` 立即停止且不执行本轮提案 → `RankProposals` → 过滤“同 tool+args 已 `INTERRUPTED`”的提案 → 取第 1 个 → 消耗 step/tool-call → **写 `STARTED` attempt 并 checkpoint** → `Executor.Execute` → 用 `ReplaceAttempt` 记录 observation/fact/failure → `LoopDetector.Observe` → 下一轮重新编译。
 - 进入新一轮 `Run`（或 `Resume`）时，任何残留 `STARTED` 会先转为 `INTERRUPTED`；上下文在 `FAILED APPROACHES` 中显示 `outcome_unknown do_not_repeat`。重放被阻止是 fail-safe：崩溃可能发生在工具已产生副作用之后。
 - 不存在“模型一次返回长程 plan 并自行执行”的路径；plan 只能体现为每步 1–3 个候选。
 - 执行错误不会中止循环：错误被转成 `FailureSignature`，写入 attempt，并进入下一轮上下文；只有 context/配置/状态校验错误才返回 error。
@@ -281,6 +282,8 @@ CandidateFinding.ToFinding()
 - 状态中不保存原始页面、cookie/token/密码/证件/银行卡/完整手机号/邮箱。
 - 检测器只在有证据/事实进展时重置；没有进展的重复调用不能无限消耗预算。
 - 工具执行前必须存在可恢复的 `STARTED` attempt；残留的 `STARTED` 只能转为 `INTERRUPTED`，不能自动重放同一 tool+args。
+- 每次 Proposer 推理的 token 必须计入会话预算；达到上限后不得执行本轮提案。
+- 持久化保存必须是 revision CAS；旧快照不能覆盖新快照。生产 Worker 必须配置 `RequireStore`。
 
 ## 9. 当前实现与测试
 
@@ -309,7 +312,8 @@ CandidateFinding.ToFinding()
 - 没有真实模型适配器；`Proposer`/`Executor` 由调用方实现。模型身份、量化、chat template、tool protocol 等 serving metadata 仍属于 `internal/model`/trace 的后续工作。
 - `EvidenceView` 由调用方策展；本包不负责从 `Evidence`/`ObservedFact` 自动生成视图，也不做 LLM summarization。它保证“视图有界、ID 稳定、无 raw 页面字段”。
 - 检测器是启发式：阈值和“无进展”定义可由上层配置；它不替代人工复核，也不产生 `VERIFIED`。
-- 研究状态默认是内存结构；`FileSessionStore` 提供单机 JSON 持久化与 checkpoint，但尚未接入 PostgreSQL/跨进程 trace。`STARTED` 记录已覆盖“执行前 → 执行后”的崩溃窗口；代价是崩溃在 checkpoint 与工具真正执行之间时也会被标记为 `INTERRUPTED`（保守，但会阻止一次安全重试）。要重试必须改变参数或开启新的研究会话。
+- 研究状态默认是内存结构；`FileSessionStore` 提供单机 JSON 持久化、revision CAS 与 checkpoint，但尚未接入 PostgreSQL/跨进程 trace。文件锁是单机方案：NFS/多主机共享目录或长时间停顿超过 `sessionLockStale` 时不保证单写者；长期应迁移到 PostgreSQL 行锁/租约。
+- `STARTED` 记录已覆盖“执行前 → 执行后”的崩溃窗口；代价是崩溃在 checkpoint 与工具真正执行之间时也会被标记为 `INTERRUPTED`（保守，但会阻止一次安全重试）。要重试必须改变参数或开启新的研究会话。
 - 本地 Qwen2.5-0.5B（Q4_K_M）smoke（`probes/ollama_smoke`）：1,168 rune 上下文实际为 515–533 prompt tokens，1 token/rune 的保守估算报 1,168（约 2.1–2.3x）；600 rune 预算约 321–332 actual tokens。模型能跟随 JSON 形状并产出结构合法的 `READ_SCOPE`，但 eligibility 判断错误，且会把 `AVAILABLE ACTIONS` 的 `human_only=false` 抄成裸 JSON token、返回对象而非要求的数组。确定性过滤仍有效：未授权 `ACTIVE_HTTP`、human-only `REPORT_SUBMIT`、含 `token=...` 的 proposal 全部被丢弃；注入的 `</untrusted_evidence>` 被转义，模型没有执行注入动作；真实 Loop 在 5 次无进展重复后 `STALLED/HANDOFF`。格式跟随不等于事实/授权可靠，这正是 `RankProposals` 与 Action Gateway 仍必须存在的原因。
 - `RankProposals` 只做本地过滤与排序，不是 Policy；真正的 scope/automation/eligibility 判定仍由 Action Gateway 完成。
 - `ProofResolver` 由调用方实现；本包强制“经权威解析 + program/finding/asset 绑定 + 证据交集”，但不负责把 `domain.ExecutionReceipt`/`domain.Verification` 映射成 proof（该 adapter 仍需实现）。
