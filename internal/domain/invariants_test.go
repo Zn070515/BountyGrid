@@ -293,12 +293,14 @@ func TestSubmissionRequiresApproval(t *testing.T) {
 
 func TestLedgerRejectsNegativeAmount(t *testing.T) {
 	l := LedgerEntry{
-		ID:         "l1",
-		Platform:   PlatformVulbox,
-		ProgramID:  "p1",
-		Kind:       LedgerPaid,
-		Amount:     Money{Amount: -1, Currency: "CNY"},
-		OccurredAt: now(),
+		ID:          "l1",
+		Platform:    PlatformVulbox,
+		ProgramID:   "p1",
+		Kind:        LedgerPaid,
+		Amount:      Money{Amount: -1, Currency: "CNY"},
+		Status:      LedgerStatusRecorded,
+		ExternalRef: "bank-1",
+		OccurredAt:  now(),
 	}
 	if err := l.Validate(); err == nil {
 		t.Fatal("negative ledger amount should be invalid")

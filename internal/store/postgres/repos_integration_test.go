@@ -420,10 +420,24 @@ func TestRepoRoundTrip(t *testing.T) {
 	entry := domain.LedgerEntry{
 		ID: "it-ledger-" + suffix, Platform: domain.PlatformButian, ProgramID: progID,
 		Kind: domain.LedgerPaid, Amount: domain.Money{Amount: 100, Currency: "CNY"},
-		Status: "PAID", OccurredAt: now,
+		Status: domain.LedgerStatusRecorded, ExternalRef: "it-bank-" + suffix,
+		OccurredAt: now, Evidence: []domain.EvidenceID{evID},
 	}
 	if err := r.PutLedgerEntry(ctx, entry); err != nil {
 		t.Fatal(err)
+	}
+	gotEntry, err := r.GetLedgerEntry(ctx, entry.ID)
+	if err != nil || gotEntry.ExternalRef != entry.ExternalRef || gotEntry.Amount.Amount != 100 {
+		t.Fatalf("ledger roundtrip = %+v %v", gotEntry, err)
+	}
+	listed, err := r.ListLedgerEntries(ctx, domain.PlatformButian, progID, nil, nil)
+	if err != nil || len(listed) == 0 {
+		t.Fatalf("ledger list = %+v %v", listed, err)
+	}
+	dupEntry := entry
+	dupEntry.ID = entry.ID + "-dup"
+	if err := r.PutLedgerEntry(ctx, dupEntry); err == nil {
+		t.Fatal("duplicate external_ref must be rejected")
 	}
 
 	auditStore := NewAuditStore(r.Pool)

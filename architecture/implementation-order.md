@@ -24,7 +24,7 @@
 | Phase 3：Policy Engine / Gateway | 已实现并硬化：authoritative Asset、ExecutionEnvironment、Authorize 重评估、审批在执行前消费 |
 | Phase 4：Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、唯一 QUEUED 任务、CompetitionSnapshot TTL/decay |
 | Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执已实现；Model Router 路由/数据分级/预算/审计已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
-| Phase 6：Verification / Report / Submission / Ledger | Verification、ReportDraft、Submission dry-run 控制层已实现；真实平台 SubmitAdapter 与 Ledger 未进入 |
+| Phase 6：Verification / Report / Submission / Ledger | Verification、ReportDraft、Submission dry-run、CNY 现金 Ledger 已实现；真实平台 SubmitAdapter 与 Ledger 反馈闭环未进入 |
 
 > **真实状态：Phase 0 complete; Phase 1–6 partially implemented; active execution remains disabled.**
 >
@@ -240,6 +240,8 @@
 - Expected/Submitted/Accepted/Paid/Fee/Tax/Refund。
 - 对账/差异/证据。
 - 退出条件：账本只追加；金额非负；按平台汇总可对账。
+
+**当前实现（2026-11-01）**：`internal/ledger` 实现 CNY 现金账本；`PAID`=到账净额，`FEE/TAX` 仅信息展示；`ExternalRef` 唯一索引防重复导入；`REVERSAL` 只冲 `PAID/REFUND`；`Append` 校验 Evidence 存在、Submission 非 `DRY_RUN`；`Summarize/Reconcile/Feedback` 已完成。`bountygrid ledger` 提供 append/summary/reconcile。非现金奖励留 `NonCashRecorder` 接口；`ReconciliationIssue` 持久化未实现。
 
 ## 9. 反馈闭环
 

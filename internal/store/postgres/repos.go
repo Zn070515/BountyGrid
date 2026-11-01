@@ -699,6 +699,9 @@ func (r *Repo) PutSubmission(ctx context.Context, s domain.Submission) error {
 }
 
 func (r *Repo) PutLedgerEntry(ctx context.Context, e domain.LedgerEntry) error {
+	if err := e.Validate(); err != nil {
+		return err
+	}
 	data, err := mustJSON(e)
 	if err != nil {
 		return err
@@ -706,10 +709,54 @@ func (r *Repo) PutLedgerEntry(ctx context.Context, e domain.LedgerEntry) error {
 	_, err = r.Pool.Exec(ctx, `
 		INSERT INTO ledger_entries
 			(id, platform, program_id, finding_id, submission_id, kind, amount_cents,
-			 currency, status, occurred_at, data)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+			 currency, status, occurred_at, external_ref, reverses_id, notes, data)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
 		ON CONFLICT (id) DO NOTHING`,
 		e.ID, e.Platform, e.ProgramID, e.FindingID, e.SubmissionID, e.Kind,
-		e.Amount.Amount, e.Amount.Currency, e.Status, e.OccurredAt, data)
+		e.Amount.Amount, e.Amount.Currency, e.Status, e.OccurredAt,
+		e.ExternalRef, e.ReversesID, e.Notes, data)
 	return err
+}
+
+func (r *Repo) GetLedgerEntry(ctx context.Context, id string) (domain.LedgerEntry, error) {
+	var data []byte
+	err := r.Pool.QueryRow(ctx, `SELECT data FROM ledger_entries WHERE id=$1`, id).Scan(&data)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.LedgerEntry{}, ErrNotFound
+		}
+		return domain.LedgerEntry{}, fmt.Errorf("postgres: get ledger entry: %w", err)
+	}
+	var e domain.LedgerEntry
+	if err := json.Unmarshal(data, &e); err != nil {
+		return domain.LedgerEntry{}, fmt.Errorf("postgres: decode ledger entry: %w", err)
+	}
+	return e, nil
+}
+
+func (r *Repo) ListLedgerEntries(ctx context.Context, platform domain.Platform, programID domain.ProgramID, since, until *time.Time) ([]domain.LedgerEntry, error) {
+	rows, err := r.Pool.Query(ctx, `
+		SELECT data FROM ledger_entries
+		WHERE ($1 = '' OR platform = $1)
+		  AND ($2 = '' OR program_id = $2)
+		  AND ($3::timestamptz IS NULL OR occurred_at >= $3)
+		  AND ($4::timestamptz IS NULL OR occurred_at < $4)
+		ORDER BY occurred_at ASC, id ASC`, string(platform), string(programID), since, until)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list ledger entries: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.LedgerEntry
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var e domain.LedgerEntry
+		if err := json.Unmarshal(data, &e); err != nil {
+			return nil, fmt.Errorf("postgres: decode ledger entry: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

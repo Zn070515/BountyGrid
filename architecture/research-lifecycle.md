@@ -242,6 +242,8 @@ const (
 
 差异进入 `ReconciliationIssue`，人工处理。
 
+**当前实现（2026-11-01）**：`internal/ledger` 实现 append-only 现金账本（v1 仅 CNY）。`PAID` 是实际到账净额，`FEE/TAX` 只做信息展示、不重复扣减；`EXPECTED/SUBMITTED` 不计入净现金。`REVERSAL` 是现金冲正（v1 只允许冲 `PAID/REFUND`），`ExternalRef` 对 `PAID/REFUND/REVERSAL` 必填并在 `(platform,kind,external_ref)` 唯一。`Append` 校验 Evidence 存在、Submission 非 `DRY_RUN`、冲正不超过目标金额；同 ID 同内容幂等、不同内容报错。`Summarize` 输出 Expected/Submitted/GrossAccepted/Fees/Taxes/Refunds/PaidNet/NetCash/AvgAccepted/AvgPaid；`Reconcile` 只报平台/银行差异，不自动改账；`Feedback` 输出 Opportunity 可用的提交/验收/到账指标（不伪造 duplicate_rate）。`bountygrid ledger -file [-persist] / -summary / -reconcile` 已接入。非现金奖励（KB/RYB/积分/荣誉/实物/优惠券）留 `NonCashRecorder` 接口，v1 不混入金额账本。
+
 ## 7. 反馈到 Opportunity Engine
 
 Ledger 汇总：
