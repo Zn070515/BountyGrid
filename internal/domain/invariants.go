@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 )
 
@@ -351,6 +352,9 @@ func (c Constraints) Validate() error {
 	for _, ip := range c.AllowedEgressIPs {
 		if strings.TrimSpace(ip) == "" {
 			return fmt.Errorf("constraints: allowed egress ip is empty")
+		}
+		if _, err := netip.ParseAddr(strings.TrimSpace(ip)); err != nil {
+			return fmt.Errorf("constraints: invalid allowed egress ip %q", ip)
 		}
 	}
 	return nil
