@@ -105,9 +105,10 @@ cannot bypass the client-side `Egress` check by talking to the proxy directly:
 
 ```go
 type GrantPolicy struct {
-    Grant *ExecutionGrant
-    Next  NetworkPolicy // optional guardrail (e.g. RulePolicy)
-    Now   func() time.Time
+    Grant     *ExecutionGrant
+    Next      NetworkPolicy              // optional guardrail (e.g. RulePolicy)
+    Now       func() time.Time
+    Validator capability.GrantValidator  // optional authoritative re-check
 }
 ```
 
@@ -120,6 +121,12 @@ in the future, and covers the request:
   same segment-aware `rules.PathWithin` / `rules.CanonicalPath` matcher as the
   rule layer (`/api` matches `/api/users`, never `/apix` or `/api-admin`, and
   encoded traversal is resolved before comparison).
+
+When `Validator` is set, it is called after those local checks and before
+`Next`. `capability.ProgramValidator` re-reads the program and denies an expired
+lease, a non-RUNNING or stale program, a changed scope/policy revision, or a
+bumped revocation epoch. Any validator error is a hard `Deny`; a grant cannot be
+renewed by the proxy.
 
 `Next` can only tighten the result. The proxy's `ProxyConfig.Policy` should be
 a `GrantPolicy` in production.
@@ -161,19 +168,27 @@ boundary is not implemented in this repository yet.
 
 ## Daily budget, RPS and concurrency
 
-The base `Egress` owns a limiter registry keyed by
-`AccountID + ProgramID + interface` (falling back to asset ID/asset target, then
-to a per-grant limiter when no identity exists). `WithGrant` selects a
-`programLimiter` from that registry, so two separate `WithGrant`/`Execute` calls
-for the same account/program share:
+Limits live in `internal/capability` (see
+[`capability.md`](capability.md)), not in the proxy. `ProxyConfig.Broker` takes
+the same `capability.Broker` that `Egress` uses. After a request is allowed and
+audited, the proxy calls `Acquire` and holds the lease until the response has
+been written (HTTP) or the tunnel has ended (CONNECT). `GrantPolicy` implements
+`CapabilityRequest`, exposing the grant's `MaxRPS`, `MaxConcurrency` and
+`DailyLimit`; a configured broker with a policy that exposes no limits fails
+closed with 429.
 
-- the RPS timeline (`last` slot; the strictest observed rate wins),
-- the concurrency ceiling (`inFlight` + `maxConc`; a later tighter ceiling is
-  applied to subsequent acquisitions, and a release wakes blocked waiters),
-- the daily counter (`DailyLimit`).
+The broker keeps one `programLimiter` per `account + program + interface`, so
+plain HTTP forwarded through the proxy and HTTP through `Egress` share:
 
-A different program gets a separate limiter. A grant with no program/asset
-identity gets its own limiter (fail-safe, not shared).
+- the RPS timeline (strictest observed rate wins),
+- the concurrency ceiling (strictest observed ceiling wins; release wakes
+  blocked waiters),
+- the daily quota (`DailyLimit`).
+
+A different program gets a separate limiter. A request with no account/program
+identity gets an ephemeral limiter (fail-safe, not shared). Plain HTTP forwarding
+and CONNECT both charge the `http` interface, so both share the same budget as
+`Egress` traffic for that account/program.
 
 ## Deliberate limits (v1)
 
@@ -181,8 +196,10 @@ identity gets its own limiter (fail-safe, not shared).
 - No TLS MITM; CONNECT is opaque host/port tunneling, is disabled by default,
   and cannot satisfy path-scoped grants.
 - `RulePolicy` is a guardrail: production must bind it under `GrantPolicy`.
-- The limiter registry is in-process; separate processes/workers each keep their
-  own ceiling. An external worker must still be forced through this proxy.
+- RPS/concurrency state is in-process; separate processes/workers each keep
+  their own ceiling. The daily quota can be made durable with
+  `capability.PostgresDailyQuota`. An external worker must still be forced
+  through this proxy (or a shared broker) to be constrained at all.
 - Request and response bodies within the cap are buffered in memory.
 - `NetworkAuditSink` is an interface; production must wire `AuditSink` to a
   durable audit store.

@@ -18,10 +18,9 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
+	"github.com/Zn070515/BountyGrid/internal/capability"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/gateway"
-	"github.com/Zn070515/BountyGrid/internal/policy/rules"
-	"github.com/Zn070515/BountyGrid/internal/timeutil"
 )
 
 type ToolSpec struct {
@@ -157,147 +156,22 @@ func (s *Sandbox) CheckURL(raw string) error {
 var (
 	ErrResponseTooLarge = errors.New("egress: response too large")
 	ErrNonPublicAddress = errors.New("egress: resolved address is not public")
-	ErrGrantDenied      = errors.New("egress: request is outside the execution grant")
+	// ErrGrantDenied aliases the capability sentinel so existing harness
+	// callers can keep matching it with errors.Is.
+	ErrGrantDenied = capability.ErrGrantDenied
 )
 
-// ExecutionGrant is the per-execution network authority derived from the
-// approved decision. A tool cannot widen it: the approved method, target,
-// rate/concurrency ceiling and daily limit are enforced on every request, not
-// once per tool call.
-type ExecutionGrant struct {
-	DecisionID domain.DecisionID
-	// AccountID is the account the decision was made for. Together with
-	// ProgramID it identifies the shared rate/concurrency/daily limiter, so a
-	// second execution for the same account and program cannot reset the ceiling.
-	AccountID domain.AccountID
-	ProgramID domain.ProgramID
-	AssetID   *domain.AssetID
-	// AssetTarget is the canonical asset value resolved by the Action Gateway.
-	AssetTarget string
-	// ExpiresAt is the decision's expiry. A zero value means the grant carries no
-	// expiry; GrantPolicy rejects such a grant rather than treating it as
-	// unlimited.
-	ExpiresAt time.Time
-	// AllowedMethods is empty only for a grant with no bound method, in which
-	// case only GET/HEAD are permitted.
-	AllowedMethods   map[string]struct{}
-	ForbiddenMethods map[string]struct{}
-	// AllowedPathPrefixes restricts a URL asset to the approved path tree. Empty
-	// means the asset did not specify a path.
-	AllowedPathPrefixes []string
-	MaxRPS              *float64
-	MaxConcurrency      *int
-	// DailyLimit is the maximum requests in one business day; 0 means the grant
-	// has no explicit daily ceiling (it still counts requests for audit).
-	DailyLimit int64
-}
-
-// programLimiter is the shared rate/concurrency/daily state for one
-// account+program+interface. It lives on the base Egress and is selected by a
-// stable key, so separate WithGrant/Execute calls cannot each reset the
-// platform's RPS, concurrency or daily ceilings.
-type programLimiter struct {
-	mu sync.Mutex
-	// last is the last scheduled RPS slot. It is shared by every grant bound to
-	// this limiter.
-	last time.Time
-	// rps is the strictest positive RPS observed on this limiter. A later grant
-	// with a lower RPS tightens the shared schedule.
-	rps float64
-	// maxConc is the strictest concurrency ceiling observed (0 = unlimited).
-	// A later tighter ceiling is applied to subsequent acquisitions.
-	maxConc int
-	// inFlight is the number of requests currently holding a concurrency slot.
-	inFlight int
-	// notify is closed and replaced on every release so blocked acquisitions
-	// wake up and re-check the ceiling without a polling loop.
-	notify chan struct{}
-	daily  *dailyCounter
-}
-
-func newProgramLimiter() *programLimiter {
-	return &programLimiter{notify: make(chan struct{}), daily: &dailyCounter{}}
-}
-
-// dailyCounter is the per-program daily request budget. Every ExecutionGrant
-// for the same program shares one counter, so separate tool executions cannot
-// each reset the platform's PerInterfaceDailyLimits.
-type dailyCounter struct {
-	mu   sync.Mutex
-	day  string
-	used int64
-}
-
-func (c *dailyCounter) count(now time.Time, limit int64) error {
-	day := businessDay(now)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.day != day {
-		c.day = day
-		c.used = 0
-	}
-	if limit > 0 && c.used >= limit {
-		return fmt.Errorf("%w: daily request limit %d reached", ErrGrantDenied, limit)
-	}
-	c.used++
-	return nil
-}
-
-// limiterRegistry holds one programLimiter per account+program+interface key.
-// The base Egress owns the registry so every derived WithGrant client shares
-// the same limiter.
-type limiterRegistry struct {
-	mu       sync.Mutex
-	limiters map[string]*programLimiter
-}
-
-func newLimiterRegistry() *limiterRegistry {
-	return &limiterRegistry{limiters: make(map[string]*programLimiter)}
-}
-
-func (r *limiterRegistry) limiter(key string) *programLimiter {
-	if key == "" {
-		// A grant without account/program/asset identity cannot be shared
-		// safely; give it its own limiter (fail-safe, not global).
-		return newProgramLimiter()
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	l := r.limiters[key]
-	if l == nil {
-		l = newProgramLimiter()
-		r.limiters[key] = l
-	}
-	return l
-}
-
-// grantScopeKey groups grants that must share one rate/concurrency/daily
-// limiter. AccountID+ProgramID is the stable identity; asset/asset-target are
-// fallbacks for callers that build a grant without a program. The trailing
-// "http" component is the interface/action namespace: HTTP and ACTIVE_HTTP
-// collapse into the grant's single request budget.
-func grantScopeKey(g ExecutionGrant) string {
-	account := strings.TrimSpace(string(g.AccountID))
-	scope := strings.TrimSpace(string(g.ProgramID))
-	if scope == "" && g.AssetID != nil {
-		scope = "asset:" + string(*g.AssetID)
-	}
-	if scope == "" {
-		scope = strings.TrimSpace(g.AssetTarget)
-	}
-	if account == "" && scope == "" {
-		return ""
-	}
-	return account + "|" + scope + "|http"
-}
+// ExecutionGrant is the capability package's grant type. The alias keeps the
+// harness/proxy API stable while the shared capability plane owns grant
+// semantics (target matching, lease and revision binding).
+type ExecutionGrant = capability.ExecutionGrant
 
 type Egress struct {
 	sandbox  *Sandbox
 	client   *http.Client
 	maxBytes int64
 	grant    *ExecutionGrant
-	limiter  *programLimiter
-	limiters *limiterRegistry
+	broker   capability.Broker
 }
 
 // DefaultEgressMaxBytes bounds a single response body. Tools must not be able
@@ -308,7 +182,11 @@ func NewEgress(s *Sandbox) *Egress {
 	if s == nil {
 		s = &Sandbox{}
 	}
-	e := &Egress{sandbox: s, maxBytes: DefaultEgressMaxBytes, limiters: newLimiterRegistry()}
+	e := &Egress{
+		sandbox:  s,
+		maxBytes: DefaultEgressMaxBytes,
+		broker:   capability.NewMemoryBroker(),
+	}
 	approved, proxyErr := parseApprovedProxy(s.ApprovedProxy)
 	transport := &http.Transport{
 		// Proxy is nil unless an operator configured an approved proxy. An
@@ -367,18 +245,13 @@ func parseApprovedProxy(raw string) (*url.URL, error) {
 
 // WithGrant returns a per-execution client bound to the approved decision. The
 // shared transport is reused. Method/target/path checks are per grant, but RPS,
-// concurrency and the daily counter are shared through the base Egress's
-// limiter registry: a second execution for the same account/program cannot
-// reset the platform's ceilings.
+// concurrency and the daily counter are shared through the injected
+// capability.Broker (in-memory by default): a second execution for the same
+// account/program cannot reset the platform's ceilings.
 func (e *Egress) WithGrant(g ExecutionGrant) *Egress {
 	out := *e
 	grant := g
 	out.grant = &grant
-	if e.limiters != nil {
-		out.limiter = e.limiters.limiter(grantScopeKey(g))
-	} else {
-		out.limiter = newProgramLimiter()
-	}
 	// Redirects must be checked against the grant, not only the sandbox. The
 	// base client's hook captures the original Egress (grant == nil), so a grant
 	// client gets its own redirect policy closure.
@@ -402,6 +275,27 @@ func (e *Egress) WithGrant(g ExecutionGrant) *Egress {
 		},
 	}
 	return &out
+}
+
+// WithBroker returns a copy of this Egress that uses a shared capability
+// broker. Use it when a proxy (or another execution surface) must enforce the
+// same account/program/interface RPS, concurrency and daily quota.
+func (e *Egress) WithBroker(b capability.Broker) *Egress {
+	out := *e
+	if b != nil {
+		out.broker = b
+	} else {
+		out.broker = capability.NewMemoryBroker()
+	}
+	return &out
+}
+
+// SetBroker replaces the base Egress broker. It is a setup-time operation;
+// callers must not race it with in-flight requests.
+func (e *Egress) SetBroker(b capability.Broker) {
+	if b != nil {
+		e.broker = b
+	}
 }
 
 // SetMaxBytes overrides the response-body limit (tests or a stricter tool).
@@ -465,171 +359,35 @@ func (e *Egress) checkGrant(req *http.Request) error {
 	} else if method != http.MethodGet && method != http.MethodHead {
 		return fmt.Errorf("%w: only GET/HEAD are approved", ErrGrantDenied)
 	}
-	if err := g.allowsTarget(req.URL); err != nil {
+	if err := g.AllowsTarget(req.URL); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (g *ExecutionGrant) allowsTarget(u *url.URL) error {
-	target := strings.TrimSpace(g.AssetTarget)
-	host := strings.ToLower(u.Hostname())
-	// Asset values may be bare host patterns (api.example.com, *.example.com)
-	// or full URLs including a path. A bare pattern is matched against the host;
-	// a URL target additionally pins scheme and path prefix.
-	if target != "" && !strings.Contains(target, "/") && !strings.Contains(target, ":") {
-		if !rules.HostMatches(target, host) {
-			return fmt.Errorf("%w: host %s is not the approved asset %s", ErrGrantDenied, host, target)
-		}
-	} else if target != "" {
-		parsed, err := url.Parse(target)
-		if err != nil || parsed.Hostname() == "" {
-			// A non-URL asset value (a description, CIDR, etc.) cannot be treated
-			// as a network target. Do not widen the grant silently.
-			return fmt.Errorf("%w: asset target %q is not a network target", ErrGrantDenied, target)
-		}
-		if parsed.Scheme != "" && !strings.EqualFold(parsed.Scheme, u.Scheme) {
-			return fmt.Errorf("%w: scheme %s is not approved", ErrGrantDenied, u.Scheme)
-		}
-		if !rules.HostMatches(parsed.Hostname(), host) {
-			return fmt.Errorf("%w: host %s is not the approved asset %s", ErrGrantDenied, host, parsed.Hostname())
-		}
-		if parsed.Port() != "" && parsed.Port() != u.Port() {
-			return fmt.Errorf("%w: port %s is not approved", ErrGrantDenied, u.Port())
-		}
-		if parsed.Path != "" && parsed.Path != "/" {
-			path := u.EscapedPath()
-			if path == "" {
-				path = "/"
-			}
-			// Segment-aware matching: /api must not match /apix or /api-admin.
-			// CanonicalPath also decodes escapes and resolves dot segments, so
-			// /api/%2e%2e/admin cannot escape an /api prefix.
-			if !rules.PathWithin(parsed.EscapedPath(), path) {
-				return fmt.Errorf("%w: path %s is outside %s", ErrGrantDenied, path, parsed.Path)
-			}
-		}
-	}
-	// AllowedPathPrefixes apply to bare-host assets too; a host-only asset must
-	// not silently drop the grant's path restriction.
-	for _, prefix := range g.AllowedPathPrefixes {
-		if prefix == "" {
-			continue
-		}
-		path := u.EscapedPath()
-		if path == "" {
-			path = "/"
-		}
-		if !rules.PathWithin(prefix, path) {
-			return fmt.Errorf("%w: path %s is outside %s", ErrGrantDenied, path, prefix)
-		}
-	}
-	return nil
-}
-
+// acquire takes a shared capability lease for one request. The grant's
+// account/program/interface selects the limiter in the injected broker.
 func (e *Egress) acquire(ctx context.Context) (func(), error) {
 	g := e.grant
-	if g == nil {
+	if g == nil || e.broker == nil {
 		return func() {}, nil
 	}
-	l := e.limiter
-	if l == nil {
+	lease, err := e.broker.Acquire(ctx, capability.Request{
+		AccountID:      g.AccountID,
+		ProgramID:      g.ProgramID,
+		Interface:      "http",
+		MaxRPS:         g.MaxRPS,
+		MaxConcurrency: g.MaxConcurrency,
+		DailyLimit:     g.DailyLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if lease == nil {
+		// Defensive: a custom broker must not make Egress panic on a nil lease.
 		return func() {}, nil
 	}
-	if err := l.wait(ctx, g.MaxRPS); err != nil {
-		return nil, err
-	}
-	if err := l.daily.count(time.Now(), g.DailyLimit); err != nil {
-		return nil, err
-	}
-	maxConc := 0
-	if g.MaxConcurrency != nil {
-		maxConc = *g.MaxConcurrency
-	}
-	return l.acquireConc(ctx, maxConc)
-}
-
-// wait schedules the next request slot on the shared RPS timeline. The limiter
-// keeps the strictest positive RPS observed, so a later grant with a lower rate
-// tightens the shared schedule instead of resetting it.
-func (l *programLimiter) wait(ctx context.Context, rps *float64) error {
-	l.mu.Lock()
-	if rps != nil && *rps > 0 && (l.rps == 0 || *rps < l.rps) {
-		l.rps = *rps
-	}
-	// A grant with no RPS of its own still observes a ceiling already set on the
-	// shared limiter.
-	if l.rps == 0 {
-		l.mu.Unlock()
-		return nil
-	}
-	interval := time.Duration(float64(time.Second) / l.rps)
-	now := time.Now()
-	next := l.last.Add(interval)
-	if next.Before(now) {
-		next = now
-	}
-	l.last = next
-	wait := time.Until(next)
-	l.mu.Unlock()
-	if wait <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// acquireConc takes one shared concurrency slot. A limit <= 0 means the grant
-// imposes no ceiling of its own, but an already-observed tighter ceiling from
-// another grant on the same limiter is still enforced. A later grant with a
-// lower ceiling tightens subsequent acquisitions; it never raises an existing
-// one.
-func (l *programLimiter) acquireConc(ctx context.Context, limit int) (func(), error) {
-	for {
-		l.mu.Lock()
-		if limit > 0 && (l.maxConc == 0 || limit < l.maxConc) {
-			l.maxConc = limit
-		}
-		if l.maxConc == 0 {
-			l.mu.Unlock()
-			return func() {}, nil
-		}
-		if l.inFlight < l.maxConc {
-			l.inFlight++
-			l.mu.Unlock()
-			var once sync.Once
-			return func() {
-				once.Do(func() { l.releaseConc() })
-			}, nil
-		}
-		ch := l.notify
-		l.mu.Unlock()
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-}
-
-func (l *programLimiter) releaseConc() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.inFlight > 0 {
-		l.inFlight--
-	}
-	close(l.notify)
-	l.notify = make(chan struct{})
-}
-
-func businessDay(t time.Time) string {
-	return t.In(timeutil.BusinessLocation()).Format("2006-01-02")
+	return lease.Release, nil
 }
 
 // publicDialContext resolves the host, rejects any private/loopback/link-local
@@ -935,6 +693,7 @@ type Harness struct {
 	workspace        *Workspace
 	allowDestructive bool
 	now              func() time.Time
+	revocations      capability.RevocationRegistry
 }
 
 func New(reg *Registry, gate Gate, auditor Auditor, sandbox *Sandbox, budget *Budget) *Harness {
@@ -984,6 +743,19 @@ func (h *Harness) SetClock(now func() time.Time) {
 	if now != nil {
 		h.now = now
 	}
+}
+
+// SetBroker injects the shared capability broker (RPS/concurrency/daily
+// quota). The same broker can be given to a proxy so both surfaces enforce one
+// account/program/interface budget.
+func (h *Harness) SetBroker(b capability.Broker) {
+	h.egress.SetBroker(b)
+}
+
+// SetRevocationRegistry wires the authorization-epoch source used to stamp
+// execution grants. A later Bump makes every grant for the program invalid.
+func (h *Harness) SetRevocationRegistry(r capability.RevocationRegistry) {
+	h.revocations = r
 }
 
 // Execute authorizes and runs one tool. The tool's RequiredAction overrides the
@@ -1136,7 +908,11 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 
 	tc := ToolContext{Request: in.Request, Decision: decision, Budget: h.budget}
 	if spec.NetworkEgress {
-		tc.Egress = h.egress.WithGrant(buildGrant(decision, in.Request))
+		grant := buildGrant(decision, in.Request, h.now())
+		if h.revocations != nil {
+			grant.AuthorizationEpoch = h.revocations.Epoch(grant.ProgramID)
+		}
+		tc.Egress = h.egress.WithGrant(grant)
 	}
 	if spec.ReadsFiles || spec.WritesFiles {
 		tc.Workspace = h.workspace
@@ -1192,7 +968,7 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 // decision. The approved method is the only method a network tool may use; the
 // program's allowed/forbidden lists and rate/concurrency/daily constraints are
 // enforced per request by Egress.
-func buildGrant(decision domain.ActionDecision, req domain.ActionRequest) ExecutionGrant {
+func buildGrant(decision domain.ActionDecision, req domain.ActionRequest, now time.Time) ExecutionGrant {
 	account := decision.Request.AccountID
 	if account == "" {
 		account = req.AccountID
@@ -1205,9 +981,19 @@ func buildGrant(decision domain.ActionDecision, req domain.ActionRequest) Execut
 		AssetTarget:      decision.AssetTarget,
 		AllowedMethods:   map[string]struct{}{},
 		ForbiddenMethods: map[string]struct{}{},
+		// The grant is bound to the exact scope/policy snapshots the decision
+		// was evaluated against. A later edit invalidates it in ProgramValidator.
+		ScopeRevision:  decision.ScopeRevision,
+		PolicyRevision: decision.PolicyRevision,
 	}
 	if decision.ExpiresAt != nil {
 		g.ExpiresAt = *decision.ExpiresAt
+	}
+	// A grant has its own short lease, always capped by the decision expiry. An
+	// execution that outlives the lease must obtain a new decision.
+	g.LeaseUntil = now.Add(capability.DefaultGrantLease)
+	if !g.ExpiresAt.IsZero() && g.ExpiresAt.Before(g.LeaseUntil) {
+		g.LeaseUntil = g.ExpiresAt
 	}
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {

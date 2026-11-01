@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
+	"github.com/Zn070515/BountyGrid/internal/capability"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/gateway"
 )
@@ -545,16 +546,6 @@ func TestExecutionGrantEnforcesMethodAndTarget(t *testing.T) {
 	}
 }
 
-func TestExecutionGrantDailyLimit(t *testing.T) {
-	l := newProgramLimiter()
-	if err := l.daily.count(testNow, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.daily.count(testNow, 1); !errors.Is(err, ErrGrantDenied) {
-		t.Fatalf("second request err = %v, want daily limit", err)
-	}
-}
-
 func TestDailyLimitSharedAcrossGrants(t *testing.T) {
 	var calls atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -623,12 +614,12 @@ func TestRPSSharedAcrossGrants(t *testing.T) {
 		t.Fatalf("second acquire err = %v, want deadline exceeded from the shared RPS slot", err)
 	}
 
-	// A different program gets a separate limiter and is not blocked.
+	// A different program gets a separate limiter and is not blocked. If the
+	// second execution above had used a fresh per-execution limiter it would
+	// also have acquired immediately (its schedule starts at now), so the
+	// deadline above proves the limiter is genuinely shared.
 	otherGrant := grant
 	otherGrant.ProgramID = "p2"
-	if e.limiters.limiter(grantScopeKey(grant)) == e.limiters.limiter(grantScopeKey(otherGrant)) {
-		t.Fatal("different programs must not share a limiter")
-	}
 	other := e.WithGrant(otherGrant)
 	otherCtx, otherCancel := context.WithTimeout(context.Background(), time.Second)
 	defer otherCancel()
@@ -637,20 +628,6 @@ func TestRPSSharedAcrossGrants(t *testing.T) {
 		t.Fatalf("other program acquire: %v", err)
 	}
 	releaseOther()
-
-	// Move the shared slot into the past; only the shared limiter can unblock
-	// the second execution, proving its per-execution state was not reset.
-	l := e.limiters.limiter(grantScopeKey(grant))
-	l.mu.Lock()
-	l.last = time.Now().Add(-200 * time.Second)
-	l.mu.Unlock()
-	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
-	defer cancel2()
-	releaseSecond, err := second.acquire(ctx2)
-	if err != nil {
-		t.Fatalf("second acquire after the shared slot elapsed: %v", err)
-	}
-	releaseSecond()
 }
 
 func TestConcurrencySharedAcrossGrants(t *testing.T) {
@@ -719,7 +696,7 @@ func TestExecutionGrantPathUsesSegmentAwareMatching(t *testing.T) {
 				t.Fatalf("parse %q: %v", tc.path, err)
 			}
 			g := ExecutionGrant{AssetTarget: target}
-			err = g.allowsTarget(u)
+			err = g.AllowsTarget(u)
 			if got := err == nil; got != tc.want {
 				t.Fatalf("allowsTarget(%q) allowed=%v err=%v, want allowed=%v", tc.path, got, err, tc.want)
 			}
@@ -745,7 +722,7 @@ func TestExecutionGrantAllowedPathPrefixes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = g.allowsTarget(u)
+			err = g.AllowsTarget(u)
 			if got := err == nil; got != tc.want {
 				t.Fatalf("allowsTarget(%q) allowed=%v err=%v, want allowed=%v", tc.path, got, err, tc.want)
 			}
@@ -753,23 +730,40 @@ func TestExecutionGrantAllowedPathPrefixes(t *testing.T) {
 	}
 }
 
-func TestBuildGrantBindsAccountAndExpiry(t *testing.T) {
+func TestBuildGrantBindsAccountExpiryLeaseAndRevisions(t *testing.T) {
 	exp := testNow.Add(time.Minute)
 	decision := domain.ActionDecision{
 		ID: "d1", ProgramID: "p1", ExpiresAt: &exp,
+		ScopeRevision: "scope-r1", PolicyRevision: "policy-r1",
 		Request: domain.ActionRequest{AccountID: "acc1"},
 	}
-	g := buildGrant(decision, domain.ActionRequest{AccountID: "fallback"})
+	g := buildGrant(decision, domain.ActionRequest{AccountID: "fallback"}, testNow)
 	if g.AccountID != "acc1" {
 		t.Fatalf("grant account = %q, want acc1", g.AccountID)
 	}
 	if !g.ExpiresAt.Equal(exp) {
 		t.Fatalf("grant expiry = %v, want %v", g.ExpiresAt, exp)
 	}
+	if g.ScopeRevision != "scope-r1" || g.PolicyRevision != "policy-r1" {
+		t.Fatalf("grant revisions = %q/%q, want scope-r1/policy-r1", g.ScopeRevision, g.PolicyRevision)
+	}
+	// The default lease is one minute and is capped by the decision expiry.
+	if !g.LeaseUntil.Equal(testNow.Add(capability.DefaultGrantLease)) {
+		t.Fatalf("grant lease = %v, want %v", g.LeaseUntil, testNow.Add(capability.DefaultGrantLease))
+	}
+
 	decision.Request.AccountID = ""
-	g = buildGrant(decision, domain.ActionRequest{AccountID: "fallback"})
+	g = buildGrant(decision, domain.ActionRequest{AccountID: "fallback"}, testNow)
 	if g.AccountID != "fallback" {
 		t.Fatalf("grant account fallback = %q, want fallback", g.AccountID)
+	}
+
+	// A shorter decision expiry wins over the default lease.
+	short := testNow.Add(10 * time.Second)
+	decision.ExpiresAt = &short
+	g = buildGrant(decision, domain.ActionRequest{AccountID: "fallback"}, testNow)
+	if !g.LeaseUntil.Equal(short) {
+		t.Fatalf("grant lease = %v, want decision expiry %v", g.LeaseUntil, short)
 	}
 }
 
@@ -794,7 +788,7 @@ func TestExecutionGrantAssetTargetHostPatterns(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			g := ExecutionGrant{AssetTarget: tc.pattern}
-			err := g.allowsTarget(&url.URL{Scheme: "https", Host: tc.host, Path: "/"})
+			err := g.AllowsTarget(&url.URL{Scheme: "https", Host: tc.host, Path: "/"})
 			if got := err == nil; got != tc.want {
 				t.Fatalf("allowsTarget(%q, %q) = %v, want %v", tc.pattern, tc.host, got, tc.want)
 			}
