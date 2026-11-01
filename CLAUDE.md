@@ -29,7 +29,7 @@ go run ./cmd/bountygrid ping
 go test ./... && go vet ./... && go build ./...
 ```
 
-`cmd/bountygrid` supports `migrate`, `rollback`, `ping`, `sync`, `derive`, `decide`, `schedule`, `competition`, `harness`, `model`, `policy`, `trace`, `verify`, `report`, `submit`, `ledger`, `version`. Migrations are embedded SQL under `internal/store/postgres/migrations/`; add a new numbered file, never edit an applied migration.
+`cmd/bountygrid` supports `migrate`, `rollback`, `ping`, `sync`, `derive`, `decide`, `schedule`, `competition`, `harness`, `model`, `policy`, `trace`, `verify`, `report`, `submit`, `ledger`, `revoke`, `version`. Migrations are embedded SQL under `internal/store/postgres/migrations/`; add a new numbered file, never edit an applied migration.
 
 `sync -platform vulbox|xianzhi|butian` is the read-only Reader (`-programs`, `-account`, `-program <id>`, `-persist`; Butian also `-public-welfare`/`-grow`). It uses the `agent-browser` sidecar and the existing `vbprobe`/`xzprobe`/`btprobe` session; keep the session alive (`-close=false`). It never signs up, accepts NDA/rules, takes exams, or submits. Raw pages stay in `.evidence/` (gitignored). Probes under `probes/` are not product code.
 

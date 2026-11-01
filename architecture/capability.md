@@ -183,6 +183,21 @@ bumps cannot return the same value. A registry read error fails closed — an
 unreadable epoch is never treated as epoch 0. The CLI wires the durable
 registry into both the harness (grant stamping) and the `ProgramValidator`.
 
+Bumps are triggered automatically by `Repo.UpsertProgram`, in the same
+transaction as the program write and after locking the existing row. The epoch
+is bumped when the platform identity changes, the program leaves `RUNNING`
+(including to `UNKNOWN`), the Scope content revision changes, or the
+automation/constraints policy revision changes. A pure observation refresh with
+identical authority does not bump. For an immediate operator kill switch, run:
+
+```bash
+bountygrid revoke -program <program-id> -reason "why"
+```
+
+The command bumps the durable epoch and appends a `grant.revoked` audit event
+(`ActorKind=HUMAN`). Outstanding grants are rejected on their next request by
+both `GrantPolicy` and `Egress`, even after a process restart.
+
 ## Deliberate limits
 
 - RPS/concurrency are per-process; the daily quota and revocation epochs can be
