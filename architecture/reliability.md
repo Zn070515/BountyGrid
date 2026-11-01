@@ -125,7 +125,7 @@ type FactRecord struct {
 - `Observation`：`ToolName + ArgsHash + ResponseHash + Content + Evidence + Sequence + ObservedAt`。`Content` 是摘要，不是原始页面；`NewObservation` 会自动脱敏。
 - `Unknown`：显式未决问题（`Question/Reason/Blocking`），防止模型把“不知道”写成结论。
 - `Hypothesis`：`OPEN / SUPPORTED / REFUTED / ABANDONED`，可带 `Failure *FailureSignature` 和 `Refutation`；失败假设进入 `FailedHypotheses`。
-- `Attempt`：每步的实际执行记录，只保存 `ArgsHash` 和 `Failure`，不保存原始参数。
+- `Attempt`：每步的实际执行记录，只保存 `ArgsHash` 和 `Failure`，不保存原始参数。`Status` 为 `STARTED / COMPLETED / FAILED / INTERRUPTED`；`STARTED` 在执行工具前写入并 checkpoint，`COMPLETED/FAILED` 在执行后通过 `ReplaceAttempt` 补齐（身份字段不可改写）。进程崩溃或回放时残留的 `STARTED` 会被标记为 `INTERRUPTED`（结果未知），同一 tool+args 不会被自动重放。
 - `CandidateFinding`：模型提出的候选漏洞。`ToFinding()` 生成 `domain.Finding{Status:"CANDIDATE"}`，之后仍必须经过 `verify.RuleVerifier`、`report.Build`、审批与 submit。
 - 状态中所有自由文本都做敏感值扫描；命中 `internal/redact` 规则即返回 `ErrSecretDetected`。`NewObservation` 对内容做 redaction，而不是把秘密写进状态。
 
@@ -197,7 +197,8 @@ type Executor interface {
   - `NeedsAsset()` 动作必须有 authorization 提供的权威 asset，且 proposal 的 asset 必须一致；模型不能自带 asset；
   - proposal 参数必须是合法 JSON 且不含敏感值（普通扫描 + JSON 去引号扫描，覆盖 `"token":"..."` 形态）。
   - 排序：confidence 降序 → estimated cost 升序 → 原始顺序。
-- `Loop.Run` 每轮：`Compile` → `Propose` → `RankProposals` → 取第 1 个 → 消耗 step/tool-call → `Executor.Execute` → 记录 observation/attempt/fact → `LoopDetector.Observe` → 下一轮重新编译。
+- `Loop.Run` 每轮：`Compile` → `Propose` → `RankProposals` → 过滤“同 tool+args 已 `INTERRUPTED`”的提案 → 取第 1 个 → 消耗 step/tool-call → **写 `STARTED` attempt 并 checkpoint** → `Executor.Execute` → 用 `ReplaceAttempt` 记录 observation/fact/failure → `LoopDetector.Observe` → 下一轮重新编译。
+- 进入新一轮 `Run`（或 `Resume`）时，任何残留 `STARTED` 会先转为 `INTERRUPTED`；上下文在 `FAILED APPROACHES` 中显示 `outcome_unknown do_not_repeat`。重放被阻止是 fail-safe：崩溃可能发生在工具已产生副作用之后。
 - 不存在“模型一次返回长程 plan 并自行执行”的路径；plan 只能体现为每步 1–3 个候选。
 - 执行错误不会中止循环：错误被转成 `FailureSignature`，写入 attempt，并进入下一轮上下文；只有 context/配置/状态校验错误才返回 error。
 - 停止原因显式：`NO_PROPOSALS`、`NO_ALLOWED_PROPOSALS`、`MAX_STEPS`、`BUDGET_EXHAUSTED`、`STALLED`。`STALLED` 时 session 进入 `STALLED`，`BUDGET_EXHAUSTED` 进入 `PARKED`；`STOP_STALLED` 附带 `DetectorAction` 供上层 handoff/escalate/park。
@@ -279,6 +280,7 @@ CandidateFinding.ToFinding()
 - 失败签名与 FailureReport 不含原始参数/秘密。
 - 状态中不保存原始页面、cookie/token/密码/证件/银行卡/完整手机号/邮箱。
 - 检测器只在有证据/事实进展时重置；没有进展的重复调用不能无限消耗预算。
+- 工具执行前必须存在可恢复的 `STARTED` attempt；残留的 `STARTED` 只能转为 `INTERRUPTED`，不能自动重放同一 tool+args。
 
 ## 9. 当前实现与测试
 
@@ -300,12 +302,13 @@ CandidateFinding.ToFinding()
 - 每步只执行一个动作、过滤未授权/人类专属/无权威资产的动作、最大步数、预算耗尽、停滞停止、replan 使用新 observation、执行器失败不回显原始错误；
 - 3/5 阈值、可配置阈值、不同 args 不计重复、无进展检测、新 evidence/fact 恢复、重复 error/hypothesis 升级、token/tool 预算、Reset；
 - FailureSignature 规范化与大小写/参数顺序；FailureReport 不含原始参数、去重、稳定排序。
+- 执行前 `STARTED` checkpoint、执行后 `ReplaceAttempt`（身份不可改写）、崩溃残留转 `INTERRUPTED`、同 tool+args 不重放、`Resume` 标记 in-flight、上下文显示 `outcome_unknown`。
 
 ## 10. 残余限制
 
 - 没有真实模型适配器；`Proposer`/`Executor` 由调用方实现。模型身份、量化、chat template、tool protocol 等 serving metadata 仍属于 `internal/model`/trace 的后续工作。
 - `EvidenceView` 由调用方策展；本包不负责从 `Evidence`/`ObservedFact` 自动生成视图，也不做 LLM summarization。它保证“视图有界、ID 稳定、无 raw 页面字段”。
 - 检测器是启发式：阈值和“无进展”定义可由上层配置；它不替代人工复核，也不产生 `VERIFIED`。
-- 研究状态默认是内存结构；`FileSessionStore` 提供单机 JSON 持久化与 checkpoint，但尚未接入 PostgreSQL/跨进程 trace，也没有 step 执行前的 STARTED 记录（崩溃在 Execute 中途时无法区分“已执行/未执行”）。
+- 研究状态默认是内存结构；`FileSessionStore` 提供单机 JSON 持久化与 checkpoint，但尚未接入 PostgreSQL/跨进程 trace。`STARTED` 记录已覆盖“执行前 → 执行后”的崩溃窗口；代价是崩溃在 checkpoint 与工具真正执行之间时也会被标记为 `INTERRUPTED`（保守，但会阻止一次安全重试）。要重试必须改变参数或开启新的研究会话。
 - `RankProposals` 只做本地过滤与排序，不是 Policy；真正的 scope/automation/eligibility 判定仍由 Action Gateway 完成。
 - `ProofResolver` 由调用方实现；本包强制“经权威解析 + program/finding/asset 绑定 + 证据交集”，但不负责把 `domain.ExecutionReceipt`/`domain.Verification` 映射成 proof（该 adapter 仍需实现）。

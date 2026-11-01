@@ -456,6 +456,19 @@ func (c *ContextCompiler) failuresSection(s *ResearchSession) sectionDraft {
 		lines = append(lines, fmt.Sprintf("- FAILED tool=%s error=%s args=%s",
 			a.Failure.ToolName, a.Failure.ErrorClass, shortHash(a.Failure.ArgsHash)))
 	}
+	for _, a := range s.Attempts {
+		if a.Status != AttemptInterrupted {
+			continue
+		}
+		if len(lines) >= c.opts.MaxFailureItems {
+			lines = append(lines, fmt.Sprintf(failureOmittedMarker, 1))
+			break
+		}
+		// The outcome is unknown: do not let the model treat this as a safe
+		// retry of the same call.
+		lines = append(lines, fmt.Sprintf("- INTERRUPTED tool=%s args=%s outcome_unknown do_not_repeat",
+			a.ToolName, shortHash(a.ArgsHash)))
+	}
 	if len(lines) == 0 {
 		lines = []string{"none"}
 	}

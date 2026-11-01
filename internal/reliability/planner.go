@@ -246,6 +246,14 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 	if session.State != StateRunning && session.State != StateCreated {
 		return LoopResult{}, fmt.Errorf("%w: session state is %s", ErrInvalidClaim, session.State)
 	}
+	// A session loaded from a crashed process may still contain STARTED
+	// attempts. No execution can be in flight in this run, so treat their
+	// outcome as unknown before proposing anything.
+	if session.interruptInFlight(l.now().UTC()) {
+		if err := l.checkpoint(ctx, session); err != nil {
+			return LoopResult{SessionID: session.ID}, err
+		}
+	}
 	if now := l.now().UTC(); l.authorization.Expired(now) {
 		return LoopResult{SessionID: session.ID, Stop: StopNoAllowedProposals}, fmt.Errorf("%w", ErrAuthorizationExpired)
 	}
@@ -298,6 +306,19 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 			break
 		}
 		ranked := RankProposals(proposals, l.authorization, session.Budget, now)
+		if len(ranked) > 0 {
+			// A previous run may have started this exact tool+args and crashed
+			// before recording the outcome. Replaying it could repeat a side
+			// effect, so only a different action/argument set is eligible.
+			allowed := ranked[:0]
+			for _, p := range ranked {
+				if session.HasInterruptedAttempt(proposalTool(p), HashArgs(p.Parameters)) {
+					continue
+				}
+				allowed = append(allowed, p)
+			}
+			ranked = allowed
+		}
 		if len(ranked) == 0 {
 			result.Stop = StopNoAllowedProposals
 			break
@@ -313,7 +334,23 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 			break
 		}
 
-		startedAt := now
+		startedAt := l.now().UTC()
+		attemptID := StableID("attempt", fmt.Sprint(step), proposal.ID, proposalTool(proposal), HashArgs(proposal.Parameters))
+		startedAttempt := Attempt{
+			ID: attemptID, Step: step, ProposalID: proposal.ID,
+			ToolName: proposalTool(proposal), Action: proposal.Action,
+			ArgsHash: HashArgs(proposal.Parameters),
+			Status:   AttemptStarted, StartedAt: startedAt,
+		}
+		// The STARTED record and its checkpoint must exist before the tool can
+		// have a side effect; if the process dies after this point, the next
+		// run knows the outcome is unknown instead of silently retrying.
+		if err := session.AddAttempt(startedAttempt); err != nil {
+			return result, err
+		}
+		if err := l.checkpoint(ctx, session); err != nil {
+			return result, err
+		}
 		execResult, execErr := l.executor.Execute(ctx, proposal)
 		if ctx != nil && ctx.Err() != nil {
 			return result, ctx.Err()
@@ -393,20 +430,16 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 			// detector's seen-set treats it as unchanged.
 		}
 
-		attempt := Attempt{
-			ID:            StableID("attempt", fmt.Sprint(step), proposal.ID, proposalTool(proposal), HashArgs(proposal.Parameters)),
-			Step:          step,
-			ProposalID:    proposal.ID,
-			ToolName:      proposalTool(proposal),
-			Action:        proposal.Action,
-			ArgsHash:      HashArgs(proposal.Parameters),
-			ObservationID: obs.ID,
-			Evidence:      dedupeEvidence(obs.Evidence),
-			Failure:       cloneFailurePtr(failure),
-			StartedAt:     startedAt,
-			FinishedAt:    now,
+		attempt := startedAttempt
+		attempt.Status = AttemptCompleted
+		if failure != nil {
+			attempt.Status = AttemptFailed
 		}
-		if err := session.AddAttempt(attempt); err != nil {
+		attempt.ObservationID = obs.ID
+		attempt.Evidence = dedupeEvidence(obs.Evidence)
+		attempt.Failure = cloneFailurePtr(failure)
+		attempt.FinishedAt = l.now().UTC()
+		if err := session.ReplaceAttempt(attempt); err != nil {
 			return result, err
 		}
 		session.Budget.AddTokens(execResult.Tokens)
@@ -421,7 +454,7 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 			FactID:         factID,
 			TokensUsed:     session.Budget.TokensUsed,
 			ToolCallsUsed:  session.Budget.ToolCallsUsed,
-			At:             now,
+			At:             attempt.FinishedAt,
 		})
 		result.LastDetection = detection
 		result.Steps = append(result.Steps, ExecutedStep{
