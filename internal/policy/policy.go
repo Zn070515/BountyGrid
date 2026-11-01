@@ -391,7 +391,7 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		}
 	}
 	if e.platform != nil {
-		pr, perr := e.platform.Evaluate(dc.Program, ruleRequest)
+		pr, perr := e.platform.Evaluate(ctx, dc.Program, ruleRequest)
 		if perr != nil {
 			return decide(domain.DecisionDeny, "RULE_REQUEST_INVALID"), nil
 		}

@@ -86,7 +86,7 @@ func BuildPlatformPolicy(ctx context.Context, program domain.Program, specs []ru
 		}
 		verified = append(verified, rule)
 	}
-	return newPlatformPolicy(program, verified), nil
+	return newPlatformPolicy(program, verified, store), nil
 }
 
 // PlatformPolicy is verified platform authority for exactly one program. It can
@@ -98,14 +98,16 @@ type PlatformPolicy struct {
 	programID   domain.ProgramID
 	platform    domain.Platform
 	rules       []rules.PlatformRule
+	store       EvidenceStore
 	fingerprint string
 }
 
-func newPlatformPolicy(program domain.Program, verified []rules.PlatformRule) *PlatformPolicy {
+func newPlatformPolicy(program domain.Program, verified []rules.PlatformRule, store EvidenceStore) *PlatformPolicy {
 	p := &PlatformPolicy{
 		programID: program.ID,
 		platform:  program.Platform,
 		rules:     append([]rules.PlatformRule(nil), verified...),
+		store:     store,
 	}
 	p.fingerprint = p.computeFingerprint()
 	return p
@@ -150,8 +152,8 @@ func (p *PlatformPolicy) computeFingerprint() string {
 // revision-matching rules can set CanRelax. A policy for a different
 // program/platform, or a program whose policy snapshot is stale, yields no
 // authority rather than an error; the caller's own domain gates still apply.
-func (p *PlatformPolicy) Evaluate(program domain.Program, req rules.Request) (rules.Result, error) {
-	if p == nil {
+func (p *PlatformPolicy) Evaluate(ctx context.Context, program domain.Program, req rules.Request) (rules.Result, error) {
+	if p == nil || p.store == nil {
 		return rules.Result{}, nil
 	}
 	if program.ID != p.programID || program.Platform != p.platform {
@@ -167,7 +169,11 @@ func (p *PlatformPolicy) Evaluate(program domain.Program, req rules.Request) (ru
 	}
 	var out rules.Result
 	for _, rule := range p.rules {
-		if err := CheckRevisionBinding(program, "", rule.PolicyRevision()); err != nil {
+		// Re-verify at decision time, not only at build time: evidence may have
+		// been deleted or superseded since the policy was compiled. A failed
+		// verification simply yields no authority for that rule (the base
+		// decision/freshness gates still apply).
+		if err := VerifyPlatformEvidence(ctx, rule, program, p.store, now); err != nil {
 			continue
 		}
 		ok, matchedOn, err := rule.Matches(req)
