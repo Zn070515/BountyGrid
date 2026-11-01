@@ -66,11 +66,13 @@ type Config struct {
     Model            string        // required; sent as the request model
     Endpoint         string        // required, loopback base URL
     APIKey           string        // optional; sent as Authorization: Bearer
-    Timeout          time.Duration // default 120s; must be > 0
-    MaxResponseBytes int64         // default 8 MiB; must be > 0
+    Timeout          time.Duration // zero uses 120s; negative is invalid
+    MaxResponseBytes int64         // zero uses 8 MiB; negative is invalid
     MaxContextTokens int           // optional
     MaxOutputTokens  int           // optional
     Strength         int           // optional routing preference
+    InputPricePerMTok  int64       // optional; default 0 (fen per million tokens)
+    OutputPricePerMTok int64       // optional; default 0
 }
 ```
 
@@ -83,8 +85,9 @@ type Config struct {
   append `/v1`; the request URL is `<base>/chat/completions`.
 - Redirects are not followed (`http.Client.CheckRedirect` returns an error), so a
   loopback server cannot redirect the call to a public host.
-- The client uses a transport with `Proxy: nil`. Local model traffic never goes
-  through `HTTP_PROXY`/`HTTPS_PROXY`.
+- The client uses a fresh `&http.Transport{Proxy: nil}`, never
+  `http.DefaultTransport`. Local model traffic never goes through
+  `HTTP_PROXY`/`HTTPS_PROXY` or a PAC file.
 
 ### 5.3 `Info()`
 
@@ -101,6 +104,10 @@ Request body:
 ```json
 {"model":"<Model>","messages":[{"role":"...","content":"..."}],"max_tokens":N,"stream":false}
 ```
+
+Headers: `Content-Type: application/json`, `Accept: application/json`, and
+`User-Agent: bountygrid-model/1`. `Authorization: Bearer <key>` is added only
+when an API key is configured. The key is never logged.
 
 Response mapping:
 
@@ -127,7 +134,7 @@ The router treats a plain error as `AMBIGUOUS` and only
 
 | Condition | Result |
 |---|---|
-| Configuration/URL construction error before any request | `domain.ErrNotSent` |
+| Configuration, URL construction or request-body marshalling error before any request | `domain.ErrNotSent` |
 | DNS/dial/TCP connect failure (`net.OpError`, `Op == "dial"`), connection refused | `domain.ErrNotSent` |
 | TLS handshake failure before the request is written | `domain.ErrNotSent` |
 | Context deadline exceeded after the request was written | plain error (`AMBIGUOUS`) |
@@ -188,10 +195,16 @@ New flags:
 Validation:
 
 - `-call` requires exactly one of `-prompt` and `-prompt-file`.
-- `-call` requires an endpoint and a provider model.
+- `-call` requires an endpoint and a provider model after the environment
+  fallback (`BOUNTYGRID_MODEL_ENDPOINT`, `BOUNTYGRID_MODEL_NAME`).
+- `-prompt-file` is read as UTF-8 and must be at most 1 MiB.
 - `-program` requires `-persist`; without a store the resolver cannot read the
   program and must not guess.
+- `-persist` requires `DATABASE_URL` (the existing `dsn()` helper) and opens the
+  pool with `postgres.Open`.
 - `-api-key-env` naming an unset/empty variable is an error.
+- `-timeout` bounds both the HTTP client and a `context.WithTimeout` around the
+  call.
 - Without `-call`, all new flags are rejected so the plan output cannot silently
   pretend to make a call.
 
@@ -205,8 +218,9 @@ Call construction:
   `StableCallID(task, step, purpose, PromptHash(req))`; otherwise it generates
   `call/cli/<RFC3339Nano>` locally. The router's auto-generated id is not used by
   this command because `ModelResponse` does not carry it.
-- Router options: one OpenAI provider; the store-backed resolver; with
-  `-persist`, `postgres.NewModelCallStore(pool)` and the PostgreSQL auditor,
+- Router options: one OpenAI provider; the store-backed resolver
+  (`postgres.Repo` supplies `GetProgram`); with `-persist`,
+  `postgres.NewModelCallStore(pool)` and `postgres.NewAuditStore(pool)`,
   otherwise memory stores.
 
 Output (stdout, JSON):
@@ -238,7 +252,8 @@ Errors go to stderr through the existing CLI error path and a non-zero exit.
 6. Dial failure (closed port) → `errors.Is(err, domain.ErrNotSent)`.
 7. Context deadline during response → error, not `ErrNotSent`.
 8. Redirect response → error; no request to the redirect target.
-9. Non-loopback endpoint → construction error.
+9. Non-loopback endpoint → construction error; IPv6 loopback (`http://[::1]:port/v1`)
+   is accepted.
 10. Environment proxy variables are ignored (set `HTTP_PROXY` to a dead address in
     the test process and confirm the loopback call still succeeds).
 
@@ -264,8 +279,10 @@ Errors go to stderr through the existing CLI error path and a non-zero exit.
 ### 8.4 Persistence
 
 The existing Postgres integration tests already cover `ModelCallStore`. Add one
-integration test that runs a `model -call -persist` flow against an httptest
-server and asserts one `model_calls` row and one `model_call_attempts` row.
+`*_integration_test.go` test that runs a `model -call -persist` flow against an
+httptest server and asserts one `model_calls` row and one
+`model_call_attempts` row. It follows the existing integration pattern: skipped
+when `DATABASE_URL` is unset, and uses the shared integration helper.
 
 ## 9. Documentation
 
