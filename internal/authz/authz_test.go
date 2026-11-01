@@ -363,7 +363,7 @@ func TestPlatformPolicyRelaxesOnlyWhenVerifiedAndFresh(t *testing.T) {
 	if pp.Len() != 1 || pp.ProgramID() != p.ID || pp.Fingerprint() == "" {
 		t.Fatalf("policy = len %d program %q fp %q", pp.Len(), pp.ProgramID(), pp.Fingerprint())
 	}
-	res, err := pp.Evaluate(p, testRequest())
+	res, err := pp.Evaluate(context.Background(), p, testRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,19 +374,19 @@ func TestPlatformPolicyRelaxesOnlyWhenVerifiedAndFresh(t *testing.T) {
 	// A policy built for a different program/platform never applies.
 	other := p
 	other.ID = "p2"
-	if res, err := pp.Evaluate(other, testRequest()); err != nil || res.CanRelax {
+	if res, err := pp.Evaluate(context.Background(), other, testRequest()); err != nil || res.CanRelax {
 		t.Fatalf("foreign program result = %+v err=%v", res, err)
 	}
 	mismatchedPlatform := p
 	mismatchedPlatform.Platform = domain.PlatformVulbox
-	if res, err := pp.Evaluate(mismatchedPlatform, testRequest()); err != nil || res.CanRelax {
+	if res, err := pp.Evaluate(context.Background(), mismatchedPlatform, testRequest()); err != nil || res.CanRelax {
 		t.Fatalf("foreign platform result = %+v err=%v", res, err)
 	}
 
 	// A changed automation/constraints snapshot changes PolicyRevision.
 	changed := p
 	changed.Automation.ActiveHTTP = domain.CapAllowed
-	if res, err := pp.Evaluate(changed, testRequest()); err != nil || res.CanRelax {
+	if res, err := pp.Evaluate(context.Background(), changed, testRequest()); err != nil || res.CanRelax {
 		t.Fatalf("revision-changed result = %+v err=%v", res, err)
 	}
 
@@ -394,14 +394,14 @@ func TestPlatformPolicyRelaxesOnlyWhenVerifiedAndFresh(t *testing.T) {
 	// still inside its observation window.
 	stale := p
 	stale.PolicyObservedAt = testNow.Add(-domain.PolicyMaxAge - time.Hour)
-	if res, err := pp.Evaluate(stale, testRequest()); err != nil || res.CanRelax {
+	if res, err := pp.Evaluate(context.Background(), stale, testRequest()); err != nil || res.CanRelax {
 		t.Fatalf("stale-policy result = %+v err=%v", res, err)
 	}
 
 	// The rule stops matching once its own validity window has passed.
 	later := testRequest()
 	later.Now = testNow.Add(2 * time.Hour)
-	if res, err := pp.Evaluate(p, later); err != nil || res.CanRelax {
+	if res, err := pp.Evaluate(context.Background(), p, later); err != nil || res.CanRelax {
 		t.Fatalf("expired rule result = %+v err=%v", res, err)
 	}
 }
@@ -435,7 +435,7 @@ func TestPlatformPolicyEvaluateRejectsInvalidRequest(t *testing.T) {
 	pp := buildPolicy(t, p)
 	req := testRequest()
 	req.Asset = "://bad"
-	if _, err := pp.Evaluate(p, req); err == nil || !strings.Contains(err.Error(), "asset") {
+	if _, err := pp.Evaluate(context.Background(), p, req); err == nil || !strings.Contains(err.Error(), "asset") {
 		t.Fatalf("invalid request err = %v", err)
 	}
 }
@@ -444,5 +444,37 @@ func reasonIs(reason string) func(error) bool {
 	return func(err error) bool {
 		var re *RejectedError
 		return errors.As(err, &re) && re.Reason == reason
+	}
+}
+
+type mutableStore struct {
+	evidence map[domain.EvidenceID]domain.Evidence
+}
+
+func (m *mutableStore) GetEvidence(_ context.Context, id domain.EvidenceID) (domain.Evidence, error) {
+	ev, ok := m.evidence[id]
+	if !ok {
+		return domain.Evidence{}, domain.ErrNotFound
+	}
+	return ev, nil
+}
+
+func TestPlatformPolicyRechecksEvidenceAtDecisionTime(t *testing.T) {
+	p := testProgram()
+	store := &mutableStore{evidence: validStore().evidence}
+	pp, err := BuildPlatformPolicy(context.Background(), p, []rules.PlatformRuleSpec{testSpec(p)}, store, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := pp.Evaluate(context.Background(), p, testRequest())
+	if err != nil || !res.CanRelax {
+		t.Fatalf("initial authority = %+v err=%v", res, err)
+	}
+	// Evidence deleted after the policy was compiled must remove authority; a
+	// build-time-only check would keep relaxing forever.
+	delete(store.evidence, "ev-1")
+	res, err = pp.Evaluate(context.Background(), p, testRequest())
+	if err != nil || res.CanRelax {
+		t.Fatalf("authority survived evidence deletion = %+v err=%v", res, err)
 	}
 }

@@ -17,6 +17,7 @@ var (
 	ErrLeaseExpired           = errors.New("capability: execution grant lease has expired")
 	ErrProgramNotRunning      = errors.New("capability: program is not running")
 	ErrProgramStatusStale     = errors.New("capability: program status is stale")
+	ErrPolicyStale            = errors.New("capability: program policy is stale")
 	ErrScopeStale             = errors.New("capability: program scope is stale")
 	ErrScopeRevisionMismatch  = errors.New("capability: grant scope revision does not match the program")
 	ErrPolicyRevisionMismatch = errors.New("capability: grant policy revision does not match the program")
@@ -115,6 +116,11 @@ func (v ProgramValidator) ValidateGrant(ctx context.Context, g ExecutionGrant) e
 	}
 	if !p.StatusFreshAt(now) {
 		return ErrProgramStatusStale
+	}
+	// Policy freshness is separate from status/scope: a recent status sync must
+	// not make an older automation/constraints snapshot executable.
+	if !p.PolicyFreshAt(now) {
+		return ErrPolicyStale
 	}
 	if !p.Scope.FreshAt(now) {
 		return ErrScopeStale

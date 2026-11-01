@@ -189,3 +189,16 @@ func TestRevocationRegistryBumpAndEpoch(t *testing.T) {
 		t.Fatalf("other program epoch = %d, want 0", got)
 	}
 }
+
+func TestProgramValidatorDeniesStalePolicy(t *testing.T) {
+	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	store, rev, grant, prog := validatorFixture(t, now)
+	prog.PolicyObservedAt = now.Add(-domain.PolicyMaxAge - time.Hour)
+	prog.PolicyValidUntil = time.Time{}
+	store.programs["p1"] = prog
+	grant.PolicyRevision = prog.PolicyRevision()
+	v := ProgramValidator{Programs: store, Revocations: rev, Now: func() time.Time { return now }}
+	if err := v.ValidateGrant(context.Background(), grant); !errors.Is(err, ErrPolicyStale) {
+		t.Fatalf("err = %v, want ErrPolicyStale", err)
+	}
+}
