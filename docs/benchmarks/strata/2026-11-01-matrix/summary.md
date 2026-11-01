@@ -13,6 +13,7 @@
 - Streaming is used; the server's `timings` block is authoritative for prefill
   and decode. 3 runs per point (2 for the thinking-on retrieval control, 5/10 for
   JSON validity).
+- Community/official comparison: [`research-comparison.md`](research-comparison.md).
 
 ## 1. Thinking on: throughput matrix
 
