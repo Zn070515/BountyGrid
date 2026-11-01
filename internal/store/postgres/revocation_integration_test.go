@@ -172,3 +172,47 @@ func TestFirstUpsertIsSerialized(t *testing.T) {
 		t.Fatalf("status = %s, want PAUSED", got.Status.Status)
 	}
 }
+
+// TestRevokeProgramWithAuditIsAtomic proves the bump and the audit event share
+// one transaction: a rejected audit payload (an operator reason containing a
+// secret) rolls the epoch bump back instead of leaving an unaudited revocation.
+func TestRevokeProgramWithAuditIsAtomic(t *testing.T) {
+	r, ctx := integrationRepo(t)
+	id := domain.ProgramID(fmt.Sprintf("it-revoke-atomic-%d", time.Now().UTC().UnixNano()))
+	t.Cleanup(func() {
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM revocation_epochs WHERE program_id=$1`, id)
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM audit_events WHERE entity_id=$1`, id)
+	})
+	auditCount := func() int {
+		t.Helper()
+		var n int
+		if err := r.Pool.QueryRow(ctx,
+			`SELECT count(*) FROM audit_events WHERE event_type='grant.revoked' AND entity_id=$1`, id,
+		).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	epoch, err := r.RevokeProgramWithAudit(ctx, id, "manual smoke", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch != 1 || auditCount() != 1 {
+		t.Fatalf("epoch=%d audits=%d, want 1/1", epoch, auditCount())
+	}
+
+	if _, err := r.RevokeProgramWithAudit(ctx, id, "password=secret123", time.Now().UTC()); err == nil {
+		t.Fatal("a secret reason must be rejected by audit validation")
+	}
+	got, err := r.Epoch(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 1 {
+		t.Fatalf("epoch after failed audit = %d, want 1 (rollback)", got)
+	}
+	if auditCount() != 1 {
+		t.Fatalf("audits after failed audit = %d, want 1", auditCount())
+	}
+}
