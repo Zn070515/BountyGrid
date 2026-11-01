@@ -85,3 +85,27 @@ func TestModelCallLifecycle(t *testing.T) {
 		t.Fatalf("duplicate completed reserve = %v %v, want false", ok, err)
 	}
 }
+
+func TestModelCallCompleteDefaultsToCompleted(t *testing.T) {
+	r, ctx := integrationRepo(t)
+	store := &ModelCallStore{Repo: r}
+	id := "it-call-empty-" + time.Now().UTC().Format("150405.000000000")
+	t.Cleanup(func() {
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM model_calls WHERE id=$1`, id)
+	})
+	if ok, err := store.Reserve(ctx, id, model.CallRecord{
+		ID: id, TaskID: "task/it", Purpose: model.PurposeCode, DataClass: model.DataPublic,
+		Status: model.CallReserved,
+	}); err != nil || !ok {
+		t.Fatalf("reserve = %v %v", ok, err)
+	}
+	// Complete is the successful transition; an omitted status must not leave
+	// the row in RESERVED (which would block any retry forever).
+	if err := store.Complete(ctx, id, model.CallRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := store.Get(ctx, id)
+	if err != nil || !found || got.Status != model.CallCompleted {
+		t.Fatalf("completion without status = %+v found=%v err=%v", got, found, err)
+	}
+}

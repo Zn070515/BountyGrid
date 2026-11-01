@@ -338,6 +338,18 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 	var lastErr error
 	var lastAttempt CallRecord
 	sawAmbiguous := false
+	// terminal keeps the last provider attempt's details (provider, model,
+	// timing, hashes) while applying the final conservative status.
+	terminal := func(status CallStatus, errKind string) CallRecord {
+		rec := lastAttempt
+		if rec.ID == "" {
+			rec = recordFor(status)
+		}
+		rec.ID = callID
+		rec.Status = status
+		rec.Error = errKind
+		return rec
+	}
 	for _, info := range candidates {
 		provider := r.provider(info.Name)
 		if provider == nil {
@@ -348,9 +360,14 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 			if !strings.EqualFold(req.Budget.Currency, estimate.Currency) {
 				berr := fmt.Errorf("%w: budget currency %q does not match pricing %q",
 					ErrInvalidRequest, req.Budget.Currency, estimate.Currency)
-				rec := recordFor(CallFailedBeforeSend)
-				rec.Error = "CURRENCY_MISMATCH"
-				return ModelResponse{}, joinFinish(berr, finish(rec))
+				// No request bytes left the process for this candidate, but an
+				// earlier provider attempt may have been ambiguous. Never
+				// downgrade that to a retryable FAILED_BEFORE_SEND.
+				status := CallFailedBeforeSend
+				if sawAmbiguous {
+					status = CallAmbiguous
+				}
+				return ModelResponse{}, joinFinish(berr, finish(terminal(status, "CURRENCY_MISMATCH")))
 			}
 			// The budget bounds the whole fallback chain, not one candidate.
 			if spent+estimate.Amount > req.Budget.Amount {
@@ -458,18 +475,6 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 			return resp, fmt.Errorf("model: complete call: %w", ferr)
 		}
 		return resp, nil
-	}
-	// terminal keeps the last provider attempt's details (provider, model,
-	// timing, hashes) while applying the final conservative status.
-	terminal := func(status CallStatus, errKind string) CallRecord {
-		rec := lastAttempt
-		if rec.ID == "" {
-			rec = recordFor(status)
-		}
-		rec.ID = callID
-		rec.Status = status
-		rec.Error = errKind
-		return rec
 	}
 	if budgeted > 0 {
 		berr := fmt.Errorf("%w: every eligible provider exceeds the remaining request budget", ErrBudgetExceeded)
