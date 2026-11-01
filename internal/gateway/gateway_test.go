@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy"
+	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 )
 
@@ -501,3 +503,44 @@ func TestAuthorizeRejectsChangedScope(t *testing.T) {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+func viewRuleSet(t *testing.T, version string) *rules.RuleSet {
+	t.Helper()
+	rs, err := rules.Parse([]byte(`{"version":"` + version + `","rules":[{
+		"id":"view-rules",
+		"actions":["VIEW_RULES"],
+		"decision":"allow",
+		"justification":"view rules is read-only",
+		"match":[{"action":"VIEW_RULES"}]
+	}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rs
+}
+
+func TestAuthorizeRejectsChangedRuleSet(t *testing.T) {
+	store := &fakeStore{
+		accounts:  map[domain.AccountID]domain.Account{"acc1": testAccount(true)},
+		programs:  map[domain.ProgramID]domain.Program{"p1": testProgram(domain.StatusRunning)},
+		decisions: map[domain.DecisionID]domain.ActionDecision{},
+	}
+	gA := New(store, policy.NewEngineWithRules(viewRuleSet(t, "v1")), nil, nil)
+	gA.SetClock(func() time.Time { return testNow })
+	d, err := gA.Evaluate(context.Background(), EvaluateInput{
+		Request: testRequest(domain.ActionViewRules), Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow || d.RuleSetFingerprint == "" {
+		t.Fatalf("initial decision = %+v", d)
+	}
+
+	gB := New(store, policy.NewEngineWithRules(viewRuleSet(t, "v2")), nil, nil)
+	gB.SetClock(func() time.Time { return testNow })
+	err = gB.AuthorizeWith(context.Background(), d.ID, AuthorizeInput{Now: testNow})
+	if err == nil || !strings.Contains(err.Error(), "rule set") {
+		t.Fatalf("authorize err = %v, want rule-set mismatch", err)
+	}
+}

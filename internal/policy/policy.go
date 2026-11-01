@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 )
 
 const DefaultPolicyVersion = "policy-v1"
@@ -34,10 +35,36 @@ type DecisionContext struct {
 
 type Engine struct {
 	matrix map[domain.Action]domain.Decision
+	rules  *rules.RuleSet
 }
 
 func NewEngine() *Engine {
 	return &Engine{matrix: DefaultMatrix()}
+}
+
+// NewEngineWithRules returns an engine with a declarative rule overlay. Rules
+// are evaluated after the matrix/automation gate, so they can tighten or (for
+// project-explicit, overridable actions) loosen the default approval level, but
+// they can never bypass scope, asset, eligibility, freshness or runtime checks.
+func NewEngineWithRules(rs *rules.RuleSet) *Engine {
+	e := NewEngine()
+	e.rules = rs
+	return e
+}
+
+func (e *Engine) SetRules(rs *rules.RuleSet) {
+	e.rules = rs
+}
+
+// RuleSetFingerprint returns the fingerprint of the active rule set (empty when
+// no rules are configured).
+func (e *Engine) RuleSetFingerprint() string { return e.ruleSetFingerprint() }
+
+func (e *Engine) ruleSetFingerprint() string {
+	if e.rules == nil {
+		return ""
+	}
+	return e.rules.Fingerprint()
 }
 
 // DefaultMatrix is deliberately conservative. Project automation policy is
@@ -93,26 +120,31 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	if err != nil {
 		return domain.ActionDecision{}, err
 	}
+	var matchedRuleIDs []string
+	var ruleReasons []string
 	decide := func(d domain.Decision, reasons ...string) domain.ActionDecision {
+		allReasons := append(append([]string{}, reasons...), ruleReasons...)
 		out := domain.ActionDecision{
-			ID:                domain.DecisionID(decisionID(dc.Request.ID, now)),
-			RequestID:         dc.Request.ID,
-			ProgramID:         dc.Request.ProgramID,
-			Action:            dc.Request.Action,
-			Decision:          d,
-			Reasons:           reasons,
-			GatesEvaluated:    elig.Gates,
-			PolicyVersion:     version,
-			DecidedAt:         now,
-			HumanApproval:     dc.HumanApproval,
-			Request:           dc.Request,
-			ResourceID:        dc.ResourceID,
-			UsageToday:        dc.UsageToday,
-			BudgetSpent:       dc.BudgetSpent,
-			Environment:       dc.Environment,
-			RequestParameters: string(dc.Request.Parameters),
-			ScopeRevision:     dc.Program.Scope.Revision(),
-			PolicyRevision:    dc.Program.PolicyRevision(),
+			ID:                 domain.DecisionID(decisionID(dc.Request.ID, now)),
+			RequestID:          dc.Request.ID,
+			ProgramID:          dc.Request.ProgramID,
+			Action:             dc.Request.Action,
+			Decision:           d,
+			Reasons:            allReasons,
+			GatesEvaluated:     elig.Gates,
+			PolicyVersion:      version,
+			DecidedAt:          now,
+			HumanApproval:      dc.HumanApproval,
+			Request:            dc.Request,
+			ResourceID:         dc.ResourceID,
+			UsageToday:         dc.UsageToday,
+			BudgetSpent:        dc.BudgetSpent,
+			Environment:        dc.Environment,
+			RequestParameters:  string(dc.Request.Parameters),
+			ScopeRevision:      dc.Program.Scope.Revision(),
+			PolicyRevision:     dc.Program.PolicyRevision(),
+			RuleIDs:            append([]string{}, matchedRuleIDs...),
+			RuleSetFingerprint: e.ruleSetFingerprint(),
 		}
 		if dc.Asset != nil {
 			out.AssetTarget = dc.Asset.Value
@@ -289,6 +321,43 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 			}
 		}
 	}
+
+	// 8b. Declarative rules are an overlay on the automation/matrix decision.
+	// They are evaluated only after every domain gate has passed. The strictest
+	// matched decision wins; an allow rule may loosen a project-conditional
+	// action only when the action is explicitly overridable, never a hard DENY.
+	if e.rules != nil {
+		assetTarget := ""
+		if dc.Asset != nil {
+			assetTarget = dc.Asset.Value
+		}
+		rr, rerr := e.rules.Evaluate(rules.Request{
+			Action:  dc.Request.Action,
+			Program: dc.Request.ProgramID,
+			Asset:   assetTarget,
+			Method:  dc.Request.Method,
+		})
+		if rerr != nil {
+			return decide(domain.DecisionDeny, "RULE_REQUEST_INVALID"), nil
+		}
+		if rr.Decision != rules.DecisionNone {
+			matchedRuleIDs = rr.IDs()
+			ruleReasons = rr.Reasons()
+		}
+		switch rr.Decision {
+		case rules.DecisionForbidden:
+			return decide(domain.DecisionDeny, "RULE_FORBIDDEN"), nil
+		case rules.DecisionRequireHuman:
+			if base != domain.DecisionDeny {
+				base = domain.DecisionRequireHuman
+			}
+		case rules.DecisionAllow:
+			if base != domain.DecisionDeny && overridableByAutomation(dc.Request.Action) {
+				base = domain.DecisionAllow
+			}
+		}
+	}
+
 	if base == domain.DecisionDeny {
 		return decide(domain.DecisionDeny, "ACTION_DENIED"), nil
 	}

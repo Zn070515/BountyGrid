@@ -208,6 +208,12 @@ func (g *Gateway) AuthorizeWith(ctx context.Context, id domain.DecisionID, ai Au
 	if fresh.Decision != domain.DecisionAllow {
 		return fmt.Errorf("gateway: decision %s is no longer executable: %s %v", id, fresh.Decision, fresh.Reasons)
 	}
+	// The approval was bound to a specific rule set. If the active rules changed,
+	// re-evaluate under the new rules rather than riding the old approval.
+	if fresh.RuleSetFingerprint != d.RuleSetFingerprint {
+		return fmt.Errorf("gateway: decision %s is bound to rule set %q, active rule set is %q",
+			id, d.RuleSetFingerprint, fresh.RuleSetFingerprint)
+	}
 	if err := g.consumeApproval(ctx, d, now); err != nil {
 		return err
 	}

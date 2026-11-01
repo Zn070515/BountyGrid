@@ -125,6 +125,7 @@ bash probes/butian/grow-dates.sh
 
 ### Execution-trust hardening（2026-11-01）
 
+- **声明式策略规则**：`internal/policy/rules` 支持 host/method/path 规则、加载期 `match`/`not_match` 自测、`*.example.com` 仅子域/`**.example.com` 含 apex、URL 规范化（大小写/尾点/百分号编码/`path.Clean`）、最严决策合并与 `justification`；`bountygrid policy check` 输出命中规则和规则集指纹。决策记录 `RuleIDs`/`RuleSetFingerprint`，`Authorize` 拒绝规则集变更后的旧授权。
 - **输入新鲜度独立检查**：执行/提交动作分别要求 `Program.Status`、`Scope`、`Program.PolicyObservedAt`（automation/constraints 快照）与 `AccountCapability` 在各自窗口内；任一 stale → `REQUIRE_MORE_EVIDENCE`（`STALE_PROGRAM_STATE` / `STALE_SCOPE` / `STALE_AUTOMATION_POLICY` / `STALE_ACCOUNT_CAPABILITY`）。决策记录 `ScopeRevision` 与 `PolicyRevision`。
 - **逐请求 Egress 授权**：网络工具拿到的是绑定 `ExecutionGrant`（approved method、canonical asset host/path、RPS、并发、日限额）的 `Egress`；每次请求与重定向都重新校验，不能被一次 ALLOW 放大成任意请求。
 - **SSRF / DNS rebinding**：连接前解析 DNS，拒绝 loopback/private/link-local/ULA/multicast/unspecified 并固定到校验后的 IP；默认不使用环境代理，只有显式 `ApprovedProxy` 才启用。
@@ -227,6 +228,19 @@ go run ./cmd/bountygrid derive -platform vulbox
 go run ./cmd/bountygrid decide -request ./request.json
 go run ./cmd/bountygrid decide -authorize <decision-id>
 ```
+
+### Policy rules · `policy`
+
+`internal/policy/rules` 是声明式规则层：按 action/program/host/method/path 选择请求，规则带 `decision` 与 `justification`，并可在加载时用 `match`/`not_match` 样例自测。多条规则命中时最严决策胜出（`forbidden > require_human > allow`）；`allow` 只能放宽项目明确可覆盖的动作，不能绕过 Scope/资产/资格/新鲜度/硬 DENY。规则指纹（`sha256:`）写入决策，`Authorize` 时规则集变化会拒绝旧授权。
+
+```bash
+go run ./cmd/bountygrid policy check \
+  -rules rules/example.rules.json \
+  -action ACTIVE_HTTP -program vulbox/444 \
+  -asset https://api.example.com/v1/items -method GET
+```
+
+`decide` / `harness` / `submit` 均支持可选 `-rules <file>`。详见 [`rules/README.md`](rules/README.md)。
 
 ### Opportunity / Scheduler · `schedule`
 
@@ -421,16 +435,18 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 ## 目录结构 · Layout
 
 ```text
-cmd/bountygrid/              migrate / rollback / ping / sync / version 入口
+cmd/bountygrid/              migrate / rollback / ping / sync / derive / decide / schedule / harness / model / policy / verify / report / submit / ledger / version 入口
 internal/domain/             平台/账号/项目/Scope/Eligibility/Action/Research/Ledger 类型与不变量
 internal/evidence/           不可变 Evidence Store（接口 + 内存实现）
 internal/audit/              审计事件（不可变、可过滤）
 internal/facts/              抽取器接口、FactSet、内存 Store、补天 GROW 抽取器
 internal/state/              程序状态/报名窗口/Scope/账号能力派生
 internal/policy/             Eligibility 合并 + 动作矩阵 + 人工审批
+internal/policy/rules/       声明式 host/method/path 规则、match/not_match 自测、最严决策合并
 internal/sidecar/            agent-browser 只读客户端（open/wait/eval/get/state save/close）
 internal/adapter/            Reader 接口 + Vulbox Reader（公开列表/账号；详情待接入）
 internal/store/postgres/     pgxpool、嵌入式迁移、仓储与一次性审批账本
+rules/                       可测试的策略规则示例（JSON）与使用说明
 platform-audit/              三平台账号/项目/规则/收款/自动化边界审计与证据
 architecture/                完整 Go 架构：Domain/Evidence/Adapter/Policy/Opportunity/Harness/Submission/Ledger
 probes/                      本机只读探针（不属于产品代码）

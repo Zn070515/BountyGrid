@@ -1,0 +1,108 @@
+{
+  "version": "2026-11-01-example",
+  "rules": [
+    {
+      "id": "vulbox-444-read-only",
+      "actions": ["ACTIVE_HTTP"],
+      "programs": ["vulbox/444"],
+      "hosts": ["*.example.com"],
+      "methods": ["GET", "HEAD"],
+      "decision": "allow",
+      "justification": "The program scope permits read-only requests to this host family.",
+      "match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "program": "vulbox/444",
+          "asset": "https://api.example.com/v1/items",
+          "method": "GET"
+        }
+      ],
+      "not_match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "program": "vulbox/444",
+          "asset": "https://example.com/v1/items",
+          "method": "GET"
+        },
+        {
+          "action": "ACTIVE_HTTP",
+          "program": "vulbox/444",
+          "asset": "https://api.example.com/v1/items",
+          "method": "POST"
+        }
+      ]
+    },
+    {
+      "id": "vulbox-444-write-needs-human",
+      "actions": ["ACTIVE_HTTP"],
+      "programs": ["vulbox/444"],
+      "hosts": ["*.example.com"],
+      "methods": ["POST", "PUT", "PATCH", "DELETE"],
+      "decision": "require_human",
+      "justification": "Write-like requests can change state and require a fresh human decision.",
+      "match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "program": "vulbox/444",
+          "asset": "https://api.example.com/v1/items",
+          "method": "POST"
+        }
+      ],
+      "not_match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "program": "vulbox/444",
+          "asset": "https://api.example.com/v1/items",
+          "method": "GET"
+        }
+      ]
+    },
+    {
+      "id": "forbid-admin-surfaces",
+      "actions": ["ACTIVE_HTTP"],
+      "hosts": ["admin.example.com", "*.admin.example.com"],
+      "decision": "forbidden",
+      "justification": "Administrative interfaces are outside the program scope.",
+      "match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "asset": "https://admin.example.com/",
+          "method": "GET"
+        }
+      ],
+      "not_match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "asset": "https://api.example.com/",
+          "method": "GET"
+        }
+      ]
+    },
+    {
+      "id": "forbid-internal-hosts",
+      "actions": ["ACTIVE_HTTP"],
+      "hosts": ["**.internal.example.com"],
+      "decision": "forbidden",
+      "justification": "Internal hostnames are out of scope and must never be contacted.",
+      "match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "asset": "https://internal.example.com/",
+          "method": "GET"
+        },
+        {
+          "action": "ACTIVE_HTTP",
+          "asset": "https://db.internal.example.com/",
+          "method": "GET"
+        }
+      ],
+      "not_match": [
+        {
+          "action": "ACTIVE_HTTP",
+          "asset": "https://api.example.com/",
+          "method": "GET"
+        }
+      ]
+    }
+  ]
+}

@@ -25,6 +25,7 @@ type harnessOptions struct {
 	AllowedHosts string
 	Workspace    string
 	Destructive  bool
+	RulesFile    string
 }
 
 func parseHarnessOptions(args []string) (harnessOptions, error) {
@@ -37,6 +38,7 @@ func parseHarnessOptions(args []string) (harnessOptions, error) {
 	fs.StringVar(&o.AllowedHosts, "allowed-hosts", "", "comma-separated egress allowlist")
 	fs.StringVar(&o.Workspace, "workspace", "", "directory root for file tools (os.Root-confined)")
 	fs.BoolVar(&o.Destructive, "allow-destructive", false, "allow tools marked destructive")
+	fs.StringVar(&o.RulesFile, "rules", "", "optional JSON rule-set overlay")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -77,7 +79,11 @@ func runHarness(ctx context.Context, args []string) error {
 	}
 	defer pool.Close()
 	repo := postgres.NewRepo(pool)
-	engine := policy.NewEngine()
+	rs, err := loadOptionalRules(opts.RulesFile)
+	if err != nil {
+		return err
+	}
+	engine := policy.NewEngineWithRules(rs)
 	g := gateway.New(repo, engine, postgres.NewAuditStore(pool), postgres.NewPostgresApprovalLedger(pool))
 
 	hosts := []string{}
