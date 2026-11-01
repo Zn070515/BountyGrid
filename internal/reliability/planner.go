@@ -63,10 +63,32 @@ type Proposer interface {
 // Planner is an alias for Proposer kept for callers that use the planning term.
 type Planner = Proposer
 
+// SessionSnapshot is an immutable-by-value copy of the research session. A
+// proposer may inspect or mutate its own copy; it cannot mutate the live
+// session because it never receives a pointer to it.
+type SessionSnapshot ResearchSession
+
+// Snapshot returns a deep copy of the session for a model-facing proposer.
+func (s *ResearchSession) Snapshot() SessionSnapshot {
+	if s == nil {
+		return SessionSnapshot{}
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return SessionSnapshot{}
+	}
+	var out SessionSnapshot
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return SessionSnapshot{}
+	}
+	return out
+}
+
 // ProposeInput is everything the model-facing proposer may see. It deliberately
-// contains no store, network or execution capability.
+// contains no store, network or execution capability, and the session is a
+// value snapshot rather than a mutable pointer.
 type ProposeInput struct {
-	Session         *ResearchSession
+	Session         SessionSnapshot
 	Context         CompiledContext
 	Authorization   Authorization
 	Budget          Budget
@@ -144,7 +166,11 @@ type LoopConfig struct {
 	// set, otherwise 5.
 	MaxSteps int
 	Detector *LoopDetector
-	Now      func() time.Time
+	// Store checkpoints the session after every executed step and at exit, so
+	// a STALLED/PARKED/HANDOFF session survives a process restart. Nil keeps
+	// the loop in-memory only.
+	Store SessionStore
+	Now   func() time.Time
 }
 
 // Loop is the deterministic short-horizon controller.
@@ -157,6 +183,7 @@ type Loop struct {
 	contextBudget ContextBudget
 	maxSteps      int
 	detector      *LoopDetector
+	store         SessionStore
 	now           func() time.Time
 }
 
@@ -198,6 +225,7 @@ func NewLoop(cfg LoopConfig) (*Loop, error) {
 		contextBudget: cfg.ContextBudget,
 		maxSteps:      maxSteps,
 		detector:      cfg.Detector,
+		store:         cfg.Store,
 		now:           cfg.Now,
 	}, nil
 }
@@ -254,7 +282,7 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 			return result, err
 		}
 		proposals, err := l.proposer.Propose(ctx, ProposeInput{
-			Session:         session,
+			Session:         session.Snapshot(),
 			Context:         compiled,
 			Authorization:   l.authorization,
 			Budget:          session.Budget,
@@ -412,7 +440,15 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 			result.Stop = StopStalled
 			result.StallAction = detection.Action
 			session.State = StateStalled
+			if err := l.checkpoint(ctx, session); err != nil {
+				return result, err
+			}
 			break
+		}
+		// Every recorded step is a durable checkpoint: a crash after the
+		// observation/attempt are appended cannot lose the learned state.
+		if err := l.checkpoint(ctx, session); err != nil {
+			return result, err
 		}
 	}
 
@@ -425,8 +461,26 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 	case StopBudgetExhausted:
 		session.State = StateParked
 	}
-	session.UpdatedAt = l.now().UTC()
+	if now := l.now().UTC(); now.After(session.UpdatedAt) {
+		session.UpdatedAt = now
+	}
+	if err := l.checkpoint(ctx, session); err != nil {
+		return result, err
+	}
 	return result, nil
+}
+
+// checkpoint persists the current session when a store is configured. A
+// persistence failure aborts the run: silently continuing would mean the
+// durable recovery point and the in-memory state disagree.
+func (l *Loop) checkpoint(ctx context.Context, session *ResearchSession) error {
+	if l.store == nil {
+		return nil
+	}
+	if err := l.store.Save(ctx, session); err != nil {
+		return fmt.Errorf("reliability: persist session %s: %w", session.ID, err)
+	}
+	return nil
 }
 
 // RankProposals filters model proposals against the authorization ceiling,

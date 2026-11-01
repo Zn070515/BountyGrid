@@ -356,3 +356,24 @@ func TestProposalSecretIsRejected(t *testing.T) {
 		t.Fatalf("want ErrSecretDetected, got %v", err)
 	}
 }
+
+func TestSessionSnapshotIsDeepCopy(t *testing.T) {
+	s := loopSession(t)
+	s.Objective = "original"
+	f := mustFact(t, "fact-snap", LevelClaim, []domain.EvidenceID{"ev-1"})
+	if err := s.AddFact(f); err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	snap.Objective = "mutated"
+	if len(snap.KnownFacts) > 0 {
+		snap.KnownFacts[0].Claim.Statement = "mutated fact"
+		snap.KnownFacts = append(snap.KnownFacts, f)
+	}
+	if s.Objective != "original" {
+		t.Fatalf("live objective mutated: %q", s.Objective)
+	}
+	if s.KnownFacts[0].Claim.Statement == "mutated fact" || len(s.KnownFacts) != 1 {
+		t.Fatalf("live facts mutated: %+v", s.KnownFacts)
+	}
+}
