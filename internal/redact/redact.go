@@ -48,9 +48,67 @@ var (
 // full matched value.
 func Scan(text string) []Finding { return scan(text, patterns) }
 
-// ScanReport is the report-text variant: bank-card detection requires explicit
-// card context, so ordinary long timestamps/order IDs are not rejected.
-func ScanReport(text string) []Finding { return scan(text, reportPatterns) }
+// ScanReport is the report-text variant. It accepts ordinary long timestamps/
+// order IDs but still rejects bare card numbers when they pass Luhn or use a
+// well-known card prefix (4/5/62/34/37/35/6011/65).
+func ScanReport(text string) []Finding {
+	out := scan(text, reportPatterns)
+	seen := make(map[string]struct{}, len(out))
+	for _, f := range out {
+		seen[f.Kind+"|"+f.Preview] = struct{}{}
+	}
+	for _, m := range bankCardPattern.re.FindAllString(text, -1) {
+		digits := digitsOnly(m)
+		if !luhnValid(digits) && !looksLikeCardPrefix(digits) {
+			continue
+		}
+		key := "bank_card|" + preview(m)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, Finding{Kind: "bank_card", Preview: preview(m)})
+	}
+	return out
+}
+
+func digitsOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func luhnValid(digits string) bool {
+	if len(digits) < 16 || len(digits) > 19 {
+		return false
+	}
+	parity := len(digits) % 2
+	sum := 0
+	for i, r := range digits {
+		d := int(r - '0')
+		if i%2 == parity {
+			d *= 2
+			if d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+	}
+	return sum%10 == 0
+}
+
+func looksLikeCardPrefix(digits string) bool {
+	for _, p := range []string{"4", "5", "62", "34", "37", "35", "6011", "65"} {
+		if strings.HasPrefix(digits, p) {
+			return true
+		}
+	}
+	return false
+}
 
 func scan(text string, ps []pattern) []Finding {
 	var out []Finding

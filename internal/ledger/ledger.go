@@ -153,6 +153,21 @@ func (s *Service) Append(ctx context.Context, e domain.LedgerEntry) (domain.Ledg
 		}
 		return e, fmt.Errorf("%w: %s exists with different content", ErrConflict, e.ID)
 	}
+	// Entries written before the content-digest ID scheme have the legacy ID.
+	// Re-importing them must be idempotent instead of creating a second row that
+	// would double-count non-cash-external entries.
+	if legacyID := legacyEntryID(e); legacyID != e.ID {
+		legacy, lok, err := s.store.GetLedgerEntry(ctx, legacyID)
+		if err != nil {
+			return e, err
+		}
+		if lok {
+			if sameEntryContent(legacy, e) {
+				return legacy, nil
+			}
+			return e, fmt.Errorf("%w: legacy entry %s exists with different content", ErrConflict, legacyID)
+		}
+	}
 	ev, err := s.auditEvent(e, now)
 	if err != nil {
 		return e, err
@@ -281,6 +296,19 @@ func entryID(e domain.LedgerEntry) string {
 		e.OccurredAt.UTC().Format("20060102T150405.000000000"), digest)
 }
 
+// legacyEntryID is the pre-digest scheme. It is retained only for idempotent
+// compatibility with rows written before the upgrade.
+func legacyEntryID(e domain.LedgerEntry) string {
+	return fmt.Sprintf("ledger/%s/%s/%s/%s",
+		e.Platform, e.ProgramID, e.Kind,
+		e.OccurredAt.UTC().Format("20060102T150405.000000000"))
+}
+
+func sameEntryContent(a, b domain.LedgerEntry) bool {
+	a.ID = b.ID
+	return sameEntry(a, b)
+}
+
 func findingIDString(id *domain.FindingID) string {
 	if id == nil {
 		return ""
@@ -375,6 +403,9 @@ func (s *Service) Summary(ctx context.Context, platform domain.Platform, program
 			out.Platform = platform
 			out.ProgramID = programID
 		}
+		// A program-scoped summary always covers exactly one program, even when
+		// that program has no entries in the period.
+		out.Programs = 1
 		return out, nil
 	}
 

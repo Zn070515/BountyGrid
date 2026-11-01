@@ -451,6 +451,19 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err := r.ReleaseSubmissionIntent(ctx, intentReport); err != nil {
 		t.Fatal(err)
 	}
+	// A crashed intent is reclaimable after ReservationTTL.
+	staleReport := reportID + "-stale"
+	if _, err := r.Pool.Exec(ctx, `
+		INSERT INTO submission_intents (report_id, approval_id, started_at)
+		VALUES ($1,$2, now() - interval '2 hours')`, staleReport, "stale-approval"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := r.ReserveSubmissionIntent(ctx, staleReport, "new-approval", now); err != nil || !ok {
+		t.Fatalf("stale intent reclaim = %v %v, want true", ok, err)
+	}
+	if err := r.ReleaseSubmissionIntent(ctx, staleReport); err != nil {
+		t.Fatal(err)
+	}
 
 	// RecordSubmission updates the submission and the draft status atomically.
 	report2 := report
@@ -508,6 +521,12 @@ func TestRepoRoundTrip(t *testing.T) {
 	if events, err := auditStore.List(ctx, audit.Filter{EntityID: auditEntry.ID}); err != nil || len(events) != 1 {
 		t.Fatalf("ledger audit = %+v %v", events, err)
 	}
+	if err := r.RecordLedgerEntryWithAudit(ctx, auditEntry, auditEvent); err != nil {
+		t.Fatalf("idempotent ledger retry: %v", err)
+	}
+	if events, err := auditStore.List(ctx, audit.Filter{EntityID: auditEntry.ID}); err != nil || len(events) != 1 {
+		t.Fatalf("idempotent retry duplicated audit: %+v %v", events, err)
+	}
 	// Reversals cannot exceed the target, even through the transactional path.
 	target := entry
 	target.ID = entry.ID + "-target"
@@ -521,10 +540,14 @@ func TestRepoRoundTrip(t *testing.T) {
 	rev.ReversesID = target.ID
 	rev.ExternalRef = "it-bank-rev1-" + suffix
 	rev.Amount.Amount = 60
-	if err := r.RecordLedgerEntryWithAudit(ctx, rev, audit.Event{
+	revEvent := audit.Event{
 		Type: "ledger.entry.recorded", EntityType: "ledger", EntityID: rev.ID, RecordedAt: now,
-	}); err != nil {
+	}
+	if err := r.RecordLedgerEntryWithAudit(ctx, rev, revEvent); err != nil {
 		t.Fatal(err)
+	}
+	if err := r.RecordLedgerEntryWithAudit(ctx, rev, revEvent); err != nil {
+		t.Fatalf("idempotent reversal retry: %v", err)
 	}
 	rev2 := rev
 	rev2.ID = entry.ID + "-rev2"

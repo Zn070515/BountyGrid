@@ -302,6 +302,20 @@ func TestPlatformWideSummary(t *testing.T) {
 	}
 }
 
+func TestProgramSummaryProgramsIsOne(t *testing.T) {
+	store := newFakeStore()
+	ev := &fakeEvidence{ids: map[domain.EvidenceID]bool{"ev1": true}}
+	store.entries["p1-paid"] = paidEntry("p1-paid", 1000)
+	s, _ := testService(t, store, &fakeSubs{}, ev)
+	out, err := s.Summary(context.Background(), domain.PlatformVulbox, "p1", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Programs != 1 {
+		t.Fatalf("program summary Programs = %d, want 1", out.Programs)
+	}
+}
+
 func TestReconcile(t *testing.T) {
 	summary := Summary{Currency: "CNY", PaidNet: cny(6000)}
 	platform := cny(6000)
@@ -357,5 +371,26 @@ func BenchmarkSummarize(b *testing.B) {
 		if _, err := Summarize(entries); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestLegacyEntryIDIsIdempotent(t *testing.T) {
+	store := newFakeStore()
+	ev := &fakeEvidence{ids: map[domain.EvidenceID]bool{"ev1": true}}
+	s, _ := testService(t, store, &fakeSubs{}, ev)
+	e := paidEntry("", 10000)
+	legacy := e
+	legacy.ID = legacyEntryID(e)
+	store.entries[legacy.ID] = legacy
+
+	got, err := s.Append(context.Background(), e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != legacy.ID {
+		t.Fatalf("append returned %s, want legacy %s", got.ID, legacy.ID)
+	}
+	if len(store.entries) != 1 {
+		t.Fatalf("legacy re-import created %d entries, want 1", len(store.entries))
 	}
 }

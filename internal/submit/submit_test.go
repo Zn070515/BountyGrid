@@ -254,6 +254,9 @@ func TestSubmitDryRun(t *testing.T) {
 		store.submissions[0].Status != "DRY_RUN" {
 		t.Fatalf("submissions = %+v", store.submissions)
 	}
+	if _, ok := store.intents[draft.ID]; ok {
+		t.Fatal("successful dry run must release the submission intent")
+	}
 	events, _ := aud.List(context.Background(), audit.Filter{Type: "submission.RECORDED"})
 	if len(events) != 1 {
 		t.Fatalf("audit = %+v", events)

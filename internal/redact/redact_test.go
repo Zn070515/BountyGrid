@@ -41,3 +41,16 @@ func TestHashDeterministic(t *testing.T) {
 		t.Fatal("different inputs must not collide in this test")
 	}
 }
+
+func TestScanReportCardHeuristics(t *testing.T) {
+	for _, s := range []string{"6222020202020202", "4111111111111111", "bank card 6222 0202 0202 0202"} {
+		if len(ScanReport(s)) == 0 {
+			t.Fatalf("%q should be treated as a card number", s)
+		}
+	}
+	for _, s := range []string{"1700000000000000000", `{"timestamp": 1700000000000000000}`, "order 1234567890123456"} {
+		if got := ScanReport(s); len(got) != 0 {
+			t.Fatalf("%q should not be rejected: %+v", s, got)
+		}
+	}
+}

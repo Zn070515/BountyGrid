@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/ledger"
 	"github.com/Zn070515/BountyGrid/internal/store/postgres"
@@ -94,6 +95,13 @@ func (l ledgerRepo) GetLedgerEntry(ctx context.Context, id string) (domain.Ledge
 }
 func (l ledgerRepo) PutLedgerEntry(ctx context.Context, e domain.LedgerEntry) error {
 	return l.repo.PutLedgerEntry(ctx, e)
+}
+
+// RecordLedgerEntryWithAudit lets ledger.Service write the entry and its audit
+// event atomically and re-check reversals under the store's advisory lock.
+// Without this method the wrapper falls back to the non-atomic, unlocked path.
+func (l ledgerRepo) RecordLedgerEntryWithAudit(ctx context.Context, e domain.LedgerEntry, ev audit.Event) error {
+	return l.repo.RecordLedgerEntryWithAudit(ctx, e, ev)
 }
 func (l ledgerRepo) ListLedgerEntries(ctx context.Context, platform domain.Platform, programID domain.ProgramID, since, until *time.Time) ([]domain.LedgerEntry, error) {
 	return l.repo.ListLedgerEntries(ctx, platform, programID, since, until)

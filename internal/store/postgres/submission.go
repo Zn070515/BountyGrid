@@ -30,14 +30,24 @@ func (r *Repo) GetSubmissionByReport(ctx context.Context, reportID string) (doma
 	return s, true, nil
 }
 
+// ReservationTTL bounds how long an abandoned intent blocks a report. It is
+// deliberately longer than a dry-run (instant) and must be revisited when a
+// real platform SubmitAdapter is added.
+const ReservationTTL = time.Hour
+
 // ReserveSubmissionIntent claims the single in-flight submission slot for a
 // report. It is called before the platform action; a second concurrent submit
-// sees the intent and refuses instead of reaching the Submitter twice.
+// sees the intent and refuses instead of reaching the Submitter twice. A
+// crashed process leaves a stale intent, which is reclaimable after
+// ReservationTTL.
 func (r *Repo) ReserveSubmissionIntent(ctx context.Context, reportID, approvalID string, now time.Time) (bool, error) {
 	tag, err := r.Pool.Exec(ctx, `
 		INSERT INTO submission_intents (report_id, approval_id, started_at)
 		VALUES ($1,$2,$3)
-		ON CONFLICT (report_id) DO NOTHING`, reportID, approvalID, now)
+		ON CONFLICT (report_id) DO UPDATE
+		SET approval_id=EXCLUDED.approval_id, started_at=EXCLUDED.started_at
+		WHERE submission_intents.started_at < now() - ($4 * interval '1 second')`,
+		reportID, approvalID, now, int64(ReservationTTL.Seconds()))
 	if err != nil {
 		return false, fmt.Errorf("postgres: reserve submission intent: %w", err)
 	}

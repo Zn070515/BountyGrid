@@ -340,12 +340,12 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - `VERIFIED` 必须 `Reproduced/InScope/ImpactVerified/DataMinimized` 全真且有 Evidence；模型不能单独判 VERIFIED。
 - `go run ./cmd/bountygrid verify -file <json> -persist` 从 PostgreSQL 加载 Program/Decision/Finding，证据 ID 必须存在，写 `verifications`。
 - 证据防伪：`VERIFIED` 额外要求 `DuplicateChecked`，AI 辅助时必须持久化 `HumanVerified + HumanVerificationRef`；CLI 不接受调用方覆盖 `now`。
-- `internal/report.Build`：只接受 `VERIFIED` 的 Verification；组装 `ReportDraft`（`DRAFT`）并返回 `Missing/Ready`。通用必填 + Xianzhi `account_name` / Butian `vendor/category/asset_scope/weight/activity/task_id/industry/region/contact`；Butian GROW 的 AI 披露要求模型名/版本/工具名；附件按平台校验扩展名；report 文本含 cookie/token/密码/证件/银行卡/完整手机号/邮箱会被拒绝。
+- `internal/report.Build`：只接受 `VERIFIED` 的 Verification；组装 `ReportDraft`（`DRAFT`）并返回 `Missing/Ready`。通用必填 + Xianzhi `account_name` / Butian `vendor/category/asset_scope/weight/activity/task_id/industry/region/contact`；Butian GROW 的 AI 披露要求模型名/版本/工具名；附件按平台校验扩展名；report 文本含 cookie/token/密码/证件/银行卡/完整手机号/邮箱会被拒绝；裸卡号用已知卡前缀/Luhn 识别，普通长订单号/时间戳仍允许。
 - `go run ./cmd/bountygrid report -file <json> -persist` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`；不提交、不勾选协议。
-- `internal/submit.Service`：`report.Recheck`（不补默认值）→ 当前 Program.Scope 资产复核 → `REPORT_SUBMIT` ActionRequest（绑定 `report_id + report_content_hash`）→ Gateway `ALLOW` → `AuthorizeWith` 消费 single-use approval → `Submitter`。本仓库只有 `DryRunSubmitter`，**不触达平台**；dry-run 不改变草稿状态，后续仍可真实提交；同一 report 只允许一次真实提交（`submissions.report_id` 唯一 + `GetSubmissionByReport` 前置检查 + `RecordSubmission` 事务）。审批后修改草稿会使 content hash 不匹配。
+- `internal/submit.Service`：`report.Recheck`（不补默认值）→ 当前 Program.Scope 资产复核 → `REPORT_SUBMIT` ActionRequest（绑定 `report_id + report_content_hash`）→ Gateway `ALLOW` → `AuthorizeWith` 消费 single-use approval → `Submitter`。本仓库只有 `DryRunSubmitter`，**不触达平台**；dry-run 不改变草稿状态，后续仍可真实提交；同一 report 只允许一次真实提交（`submissions.report_id` 唯一 + `GetSubmissionByReport` 前置检查 + `RecordSubmission` 事务）；提交 intent 在异常崩溃后 1 小时可回收。审批后修改草稿会使 content hash 不匹配。
 - `go run ./cmd/bountygrid submit -print-binding -report <id> -approval-id <id>` 打印审批必须绑定的 `request_id/parameters_hash`（含内容 hash）；`submit -report -account -approval <json>` 执行 dry-run 并写 `submissions`。`approval_id` 有唯一索引，防止同一审批提交两次。
 - `internal/ledger`：v1 只记 CNY 现金；`PAID` 是到账净额，`FEE/TAX` 仅展示；`EXPECTED/SUBMITTED` 不计净收入。
-- `ExternalRef` 对 `PAID/REFUND/REVERSAL` 必填，`(platform,kind,external_ref)` 唯一；`REVERSAL` 只能冲 `PAID/REFUND` 且不得超过目标金额；同 ID 同内容幂等、不同内容报错。
+- `ExternalRef` 对 `PAID/REFUND/REVERSAL` 必填，`(platform,kind,external_ref)` 唯一；`REVERSAL` 只能冲 `PAID/REFUND` 且不得超过目标金额；同 ID 同内容幂等、不同内容报错；旧的无 digest ID 仍可幂等重导。
 - `go run ./cmd/bountygrid ledger -file <json> [-persist]` 追加；`ledger -summary -platform <p> [-program <id>] [-since/-until]` 汇总；`ledger -reconcile -file <json>` 只报平台/银行差异，不自动改账。
 - 非现金奖励（KB/RYB/积分/荣誉/实物/优惠券）留 `ledger.NonCashRecorder` 接口，v1 不混入金额账本。
 - 未实现：真实平台 SubmitAdapter、非现金奖励记录器、`ReconciliationIssue` 持久化、人工复核 UI。

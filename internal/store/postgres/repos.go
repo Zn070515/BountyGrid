@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -907,9 +906,12 @@ func (r *Repo) RecordLedgerEntryWithAudit(ctx context.Context, e domain.LedgerEn
 			return fmt.Errorf("postgres: reversal target entity mismatch")
 		}
 		var already int64
+		// Exclude this entry's own ID: an idempotent retry of the same
+		// reversal must not count its already-stored copy against the target.
 		if err := tx.QueryRow(ctx, `
 			SELECT COALESCE(SUM(amount_cents),0) FROM ledger_entries
-			WHERE kind=$1 AND reverses_id=$2`, domain.LedgerReversal, e.ReversesID,
+			WHERE kind=$1 AND reverses_id=$2 AND id <> $3`,
+			domain.LedgerReversal, e.ReversesID, e.ID,
 		).Scan(&already); err != nil {
 			return fmt.Errorf("postgres: sum reversals: %w", err)
 		}
@@ -927,7 +929,9 @@ func (r *Repo) RecordLedgerEntryWithAudit(ctx context.Context, e domain.LedgerEn
 		if err := tx.QueryRow(ctx, `SELECT data FROM ledger_entries WHERE id=$1`, e.ID).Scan(&existing); err != nil {
 			return fmt.Errorf("postgres: read existing ledger entry: %w", err)
 		}
-		if !bytes.Equal(existing, []byte(data)) {
+		// JSONB returns a normalized text form (sorted keys and spaces), so raw
+		// byte equality would always fail. Compare canonicalized JSON instead.
+		if domain.CanonicalParametersHash(existing) != domain.CanonicalParametersHash([]byte(data)) {
 			return fmt.Errorf("postgres: ledger entry %s exists with different content", e.ID)
 		}
 		// The original transaction already wrote the audit event.

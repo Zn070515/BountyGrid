@@ -250,9 +250,11 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 	// either signal from a Submitter so the status and the unique index agree.
 	dryRun := result.DryRun || result.Status == "DRY_RUN"
 	if dryRun {
+		// A dry run never reaches the platform, so a failure while recording it
+		// must not keep the intent and block a later real submission.
+		keepIntent = false
 		result.Status = "DRY_RUN"
-	}
-	if !dryRun {
+	} else {
 		draft.Status = domain.ReportStatusSubmitted
 	}
 	sub := domain.Submission{
