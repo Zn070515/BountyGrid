@@ -310,5 +310,6 @@ CandidateFinding.ToFinding()
 - `EvidenceView` 由调用方策展；本包不负责从 `Evidence`/`ObservedFact` 自动生成视图，也不做 LLM summarization。它保证“视图有界、ID 稳定、无 raw 页面字段”。
 - 检测器是启发式：阈值和“无进展”定义可由上层配置；它不替代人工复核，也不产生 `VERIFIED`。
 - 研究状态默认是内存结构；`FileSessionStore` 提供单机 JSON 持久化与 checkpoint，但尚未接入 PostgreSQL/跨进程 trace。`STARTED` 记录已覆盖“执行前 → 执行后”的崩溃窗口；代价是崩溃在 checkpoint 与工具真正执行之间时也会被标记为 `INTERRUPTED`（保守，但会阻止一次安全重试）。要重试必须改变参数或开启新的研究会话。
+- 本地 Qwen2.5-0.5B（Q4_K_M）smoke（`probes/ollama_smoke`）：1,168 rune 上下文实际为 515 prompt tokens，1 token/rune 的保守估算报 1,168（约 2.3x）；模型能跟随 JSON 形状并产出结构合法的 `READ_SCOPE`，但 eligibility 判断错误，且会把 `AVAILABLE ACTIONS` 的 `|human_only=false` 抄进 `action`、返回对象而非要求的数组。格式跟随不等于事实/授权可靠，这正是 `RankProposals` 与 Action Gateway 仍必须存在的原因。
 - `RankProposals` 只做本地过滤与排序，不是 Policy；真正的 scope/automation/eligibility 判定仍由 Action Gateway 完成。
 - `ProofResolver` 由调用方实现；本包强制“经权威解析 + program/finding/asset 绑定 + 证据交集”，但不负责把 `domain.ExecutionReceipt`/`domain.Verification` 映射成 proof（该 adapter 仍需实现）。
