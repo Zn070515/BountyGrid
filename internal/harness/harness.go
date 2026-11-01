@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -28,15 +29,25 @@ type ToolSpec struct {
 	Description    string
 }
 
+// RequiresReceipt reports whether the tool can produce an external or local
+// side effect. Such tools must carry an idempotency key so a retry replays the
+// recorded execution instead of running twice.
+func (s ToolSpec) RequiresReceipt() bool {
+	return s.Destructive || s.WritesFiles || s.NetworkEgress
+}
+
 type ToolResult struct {
 	Output   string
 	Evidence []domain.EvidenceID
 }
 
+// ToolContext is the only capability surface a tool receives. Egress is non-nil
+// only for tools that declare NetworkEgress; every request through it is
+// re-checked against the sandbox, including redirects.
 type ToolContext struct {
 	Request  domain.ActionRequest
 	Decision domain.ActionDecision
-	Sandbox  *Sandbox
+	Egress   *Egress
 	Budget   *Budget
 }
 
@@ -127,6 +138,107 @@ func (s *Sandbox) CheckURL(raw string) error {
 	return fmt.Errorf("sandbox: egress to %s denied", host)
 }
 
+// Egress is the harness-controlled network client. A tool never receives raw
+// network capability: every request (and every redirect) is checked against the
+// sandbox allowlist before the connection is made.
+type Egress struct {
+	sandbox *Sandbox
+	client  *http.Client
+}
+
+func NewEgress(s *Sandbox) *Egress {
+	if s == nil {
+		s = &Sandbox{}
+	}
+	e := &Egress{sandbox: s}
+	e.client = &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("egress: too many redirects")
+			}
+			return e.CheckURL(req.URL.String())
+		},
+	}
+	return e
+}
+
+func (e *Egress) CheckURL(raw string) error {
+	return e.sandbox.CheckURL(raw)
+}
+
+// Do performs one request after the sandbox check.
+func (e *Egress) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	if req == nil || req.URL == nil {
+		return nil, fmt.Errorf("egress: request has no url")
+	}
+	if err := e.CheckURL(req.URL.String()); err != nil {
+		return nil, err
+	}
+	return e.client.Do(req.WithContext(ctx))
+}
+
+// Get is a convenience wrapper for read-only tools.
+func (e *Egress) Get(ctx context.Context, raw string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		return nil, fmt.Errorf("egress: build request: %w", err)
+	}
+	return e.Do(ctx, req)
+}
+
+type ReceiptStore interface {
+	GetReceipt(ctx context.Context, idempotencyKey string) (domain.ExecutionReceipt, error)
+	CreateReceipt(ctx context.Context, r domain.ExecutionReceipt) error
+	UpdateReceipt(ctx context.Context, r domain.ExecutionReceipt) error
+}
+
+// MemoryReceiptStore is the durable-store contract's in-memory twin for tests.
+type MemoryReceiptStore struct {
+	mu    sync.Mutex
+	byKey map[string]domain.ExecutionReceipt
+}
+
+func NewMemoryReceiptStore() *MemoryReceiptStore {
+	return &MemoryReceiptStore{byKey: make(map[string]domain.ExecutionReceipt)}
+}
+
+func (s *MemoryReceiptStore) GetReceipt(ctx context.Context, key string) (domain.ExecutionReceipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byKey[key]
+	if !ok {
+		return domain.ExecutionReceipt{}, domain.ErrReceiptNotFound
+	}
+	return r, nil
+}
+
+func (s *MemoryReceiptStore) CreateReceipt(ctx context.Context, r domain.ExecutionReceipt) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byKey[r.IdempotencyKey]; ok {
+		return domain.ErrReceiptExists
+	}
+	s.byKey[r.IdempotencyKey] = r
+	return nil
+}
+
+func (s *MemoryReceiptStore) UpdateReceipt(ctx context.Context, r domain.ExecutionReceipt) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byKey[r.IdempotencyKey]; !ok {
+		return domain.ErrReceiptNotFound
+	}
+	s.byKey[r.IdempotencyKey] = r
+	return nil
+}
+
 type Budget struct {
 	MaxCost     domain.Money
 	Spent       domain.Money
@@ -189,7 +301,9 @@ type Harness struct {
 	gate             Gate
 	auditor          Auditor
 	sandbox          *Sandbox
+	egress           *Egress
 	budget           *Budget
+	receipts         ReceiptStore
 	allowDestructive bool
 	now              func() time.Time
 }
@@ -201,10 +315,18 @@ func New(reg *Registry, gate Gate, auditor Auditor, sandbox *Sandbox, budget *Bu
 	if budget == nil {
 		budget = &Budget{}
 	}
-	return &Harness{registry: reg, gate: gate, auditor: auditor, sandbox: sandbox, budget: budget, now: time.Now}
+	return &Harness{
+		registry: reg, gate: gate, auditor: auditor, sandbox: sandbox,
+		egress: NewEgress(sandbox), budget: budget, receipts: NewMemoryReceiptStore(), now: time.Now,
+	}
 }
 
 func (h *Harness) SetAllowDestructive(v bool) { h.allowDestructive = v }
+func (h *Harness) SetReceiptStore(s ReceiptStore) {
+	if s != nil {
+		h.receipts = s
+	}
+}
 func (h *Harness) SetClock(now func() time.Time) {
 	if now != nil {
 		h.now = now
@@ -214,6 +336,11 @@ func (h *Harness) SetClock(now func() time.Time) {
 // Execute authorizes and runs one tool. The tool's RequiredAction overrides the
 // request action; a mismatched non-empty action is rejected. The tool is never
 // called unless the gateway returns ALLOW and Authorize passes.
+//
+// Tools that can produce side effects require an IdempotencyKey. The key is
+// reserved before execution; a retry replays the receipt instead of running the
+// tool again, and an execution whose audit write failed can be completed
+// without repeating the side effect.
 func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.EvaluateInput) (domain.ActionDecision, ToolResult, error) {
 	tool, err := h.registry.Get(toolName)
 	if err != nil {
@@ -229,6 +356,47 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	}
 	in.Request.Action = spec.RequiredAction
 
+	if spec.NetworkEgress && (h.sandbox == nil || len(h.sandbox.AllowedHosts) == 0) {
+		return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+			"harness: network tool %s requires a non-empty egress allowlist", toolName)
+	}
+
+	key := strings.TrimSpace(in.Request.IdempotencyKey)
+	needsReceipt := spec.RequiresReceipt()
+	if needsReceipt && key == "" {
+		return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+			"harness: tool %s requires an idempotency key", toolName)
+	}
+	var reserved *domain.ExecutionReceipt
+	if key != "" {
+		if h.receipts == nil {
+			return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: no receipt store configured")
+		}
+		rec, err := h.receipts.GetReceipt(ctx, key)
+		switch {
+		case err == nil:
+			if rec.ToolName != "" && rec.ToolName != toolName {
+				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+					"harness: idempotency key %s is bound to tool %s, not %s", key, rec.ToolName, toolName)
+			}
+			switch rec.Status {
+			case domain.ReceiptCompleted, domain.ReceiptExecuted:
+				return h.replay(ctx, rec, toolName)
+			case domain.ReceiptStarted:
+				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+					"harness: execution for key %s is unsettled; refusing to repeat it", key)
+			case domain.ReceiptFailed:
+				// The tool reported failure before a side-effect receipt; a retry
+				// under the same key is allowed. Re-arm it only after the gate
+				// authorizes, so a denied retry cannot leave a STARTED receipt
+				// that blocks future attempts.
+				reserved = &rec
+			}
+		case !errors.Is(err, domain.ErrReceiptNotFound):
+			return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: read receipt: %w", err)
+		}
+	}
+
 	decision, err := h.gate.Evaluate(ctx, in)
 	if err != nil {
 		return domain.ActionDecision{}, ToolResult{}, err
@@ -236,36 +404,127 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	if decision.Decision != domain.DecisionAllow {
 		return decision, ToolResult{}, DeniedError{Decision: decision}
 	}
-	if err := h.gate.Authorize(ctx, decision.ID); err != nil {
-		return decision, ToolResult{}, err
-	}
+	// Budget is checked before Authorize: a budget rejection must not consume a
+	// single-use approval.
 	cost := tool.Cost()
 	if err := h.budget.Check(cost); err != nil {
 		return decision, ToolResult{}, err
 	}
-	res, err := tool.Execute(ctx, ToolContext{
-		Request: in.Request, Decision: decision, Sandbox: h.sandbox, Budget: h.budget,
-	})
+	if err := h.gate.Authorize(ctx, decision.ID); err != nil {
+		return decision, ToolResult{}, err
+	}
+
+	// Reserve the key after authorization and budget checks, immediately
+	// before the tool can act.
+	if key != "" {
+		now := h.now().UTC()
+		if reserved == nil {
+			rec := domain.ExecutionReceipt{
+				ID: "rcpt/" + key, IdempotencyKey: key, DecisionID: decision.ID,
+				ToolName: toolName, Action: in.Request.Action, ProgramID: in.Request.ProgramID,
+				Actor: in.Request.Actor, Status: domain.ReceiptStarted, StartedAt: now, UpdatedAt: now,
+			}
+			if err := h.receipts.CreateReceipt(ctx, rec); err != nil {
+				if errors.Is(err, domain.ErrReceiptExists) {
+					existing, gerr := h.receipts.GetReceipt(ctx, key)
+					if gerr != nil {
+						return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: read existing receipt: %w", gerr)
+					}
+					if existing.ToolName != "" && existing.ToolName != toolName {
+						return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+							"harness: idempotency key %s is bound to tool %s, not %s", key, existing.ToolName, toolName)
+					}
+					return h.replay(ctx, existing, toolName)
+				}
+				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: reserve receipt: %w", err)
+			}
+			reserved = &rec
+		} else {
+			reserved.DecisionID = decision.ID
+			reserved.Status = domain.ReceiptStarted
+			reserved.Error = ""
+			reserved.UpdatedAt = now
+			if err := h.receipts.UpdateReceipt(ctx, *reserved); err != nil {
+				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: re-arm receipt: %w", err)
+			}
+		}
+	}
+
+	tc := ToolContext{Request: in.Request, Decision: decision, Budget: h.budget}
+	if spec.NetworkEgress {
+		tc.Egress = h.egress
+	}
+	res, err := tool.Execute(ctx, tc)
 	if err != nil {
+		if reserved != nil {
+			reserved.Status = domain.ReceiptFailed
+			reserved.Error = err.Error()
+			reserved.UpdatedAt = h.now().UTC()
+			_ = h.receipts.UpdateReceipt(ctx, *reserved)
+		}
 		return decision, ToolResult{}, err
 	}
 	h.budget.Charge(cost)
-	if h.auditor != nil {
-		payload, err := json.Marshal(map[string]any{
-			"tool": toolName, "action": string(in.Request.Action), "decision": string(decision.Decision),
-		})
-		if err != nil {
-			return decision, ToolResult{}, err
+
+	if reserved != nil {
+		reserved.DecisionID = decision.ID
+		reserved.Output = res.Output
+		reserved.Status = domain.ReceiptExecuted
+		reserved.UpdatedAt = h.now().UTC()
+		if err := h.receipts.UpdateReceipt(ctx, *reserved); err != nil {
+			return decision, res, fmt.Errorf("harness: record executed receipt: %w", err)
 		}
-		if _, err := h.auditor.Append(ctx, audit.Event{
-			Type: "tool.executed", EntityType: "decision", EntityID: string(decision.ID),
-			ActorKind: string(in.Request.Actor.Kind), ActorID: in.Request.Actor.ID,
-			Payload: payload, RecordedAt: h.now().UTC(),
-		}); err != nil {
-			return decision, ToolResult{}, fmt.Errorf("harness: audit tool: %w", err)
+	}
+	if err := h.appendAudit(ctx, toolName, in.Request, decision); err != nil {
+		// The tool already executed; the receipt stays EXECUTED so a retry can
+		// finish the audit without executing again.
+		return decision, res, err
+	}
+	if reserved != nil {
+		reserved.Status = domain.ReceiptCompleted
+		reserved.UpdatedAt = h.now().UTC()
+		if err := h.receipts.UpdateReceipt(ctx, *reserved); err != nil {
+			return decision, res, fmt.Errorf("harness: complete receipt: %w", err)
 		}
 	}
 	return decision, res, nil
+}
+
+// replay returns the recorded result without calling the tool. An EXECUTED
+// receipt gets its pending audit event written first.
+func (h *Harness) replay(ctx context.Context, rec domain.ExecutionReceipt, toolName string) (domain.ActionDecision, ToolResult, error) {
+	decision := domain.ActionDecision{ID: rec.DecisionID, Decision: domain.DecisionAllow, Action: rec.Action, ProgramID: rec.ProgramID}
+	if rec.Status == domain.ReceiptExecuted {
+		if err := h.appendAudit(ctx, toolName, domain.ActionRequest{Actor: rec.Actor}, decision); err != nil {
+			return decision, ToolResult{}, err
+		}
+		rec.Status = domain.ReceiptCompleted
+		rec.UpdatedAt = h.now().UTC()
+		if err := h.receipts.UpdateReceipt(ctx, rec); err != nil {
+			return decision, ToolResult{}, fmt.Errorf("harness: complete replayed receipt: %w", err)
+		}
+	}
+	return decision, ToolResult{Output: rec.Output}, nil
+}
+
+func (h *Harness) appendAudit(ctx context.Context, toolName string, req domain.ActionRequest, decision domain.ActionDecision) error {
+	if h.auditor == nil {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]any{
+		"tool": toolName, "action": string(decision.Action), "decision": string(decision.Decision),
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := h.auditor.Append(ctx, audit.Event{
+		Type: "tool.executed", EntityType: "decision", EntityID: string(decision.ID),
+		ActorKind: string(req.Actor.Kind), ActorID: req.Actor.ID,
+		Payload: payload, RecordedAt: h.now().UTC(),
+	}); err != nil {
+		return fmt.Errorf("harness: audit tool: %w", err)
+	}
+	return nil
 }
 
 // ReadOnlyTool is a local, non-network tool used for the Phase 5 boundary demo.

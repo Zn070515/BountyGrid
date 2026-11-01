@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
@@ -18,36 +16,13 @@ const DefaultPolicyVersion = "policy-v1"
 // a fact below 0.8 cannot by itself drive an execution decision.
 const MinExecutionConfidence domain.Confidence = 0.8
 
-type ApprovalLedger interface {
-	Consume(ctx context.Context, approvalID string) error
-}
-
-type MemoryApprovalLedger struct {
-	mu       sync.Mutex
-	consumed map[string]struct{}
-}
-
-func NewMemoryApprovalLedger() *MemoryApprovalLedger {
-	return &MemoryApprovalLedger{consumed: make(map[string]struct{})}
-}
-
-func (l *MemoryApprovalLedger) Consume(ctx context.Context, approvalID string) error {
-	if approvalID == "" {
-		return fmt.Errorf("approval id is empty")
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if _, ok := l.consumed[approvalID]; ok {
-		return domain.ErrApprovalConsumed
-	}
-	l.consumed[approvalID] = struct{}{}
-	return nil
-}
-
 type DecisionContext struct {
-	Request       domain.ActionRequest
-	Account       domain.Account
-	Program       domain.Program
+	Request domain.ActionRequest
+	Account domain.Account
+	Program domain.Program
+	// Asset must be the canonical asset resolved from Program.Scope by the
+	// Action Gateway. Policy never accepts an asset value from an untrusted
+	// caller.
 	Asset         *domain.Asset
 	Competition   *domain.CompetitionSnapshot
 	UsageToday    map[string]int64 // per-interface daily usage
@@ -56,18 +31,16 @@ type DecisionContext struct {
 	Now           time.Time
 	PolicyVersion string
 	HumanApproval *domain.HumanApproval
+	Environment   *domain.ExecutionEnvironment
 }
 
 type Engine struct {
 	matrix map[domain.Action]domain.Decision
-	ledger ApprovalLedger
 }
 
 func NewEngine() *Engine {
-	return &Engine{matrix: DefaultMatrix(), ledger: NewMemoryApprovalLedger()}
+	return &Engine{matrix: DefaultMatrix()}
 }
-
-func (e *Engine) SetApprovalLedger(l ApprovalLedger) { e.ledger = l }
 
 // DefaultMatrix is deliberately conservative. Project automation policy is
 // applied before this matrix and may explicitly allow a conditional action;
@@ -115,6 +88,13 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	if version == "" {
 		version = DefaultPolicyVersion
 	}
+	// Merge the program's gates with the account's observed state. A program
+	// gate records a requirement; whether this account satisfies it must be
+	// evaluated now, not frozen into the Program row.
+	elig, err := effectiveEligibility(dc, version, now)
+	if err != nil {
+		return domain.ActionDecision{}, err
+	}
 	decide := func(d domain.Decision, reasons ...string) domain.ActionDecision {
 		return domain.ActionDecision{
 			ID:             domain.DecisionID(decisionID(dc.Request.ID, now)),
@@ -123,10 +103,15 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 			Action:         dc.Request.Action,
 			Decision:       d,
 			Reasons:        reasons,
-			GatesEvaluated: dc.Program.Eligibility.Gates,
+			GatesEvaluated: elig.Gates,
 			PolicyVersion:  version,
 			DecidedAt:      now,
 			HumanApproval:  dc.HumanApproval,
+			Request:        dc.Request,
+			ResourceID:     dc.ResourceID,
+			UsageToday:     dc.UsageToday,
+			BudgetSpent:    dc.BudgetSpent,
+			Environment:    dc.Environment,
 		}
 	}
 
@@ -151,26 +136,36 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		}
 	}
 
-	// 1. Account-level capability.
+	// 1. Account-level capability. A program-scoped gate is evaluated with the
+	// account's observed state in effectiveEligibility below; these checks cover
+	// the account-wide switches.
 	if dc.Request.Action == domain.ActionReportSubmit && !dc.Account.Capability.CanSubmit {
 		return decide(domain.DecisionDeny, "ACCOUNT_CANNOT_SUBMIT"), nil
+	}
+	if dc.Request.Action == domain.ActionProgramSignup && !dc.Account.Capability.CanJoinPrograms {
+		return decide(domain.DecisionDeny, "ACCOUNT_CANNOT_JOIN_PROGRAMS"), nil
+	}
+	if dc.Request.Action == domain.ActionPayout && !dc.Account.Capability.CanPayout {
+		return decide(domain.DecisionDeny, "ACCOUNT_CANNOT_PAYOUT"), nil
 	}
 	if dc.Request.Action == domain.ActionReadScope && !dc.Account.Capability.CanViewScope && dc.Program.Scope.Access == domain.ScopeAccessGranted {
 		return decide(domain.DecisionRequireHuman, "ACCOUNT_CANNOT_VIEW_SCOPE"), nil
 	}
 
-	// 2. Program state for execution/submission only.
-	if (dc.Request.Action.NeedsScope() || dc.Request.Action == domain.ActionReportSubmit) &&
+	// 2. Program state for execution/submission only. Signup must not be
+	// approved for a program that has ended or is paused.
+	if (dc.Request.Action.NeedsScope() || dc.Request.Action == domain.ActionReportSubmit ||
+		dc.Request.Action == domain.ActionProgramSignup) &&
 		dc.Program.Status.Status != domain.StatusRunning {
 		return decide(domain.DecisionDeny, "PROGRAM_NOT_RUNNING"), nil
 	}
 
 	// 3. Eligibility only for actions that require participation.
 	if dc.Request.Action.EligibilityRequired() {
-		if !dc.Program.Eligibility.Decision.Valid() {
+		if !elig.Decision.Valid() {
 			return decide(domain.DecisionRequireMoreEvidence, "ELIGIBILITY_UNKNOWN"), nil
 		}
-		switch dc.Program.Eligibility.Decision {
+		switch elig.Decision {
 		case domain.Ineligible:
 			return decide(domain.DecisionDeny, "PROGRAM_INELIGIBLE"), nil
 		case domain.HumanActionNeeded:
@@ -207,8 +202,13 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	// the request. Checking a different in-scope asset would authorize the
 	// wrong target.
 	if dc.Request.Action.NeedsAsset() {
-		if dc.Request.AssetID == nil || dc.Asset == nil {
+		if dc.Request.AssetID == nil {
 			return decide(domain.DecisionDeny, "ASSET_REQUIRED"), nil
+		}
+		if dc.Asset == nil {
+			// The requested ID is not present in the program's stored scope.
+			// Never trust a caller-supplied asset to fill this in.
+			return decide(domain.DecisionDeny, "ASSET_UNKNOWN"), nil
 		}
 		if *dc.Request.AssetID != dc.Asset.ID {
 			return decide(domain.DecisionDeny, "ASSET_MISMATCH"), nil
@@ -233,6 +233,12 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	// 7. Rate/budget constraints, when usage is supplied by the caller.
 	if err := checkUsage(dc); err != nil {
 		return decide(domain.DecisionDeny, err.Error()), nil
+	}
+
+	// 7b. Runtime constraints. A constraint that the caller cannot prove is
+	// satisfied produces REQUIRE_MORE_EVIDENCE, never ALLOW.
+	if d, reason := checkExecutionEnvironment(dc, now); d != "" {
+		return decide(d, reason), nil
 	}
 
 	// 8. Automation policy. FORBIDDEN cannot be overridden by an approval.
@@ -268,19 +274,12 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		return decide(domain.DecisionRequireHuman, "APPROVAL_REQUIRED"), nil
 	}
 	if dc.HumanApproval != nil {
+		// Validate but do not consume: consumption happens atomically in
+		// Gateway.Authorize, immediately before execution. Consuming here would
+		// burn a single-use approval even if the decision failed to persist or
+		// the user never executed it.
 		if err := validateApproval(dc.HumanApproval, dc.Request, dc.ResourceID, now); err != nil {
 			return decide(domain.DecisionRequireHuman, "INVALID_APPROVAL"), nil
-		}
-		if dc.HumanApproval.SingleUse {
-			if e.ledger == nil {
-				return decide(domain.DecisionRequireHuman, "NO_APPROVAL_LEDGER"), nil
-			}
-			if err := e.ledger.Consume(ctx, dc.HumanApproval.ID); err != nil {
-				if errors.Is(err, domain.ErrApprovalConsumed) {
-					return decide(domain.DecisionRequireHuman, "APPROVAL_ALREADY_CONSUMED"), nil
-				}
-				return domain.ActionDecision{}, fmt.Errorf("policy: consume approval: %w", err)
-			}
 		}
 	}
 	return e.allow(dc, now, decide)

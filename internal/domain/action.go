@@ -16,12 +16,16 @@ type ActorRef struct {
 }
 
 type ActionRequest struct {
-	ID             string
-	Actor          ActorRef
-	AccountID      AccountID
-	ProgramID      ProgramID
-	AssetID        *AssetID
-	Action         Action
+	ID        string
+	Actor     ActorRef
+	AccountID AccountID
+	ProgramID ProgramID
+	AssetID   *AssetID
+	Action    Action
+	// Method is the HTTP method for network actions. Policy checks it against
+	// Constraints.AllowedMethods/ForbiddenMethods; an empty method fails closed
+	// when the program restricts methods.
+	Method         string
 	Parameters     json.RawMessage
 	Purpose        string
 	RequestedAt    time.Time
@@ -58,4 +62,13 @@ type ActionDecision struct {
 	HumanApproval  *HumanApproval
 	ExpiresAt      *time.Time
 	Constraints    *Constraints
+
+	// Request and the runtime inputs are persisted with the decision so
+	// Authorize can reload authoritative state and re-run the policy instead of
+	// trusting a decision that was made before the scope/policy changed.
+	Request     ActionRequest
+	ResourceID  string
+	UsageToday  map[string]int64
+	BudgetSpent *Money
+	Environment *ExecutionEnvironment
 }

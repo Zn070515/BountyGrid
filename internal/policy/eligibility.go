@@ -67,8 +67,17 @@ func EvaluateEligibility(account domain.Account, program domain.Program, now tim
 			return domain.EligibilityState{}, err
 		}
 	}
+	// A program gate records a requirement. The satisfaction in the Program row
+	// is only what the program page could prove; overlay the account's observed
+	// state so a certification earned later is not permanently blocked by a
+	// stale UNSATISFIED value.
 	for _, g := range program.Gates {
-		if err := add(g); err != nil {
+		if err := add(applyAccountGate(g, account, program.ID)); err != nil {
+			return domain.EligibilityState{}, err
+		}
+	}
+	for _, g := range program.Eligibility.Gates {
+		if err := add(applyAccountGate(g, account, program.ID)); err != nil {
 			return domain.EligibilityState{}, err
 		}
 	}
@@ -117,6 +126,51 @@ func EvaluateEligibility(account domain.Account, program domain.Program, now tim
 		return st, fmt.Errorf("policy: eligibility: %w", err)
 	}
 	return st, nil
+}
+
+// applyAccountGate resolves a gate's satisfaction from the account's observed
+// state. Unknown account values leave the gate as-is (usually UNKNOWN).
+func applyAccountGate(g domain.EligibilityGate, account domain.Account, programID domain.ProgramID) domain.EligibilityGate {
+	if g.ProgramID != nil && *g.ProgramID != programID {
+		return g
+	}
+	switch g.Kind {
+	case domain.GatePracticalCertification:
+		if account.PracticalCertification != nil {
+			g.Satisfied = satisfaction(*account.PracticalCertification)
+		}
+	case domain.GateComplianceExam:
+		if account.ComplianceExamCompleted != nil {
+			g.Satisfied = satisfaction(*account.ComplianceExamCompleted)
+		}
+	case domain.GateIdentityVerified:
+		if account.IdentityVerified != nil {
+			g.Satisfied = satisfaction(*account.IdentityVerified)
+		}
+	case domain.GateBankBinding:
+		if account.BankBound != nil {
+			g.Satisfied = satisfaction(*account.BankBound)
+		}
+	case domain.GateWechatBinding:
+		if account.WechatBound != nil {
+			g.Satisfied = satisfaction(*account.WechatBound)
+		}
+	case domain.GateProgramSignup:
+		for _, joined := range account.JoinedProgramIDs {
+			if joined == programID {
+				g.Satisfied = domain.GateSatisfied
+				break
+			}
+		}
+	}
+	return g
+}
+
+func satisfaction(ok bool) domain.GateSatisfaction {
+	if ok {
+		return domain.GateSatisfied
+	}
+	return domain.GateUnsatisfied
 }
 
 func gateKey(g domain.EligibilityGate) string {

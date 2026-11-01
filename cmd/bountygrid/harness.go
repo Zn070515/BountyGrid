@@ -76,8 +76,7 @@ func runHarness(ctx context.Context, args []string) error {
 	defer pool.Close()
 	repo := postgres.NewRepo(pool)
 	engine := policy.NewEngine()
-	engine.SetApprovalLedger(postgres.NewPostgresApprovalLedger(pool))
-	g := gateway.New(repo, engine, postgres.NewAuditStore(pool), nil)
+	g := gateway.New(repo, engine, postgres.NewAuditStore(pool), postgres.NewPostgresApprovalLedger(pool))
 
 	hosts := []string{}
 	for _, h := range strings.Split(opts.AllowedHosts, ",") {
@@ -88,11 +87,12 @@ func runHarness(ctx context.Context, args []string) error {
 	h := harness.New(harness.NewBuiltinRegistry(), g, postgres.NewAuditStore(pool), &harness.Sandbox{AllowedHosts: hosts},
 		&harness.Budget{MaxCost: domain.Money{Amount: opts.BudgetCNY, Currency: "CNY"}})
 	h.SetAllowDestructive(opts.Destructive)
+	h.SetReceiptStore(repo)
 
 	decision, res, err := h.Execute(ctx, opts.Tool, gateway.EvaluateInput{
-		Request: in.Request, Asset: in.Asset, ResourceID: in.ResourceID,
+		Request: in.Request, ResourceID: in.ResourceID,
 		HumanApproval: in.HumanApproval, UsageToday: in.UsageToday,
-		BudgetSpent: in.BudgetSpent, Now: now,
+		BudgetSpent: in.BudgetSpent, Environment: in.Environment, Now: now,
 	})
 	var denied harness.DeniedError
 	if errors.As(err, &denied) {

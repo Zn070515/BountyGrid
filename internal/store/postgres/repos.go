@@ -458,23 +458,31 @@ func (r *Repo) GetDecision(ctx context.Context, id domain.DecisionID) (domain.Ac
 }
 
 func (r *Repo) PutCompetitionSnapshot(ctx context.Context, s domain.CompetitionSnapshot) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
 	data, err := mustJSON(s)
 	if err != nil {
 		return err
 	}
+	var validUntil *time.Time
+	if !s.ValidUntil.IsZero() {
+		v := s.ValidUntil
+		validUntil = &v
+	}
 	_, err = r.Pool.Exec(ctx, `
 		INSERT INTO competition_snapshots
-			(id, platform, scope, program_id, observed_at, top1_share, top3_share,
+			(id, platform, scope, program_id, observed_at, valid_until, top1_share, top3_share,
 			 top10_share, duplicate_pressure, saturation, confidence, data)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
 		ON CONFLICT (id) DO UPDATE SET
-			observed_at=EXCLUDED.observed_at,
+			observed_at=EXCLUDED.observed_at, valid_until=EXCLUDED.valid_until,
 			top1_share=EXCLUDED.top1_share, top3_share=EXCLUDED.top3_share,
 			top10_share=EXCLUDED.top10_share,
 			duplicate_pressure=EXCLUDED.duplicate_pressure,
 			saturation=EXCLUDED.saturation, confidence=EXCLUDED.confidence,
 			data=EXCLUDED.data`,
-		s.ID, s.Platform, s.Scope, s.ProgramID, s.ObservedAt,
+		s.ID, s.Platform, s.Scope, s.ProgramID, s.ObservedAt, validUntil,
 		s.Top1Share, s.Top3Share, s.Top10Share,
 		s.DuplicatePressure, s.Saturation, s.Confidence, data,
 	)
@@ -489,6 +497,7 @@ func (r *Repo) GetLatestCompetitionSnapshot(ctx context.Context, platform domain
 	err := r.Pool.QueryRow(ctx, `
 		SELECT data FROM competition_snapshots
 		WHERE platform=$1 AND scope=$2
+		  AND (valid_until IS NULL OR valid_until > now())
 		ORDER BY observed_at DESC LIMIT 1`, string(platform), scope).Scan(&data)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -552,38 +561,7 @@ func (r *Repo) PutDecision(ctx context.Context, d domain.ActionDecision) error {
 	if err := d.Validate(); err != nil {
 		return err
 	}
-	reasons, err := mustJSON(d.Reasons)
-	if err != nil {
-		return err
-	}
-	gates, err := mustJSON(d.GatesEvaluated)
-	if err != nil {
-		return err
-	}
-	approval, err := mustJSON(d.HumanApproval)
-	if err != nil {
-		return err
-	}
-	constraints, err := mustJSON(d.Constraints)
-	if err != nil {
-		return err
-	}
-	data, err := mustJSON(d)
-	if err != nil {
-		return err
-	}
-	_, err = r.Pool.Exec(ctx, `
-		INSERT INTO action_decisions
-			(id, request_id, program_id, action, decision, reasons, gates_evaluated,
-			 policy_version, decided_at, human_approval, expires_at, constraints, data)
-		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10::jsonb,$11,$12::jsonb,$13::jsonb)
-		ON CONFLICT (id) DO NOTHING`,
-		d.ID, d.RequestID, d.ProgramID, d.Action, d.Decision, reasons, gates,
-		d.PolicyVersion, d.DecidedAt, approval, d.ExpiresAt, constraints, data)
-	if err != nil {
-		return fmt.Errorf("postgres: put decision: %w", err)
-	}
-	return nil
+	return putDecision(ctx, r.Pool, d)
 }
 
 // ---------- Opportunity / task / finding / report / submission / ledger ----------
@@ -611,6 +589,10 @@ func (r *Repo) PutOpportunity(ctx context.Context, o domain.Opportunity) error {
 	return err
 }
 
+// PutResearchTask inserts a new task revision. Tasks are append-only: each
+// scheduling run gets its own ID. Any earlier QUEUED task for the same program
+// is superseded so the partial unique index keeps at most one active queue
+// entry, while history is preserved.
 func (r *Repo) PutResearchTask(ctx context.Context, t domain.ResearchTask) error {
 	data, err := mustJSON(t)
 	if err != nil {
@@ -622,15 +604,33 @@ func (r *Repo) PutResearchTask(ctx context.Context, t domain.ResearchTask) error
 		budget = &t.Budget.Amount
 		currency = &t.Budget.Currency
 	}
-	_, err = r.Pool.Exec(ctx, `
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: begin task: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		UPDATE research_tasks SET status='SUPERSEDED'
+		WHERE program_id=$1 AND status='QUEUED' AND id<>$2`, t.ProgramID, t.ID); err != nil {
+		return fmt.Errorf("postgres: supersede active task: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO research_tasks
 			(id, opportunity_id, program_id, asset_id, status, budget_cents, currency,
 			 created_at, expires_at, data)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
-		ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, data=EXCLUDED.data`,
+		ON CONFLICT (id) DO UPDATE SET
+			opportunity_id=EXCLUDED.opportunity_id, program_id=EXCLUDED.program_id,
+			asset_id=EXCLUDED.asset_id, status=EXCLUDED.status,
+			budget_cents=EXCLUDED.budget_cents, currency=EXCLUDED.currency,
+			created_at=EXCLUDED.created_at, expires_at=EXCLUDED.expires_at,
+			data=EXCLUDED.data`,
 		t.ID, t.OpportunityID, t.ProgramID, t.AssetID, t.Status, budget, currency,
 		t.CreatedAt, t.ExpiresAt, data)
-	return err
+	if err != nil {
+		return fmt.Errorf("postgres: put research task: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *Repo) PutFinding(ctx context.Context, f domain.Finding) error {
