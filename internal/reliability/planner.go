@@ -204,10 +204,12 @@ type LoopConfig struct {
 	// a STALLED/PARKED/HANDOFF session survives a process restart. Nil keeps
 	// the loop in-memory only.
 	Store SessionStore
-	// RequireStore makes a non-nil Store mandatory. Production workers must set
-	// this so the pre-execution checkpoint is a guaranteed invariant.
-	RequireStore bool
-	Now          func() time.Time
+	// AllowEphemeral opts out of durable checkpointing. The zero value requires
+	// Store: the pre-execution STARTED checkpoint is the only record that a
+	// crash may have produced a side effect, so an in-memory loop must be an
+	// explicit, named choice rather than an omission.
+	AllowEphemeral bool
+	Now            func() time.Time
 }
 
 // Loop is the deterministic short-horizon controller.
@@ -232,8 +234,8 @@ func NewLoop(cfg LoopConfig) (*Loop, error) {
 	if cfg.Executor == nil {
 		return nil, fmt.Errorf("%w: executor is nil", ErrLoopConfiguration)
 	}
-	if cfg.RequireStore && cfg.Store == nil {
-		return nil, fmt.Errorf("%w: LoopConfig.Store is nil", ErrSessionStoreRequired)
+	if cfg.Store == nil && !cfg.AllowEphemeral {
+		return nil, fmt.Errorf("%w: LoopConfig.Store is nil (set AllowEphemeral to run without checkpointing)", ErrSessionStoreRequired)
 	}
 	if err := cfg.Authorization.Validate(); err != nil {
 		return nil, err
@@ -338,13 +340,16 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 			LastObservation: cloneObservationPtr(lastObservation),
 			LastFailure:     cloneFailurePtr(lastFailure),
 		})
+		// Planning itself consumes the model budget. Charge reported usage even
+		// when the proposer also returns an error: a provider that billed a
+		// timed-out request still spent those tokens, and dropping them would
+		// make the persisted budget understate real spend.
+		session.Budget.AddTokens(usage.Total())
 		if err != nil {
 			return result, fmt.Errorf("reliability: proposer: %w", err)
 		}
-		// Planning itself consumes the model budget. Charge it before executing
-		// any proposal, and stop if the call exhausted the token ceiling: the
-		// proposal was produced under an over-budget request.
-		session.Budget.AddTokens(usage.Total())
+		// Stop if the call exhausted the token ceiling: the proposal was
+		// produced under an over-budget request.
 		if session.Budget.MaxTokens > 0 && session.Budget.TokensUsed >= session.Budget.MaxTokens {
 			result.Stop = StopBudgetExhausted
 			break

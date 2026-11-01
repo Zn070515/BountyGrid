@@ -2,6 +2,7 @@ package reliability
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
@@ -33,7 +34,7 @@ func TestLoopChargesProposerUsageAndStopsBeforeOverspend(t *testing.T) {
 	s.Budget = Budget{MaxSteps: 5, MaxToolCalls: 5, MaxTokens: 100}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor, Authorization: loopAuthorization(),
-		MaxSteps: 5, Now: fixedNow,
+		MaxSteps: 5, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +76,7 @@ func TestLoopUsageIsUnboundedWhenMaxTokensIsZero(t *testing.T) {
 	s.Budget = Budget{MaxSteps: 2, MaxToolCalls: 2}
 	loop, err := NewLoop(LoopConfig{
 		Proposer: proposer, Executor: executor, Authorization: loopAuthorization(),
-		MaxSteps: 2, Now: fixedNow,
+		MaxSteps: 2, AllowEphemeral: true, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -98,5 +99,42 @@ func TestProposerUsageIgnoresNegativeAndReportsTotal(t *testing.T) {
 	}
 	if got := (ProposerUsage{InputTokens: 3, OutputTokens: 4}).Total(); got != 7 {
 		t.Fatalf("usage total = %d, want 7", got)
+	}
+}
+
+type failingUsageProposer struct {
+	usage ProposerUsage
+	err   error
+}
+
+func (p *failingUsageProposer) Propose(context.Context, ProposeInput) ([]ActionProposal, error) {
+	return nil, p.err
+}
+
+func (p *failingUsageProposer) ProposeWithUsage(context.Context, ProposeInput) ([]ActionProposal, ProposerUsage, error) {
+	return nil, p.usage, p.err
+}
+
+// A provider can bill a request and then fail (timeout/connection reset). The
+// usage it reports is real spend and must still be charged before Run returns.
+func TestLoopChargesUsageReportedWithProposerError(t *testing.T) {
+	proposer := &failingUsageProposer{
+		usage: ProposerUsage{InputTokens: 7, OutputTokens: 3},
+		err:   errors.New("provider timeout"),
+	}
+	s := loopSession(t)
+	s.Budget = Budget{MaxSteps: 3, MaxToolCalls: 3, MaxTokens: 100, TokensUsed: 1}
+	loop, err := NewLoop(LoopConfig{
+		Proposer: proposer, Executor: &fakeExecutor{}, Authorization: loopAuthorization(),
+		MaxSteps: 1, AllowEphemeral: true, Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loop.Run(context.Background(), s); err == nil {
+		t.Fatal("expected the proposer error to abort the run")
+	}
+	if s.Budget.TokensUsed != 11 {
+		t.Fatalf("tokens used = %d, want 11 (existing 1 + reported 10)", s.Budget.TokensUsed)
 	}
 }

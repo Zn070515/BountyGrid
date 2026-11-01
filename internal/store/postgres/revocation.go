@@ -2,12 +2,17 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/redact"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -50,10 +55,60 @@ func bumpRevocationEpoch(ctx context.Context, q queryRower, program domain.Progr
 	return uint64(epoch), nil
 }
 
+// revocationReason is the audited form of an operator-supplied revocation
+// reason. A reason that looks like it contains a secret is never stored
+// verbatim: only its SHA-256 (for correlation) and the finding kinds are kept.
+type revocationReason struct {
+	Text     string
+	Redacted bool
+	Hash     string
+	Kinds    []string
+}
+
+// sanitizeRevocationReason keeps the audit trail useful without letting a
+// logging guardrail block an emergency revocation. The revocation itself must
+// stay atomic (epoch bump + audit), so the reason is sanitized before the
+// event is validated rather than aborting the transaction.
+func sanitizeRevocationReason(reason string) revocationReason {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return revocationReason{}
+	}
+	findings := redact.Scan(reason)
+	if len(findings) == 0 {
+		return revocationReason{Text: reason}
+	}
+	seen := make(map[string]struct{}, len(findings))
+	kinds := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		if _, duplicate := seen[finding.Kind]; duplicate {
+			continue
+		}
+		seen[finding.Kind] = struct{}{}
+		kinds = append(kinds, finding.Kind)
+	}
+	slices.Sort(kinds)
+	sum := sha256.Sum256([]byte(reason))
+	return revocationReason{
+		Redacted: true,
+		Hash:     "sha256:" + hex.EncodeToString(sum[:]),
+		Kinds:    kinds,
+	}
+}
+
+type revokeAuditPayload struct {
+	Epoch          uint64   `json:"epoch"`
+	Reason         string   `json:"reason,omitempty"`
+	ReasonRedacted bool     `json:"reason_redacted,omitempty"`
+	ReasonHash     string   `json:"reason_hash,omitempty"`
+	RedactionKinds []string `json:"redaction_kinds,omitempty"`
+}
+
 // RevokeProgramWithAudit bumps the durable epoch and appends the grant.revoked
-// audit event in one transaction. If the audit payload is invalid (for example
-// the operator reason contains a secret), the bump is rolled back: an
-// effective revocation without its audit trail must not be committed.
+// audit event in one transaction. An effective revocation without its audit
+// trail must not be committed, so a validation failure rolls the bump back.
+// Operator reasons are sanitized first: a secret-like reason is redacted
+// (hash + finding kinds) instead of aborting the kill switch.
 func (r *Repo) RevokeProgramWithAudit(ctx context.Context, program domain.ProgramID, reason string, at time.Time) (uint64, error) {
 	if program == "" {
 		return 0, fmt.Errorf("postgres: revoke program: empty program id")
@@ -71,10 +126,14 @@ func (r *Repo) RevokeProgramWithAudit(ctx context.Context, program domain.Progra
 	if err != nil {
 		return 0, err
 	}
-	payload, err := json.Marshal(struct {
-		Epoch  uint64 `json:"epoch"`
-		Reason string `json:"reason,omitempty"`
-	}{Epoch: epoch, Reason: reason})
+	reasonInfo := sanitizeRevocationReason(reason)
+	payload, err := json.Marshal(revokeAuditPayload{
+		Epoch:          epoch,
+		Reason:         reasonInfo.Text,
+		ReasonRedacted: reasonInfo.Redacted,
+		ReasonHash:     reasonInfo.Hash,
+		RedactionKinds: reasonInfo.Kinds,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("postgres: marshal revoke audit: %w", err)
 	}
@@ -86,14 +145,8 @@ func (r *Repo) RevokeProgramWithAudit(ctx context.Context, program domain.Progra
 	if err := event.Validate(); err != nil {
 		return 0, fmt.Errorf("postgres: revoke audit rejected: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO audit_events
-			(event_type, entity_type, entity_id, actor_kind, actor_id, payload, recorded_at)
-		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)`,
-		event.Type, event.EntityType, event.EntityID, event.ActorKind,
-		event.ActorID, string(payload), event.RecordedAt,
-	); err != nil {
-		return 0, fmt.Errorf("postgres: append revoke audit: %w", err)
+	if _, err := appendAudit(ctx, tx, event); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("postgres: commit revoke program: %w", err)

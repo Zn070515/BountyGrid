@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -118,16 +119,65 @@ func (p PermissionFact) ID() string {
 // failures are returned as errors so a transient outage is never mistaken for
 // authority.
 func VerifyPlatformEvidence(ctx context.Context, permission PermissionFact, program domain.Program, store EvidenceStore, contents EvidenceContentReader, now time.Time) error {
-	_, err := verifyPermission(ctx, permission, program, store, contents, now)
+	_, err := verifyPermission(ctx, permission, program, newVerificationCache(store, contents), now)
 	return err
+}
+
+type cachedEvidenceLoad struct {
+	ev  domain.Evidence
+	err error
+}
+
+type cachedContentLoad struct {
+	text string
+	err  error
+}
+
+// verificationCache keeps one Evidence/content load per evidence ID for a
+// single Build or Evaluate call. Several permissions routinely cite the same
+// policy page; without the cache the pre-execution Authorize path would read
+// and hash that page once per permission. The cache is request-scoped, so a
+// later Evaluate still observes deletes/replacements (the no-outliving rule).
+type verificationCache struct {
+	store    EvidenceStore
+	contents EvidenceContentReader
+	evidence map[domain.EvidenceID]cachedEvidenceLoad
+	content  map[domain.EvidenceID]cachedContentLoad
+}
+
+func newVerificationCache(store EvidenceStore, contents EvidenceContentReader) *verificationCache {
+	return &verificationCache{
+		store:    store,
+		contents: contents,
+		evidence: make(map[domain.EvidenceID]cachedEvidenceLoad),
+		content:  make(map[domain.EvidenceID]cachedContentLoad),
+	}
+}
+
+func (c *verificationCache) getEvidence(ctx context.Context, id domain.EvidenceID) (domain.Evidence, error) {
+	if loaded, ok := c.evidence[id]; ok {
+		return loaded.ev, loaded.err
+	}
+	ev, err := c.store.GetEvidence(ctx, id)
+	c.evidence[id] = cachedEvidenceLoad{ev: ev, err: err}
+	return ev, err
+}
+
+func (c *verificationCache) getContent(ctx context.Context, ev domain.Evidence) (string, error) {
+	if loaded, ok := c.content[ev.ID]; ok {
+		return loaded.text, loaded.err
+	}
+	text, err := c.contents.ReadContent(ctx, ev)
+	c.content[ev.ID] = cachedContentLoad{text: text, err: err}
+	return text, err
 }
 
 // verifyPermission validates a permission and returns its normalized copy.
 // BuildPlatformPolicy stores the normalized copy so matching does not have to
 // re-normalize host/method/path selectors.
-func verifyPermission(ctx context.Context, permission PermissionFact, program domain.Program, store EvidenceStore, contents EvidenceContentReader, now time.Time) (PermissionFact, error) {
+func verifyPermission(ctx context.Context, permission PermissionFact, program domain.Program, cache *verificationCache, now time.Time) (PermissionFact, error) {
 	var zero PermissionFact
-	if store == nil {
+	if cache == nil || cache.store == nil {
 		return zero, reject(ReasonEvidenceStoreMissing, "no evidence store configured")
 	}
 	if now.IsZero() {
@@ -160,7 +210,7 @@ func verifyPermission(ctx context.Context, permission PermissionFact, program do
 		return zero, &FreshnessError{Reason: ReasonStaleAutomationPolicy}
 	}
 
-	ev, err := store.GetEvidence(ctx, normalized.EvidenceID)
+	ev, err := cache.getEvidence(ctx, normalized.EvidenceID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			return zero, reject(ReasonEvidenceMissing, "evidence %s not found", normalized.EvidenceID)
@@ -179,11 +229,11 @@ func verifyPermission(ctx context.Context, permission PermissionFact, program do
 		return zero, reject(ReasonEvidenceSourceTypeNotAuthorizing,
 			"evidence %s source type %q is not POLICY or ANNOUNCEMENT", normalized.EvidenceID, ev.SourceType)
 	}
-	if contents == nil {
+	if cache.contents == nil {
 		return zero, reject(ReasonEvidenceContentMissing,
 			"no evidence content reader configured for %s", normalized.EvidenceID)
 	}
-	content, err := contents.ReadContent(ctx, ev)
+	content, err := cache.getContent(ctx, ev)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			return zero, reject(ReasonEvidenceContentMissing, "content for evidence %s not found", normalized.EvidenceID)
@@ -227,20 +277,19 @@ func findQuotedPermission(extracted []ExtractedPermission, quote string) (Extrac
 	return ExtractedPermission{}, false
 }
 
+// sameStringSet is exact multiset equality. It deliberately does not treat a
+// repeated value as equivalent to two distinct values: this function is the
+// proof that a PermissionFact's selectors equal the quoted PERMISSION line, and
+// a duplicate must not verify against a line granting a different selector.
 func sameStringSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	seen := make(map[string]struct{}, len(a))
-	for _, v := range a {
-		seen[v] = struct{}{}
-	}
-	for _, v := range b {
-		if _, ok := seen[v]; !ok {
-			return false
-		}
-	}
-	return true
+	as := append([]string(nil), a...)
+	bs := append([]string(nil), b...)
+	slices.Sort(as)
+	slices.Sort(bs)
+	return slices.Equal(as, bs)
 }
 
 // normalizePermissionFact enforces the explicit permission shape and
@@ -334,8 +383,9 @@ func normalizePermissionFact(permission PermissionFact) (PermissionFact, error) 
 // policy is immutable and holds only verified, normalized permissions.
 func BuildPlatformPolicy(ctx context.Context, program domain.Program, permissions []PermissionFact, store EvidenceStore, contents EvidenceContentReader, now time.Time) (*PlatformPolicy, error) {
 	verified := make([]PermissionFact, 0, len(permissions))
+	cache := newVerificationCache(store, contents)
 	for _, permission := range permissions {
-		normalized, err := verifyPermission(ctx, permission, program, store, contents, now)
+		normalized, err := verifyPermission(ctx, permission, program, cache, now)
 		if err != nil {
 			return nil, err
 		}
@@ -436,12 +486,13 @@ func (p *PlatformPolicy) Evaluate(ctx context.Context, program domain.Program, r
 		return rules.Result{}, err
 	}
 	var out rules.Result
+	cache := newVerificationCache(p.store, p.contents)
 	for _, permission := range p.permissions {
 		// Re-verify at decision time, not only at build time: evidence may have
 		// been deleted or replaced since the policy was compiled. A failed
 		// verification simply yields no authority for that permission (the base
 		// decision/freshness gates still apply).
-		verified, err := verifyPermission(ctx, permission, program, p.store, p.contents, now)
+		verified, err := verifyPermission(ctx, permission, program, cache, now)
 		if err != nil {
 			continue
 		}
