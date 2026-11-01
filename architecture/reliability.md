@@ -125,7 +125,7 @@ type FactRecord struct {
 - `Observation`：`ToolName + ArgsHash + ResponseHash + Content + Evidence + Sequence + ObservedAt`。`Content` 是摘要，不是原始页面；`NewObservation` 会自动脱敏。
 - `Unknown`：显式未决问题（`Question/Reason/Blocking`），防止模型把“不知道”写成结论。
 - `Hypothesis`：`OPEN / SUPPORTED / REFUTED / ABANDONED`，可带 `Failure *FailureSignature` 和 `Refutation`；失败假设进入 `FailedHypotheses`。
-- `Attempt`：每步的实际执行记录，只保存 `ArgsHash` 和 `Failure`，不保存原始参数。`Status` 为 `STARTED / COMPLETED / FAILED / INTERRUPTED`；`STARTED` 在执行工具前写入并 checkpoint，`COMPLETED/FAILED` 在执行后通过 `ReplaceAttempt` 补齐（身份字段不可改写）。进程崩溃或回放时残留的 `STARTED` 会被标记为 `INTERRUPTED`（结果未知），同一 tool+args 不会被自动重放。
+- `Attempt`：每步的实际执行记录，只保存 `ArgsHash` 和 `Failure`，不保存原始参数。`Status` 为 `STARTED / COMPLETED / FAILED / INTERRUPTED`；`STARTED` 在执行工具前写入并 checkpoint，`COMPLETED/FAILED` 在执行后通过 `ReplaceAttempt` 补齐。`ReplaceAttempt` 只接受仍为 `STARTED` 的记录，且身份字段（ID/Step/Tool/Action/ArgsHash/StartedAt）不可改写；session 校验拒绝重复 attempt ID。attempt ID 包含 session 内序号，因为 `step` 在每次 `Run/Resume` 都从 1 重新计数。进程崩溃或回放时残留的 `STARTED` 会被标记为 `INTERRUPTED`（结果未知），同一 tool+args 不会被自动重放。
 - `CandidateFinding`：模型提出的候选漏洞。`ToFinding()` 生成 `domain.Finding{Status:"CANDIDATE"}`，之后仍必须经过 `verify.RuleVerifier`、`report.Build`、审批与 submit。
 - 状态中所有自由文本都做敏感值扫描；命中 `internal/redact` 规则即返回 `ErrSecretDetected`。`NewObservation` 对内容做 redaction，而不是把秘密写进状态。
 

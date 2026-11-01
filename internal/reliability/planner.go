@@ -335,7 +335,11 @@ func (l *Loop) Run(ctx context.Context, session *ResearchSession) (LoopResult, e
 		}
 
 		startedAt := l.now().UTC()
-		attemptID := StableID("attempt", fmt.Sprint(step), proposal.ID, proposalTool(proposal), HashArgs(proposal.Parameters))
+		// Include the session's attempt ordinal: step numbering restarts at 1
+		// for every Run/Resume, so step+proposal alone would collide and let
+		// ReplaceAttempt overwrite an older completed attempt.
+		attemptID := StableID("attempt", fmt.Sprint(len(session.Attempts)+1), fmt.Sprint(step),
+			proposal.ID, proposalTool(proposal), HashArgs(proposal.Parameters))
 		startedAttempt := Attempt{
 			ID: attemptID, Step: step, ProposalID: proposal.ID,
 			ToolName: proposalTool(proposal), Action: proposal.Action,
