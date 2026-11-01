@@ -554,7 +554,7 @@ func TestDailyLimitSharedAcrossGrants(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := NewEgress(&Sandbox{AllowedHosts: []string{"127.0.0.1"}, AllowLoopback: true})
+	e := NewEgress(&Sandbox{AllowedHosts: []string{"127.0.0.1"}, AllowLoopback: true}).AllowUnvalidatedGrantsForTests()
 	grant := ExecutionGrant{
 		ProgramID:      "p1",
 		AllowedMethods: map[string]struct{}{http.MethodGet: {}},

@@ -3,6 +3,7 @@ package capability
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -115,6 +116,97 @@ func TestBrokerZeroDailyLimitStillCounts(t *testing.T) {
 	tight.DailyLimit = 3
 	if _, err := b.Acquire(context.Background(), tight); !errors.Is(err, ErrLimit) {
 		t.Fatalf("acquire with limit 3 after 3 counts err = %v, want ErrLimit", err)
+	}
+}
+
+// recordingQuota counts Consume calls so a test can prove a cancelled waiter
+// never spends a daily slot.
+type recordingQuota struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (q *recordingQuota) Consume(ctx context.Context, _ string, _ string, _ int64) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	q.mu.Lock()
+	q.calls++
+	q.mu.Unlock()
+	return true, nil
+}
+
+func (q *recordingQuota) Durable() bool { return true }
+
+func (q *recordingQuota) count() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.calls
+}
+
+// TestBrokerCancelledConcurrencyWaitDoesNotConsumeQuota proves the daily quota
+// is consumed only after a concurrency slot is held.
+func TestBrokerCancelledConcurrencyWaitDoesNotConsumeQuota(t *testing.T) {
+	quota := &recordingQuota{}
+	b := NewMemoryBroker(WithDailyQuota(quota))
+	maxConc := 1
+	req := Request{AccountID: "acc1", ProgramID: "p1", Interface: "http", MaxConcurrency: &maxConc, DailyLimit: 2}
+
+	held := acquire(t, b, req, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := b.Acquire(ctx, req); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked acquire err = %v, want deadline exceeded", err)
+	}
+	if got := quota.count(); got != 1 {
+		t.Fatalf("daily consumes = %d, want 1 (the cancelled waiter must not spend a slot)", got)
+	}
+
+	held.Release()
+	second := acquire(t, b, req, time.Second)
+	second.Release()
+	if got := quota.count(); got != 2 {
+		t.Fatalf("daily consumes after release = %d, want 2", got)
+	}
+}
+
+// TestBrokerCancelledRPSWaitDoesNotConsumeQuota proves an RPS cancellation
+// releases the concurrency slot it was holding and does not spend a daily slot.
+func TestBrokerCancelledRPSWaitDoesNotConsumeQuota(t *testing.T) {
+	quota := &recordingQuota{}
+	b := NewMemoryBroker(WithDailyQuota(quota))
+	maxConc := 2
+	rps := 0.01 // one request per 100 seconds
+	req := Request{
+		AccountID: "acc1", ProgramID: "p1", Interface: "http",
+		MaxRPS: &rps, MaxConcurrency: &maxConc, DailyLimit: 2,
+	}
+
+	held := acquire(t, b, req, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := b.Acquire(ctx, req); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked acquire err = %v, want deadline exceeded", err)
+	}
+	if got := quota.count(); got != 1 {
+		t.Fatalf("daily consumes = %d, want 1 (the cancelled waiter must not spend a slot)", got)
+	}
+
+	// The cancelled waiter must have released its concurrency slot. A future
+	// Now makes the shared RPS timeline due, so a leak would surface as a
+	// blocked third acquisition (held still occupies one of two slots).
+	third := req
+	third.Now = time.Now().Add(time.Hour)
+	thirdCtx, thirdCancel := context.WithTimeout(context.Background(), time.Second)
+	defer thirdCancel()
+	thirdLease, err := b.Acquire(thirdCtx, third)
+	if err != nil {
+		t.Fatalf("third acquire after cancellation: %v", err)
+	}
+	thirdLease.Release()
+	held.Release()
+	if got := quota.count(); got != 2 {
+		t.Fatalf("daily consumes = %d, want 2", got)
 	}
 }
 

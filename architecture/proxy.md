@@ -177,6 +177,20 @@ been written (HTTP) or the tunnel has ended (CONNECT). `GrantPolicy` implements
 `DailyLimit`; a configured broker with a policy that exposes no limits fails
 closed with 429.
 
+Production (`AllowNonDurableCapabilityForTests=false`) requires a broker and a
+**durable** daily counter (`capability.DurableBroker`). A proxy with no broker,
+or with only an in-memory quota, fails `Validate/Serve/ListenAndServe` and the
+handler refuses to forward. This closes the fail-open where a forgotten broker
+forwarded traffic without RPS/concurrency/daily accounting, and the case where
+a restart reset the platform's daily budget. The explicit test escape hatch is
+separate from `AllowUngrantedForTests`.
+
+On the client side, a grant-bound `Egress` now re-runs
+`GrantValidator.ValidateGrant` before every request and refuses redirects
+(`ErrGrantRedirect`), so it enforces the same lease/status/revision/epoch
+conditions as `GrantPolicy` and does not turn one grant into a chain of
+unauthorized requests.
+
 The broker keeps one `programLimiter` per `account + program + interface`, so
 plain HTTP forwarded through the proxy and HTTP through `Egress` share:
 

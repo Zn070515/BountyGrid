@@ -43,6 +43,10 @@ func validatorFixture(t *testing.T, now time.Time) (*fakeProgramStore, *MemoryRe
 	}
 	store := &fakeProgramStore{programs: map[domain.ProgramID]domain.Program{"p1": prog}}
 	rev := NewMemoryRevocationRegistry()
+	epoch, err := rev.Epoch(context.Background(), "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	grant := ExecutionGrant{
 		DecisionID:         "d1",
 		AccountID:          "acc1",
@@ -51,7 +55,7 @@ func validatorFixture(t *testing.T, now time.Time) (*fakeProgramStore, *MemoryRe
 		LeaseUntil:         now.Add(time.Minute),
 		ScopeRevision:      prog.Scope.Revision(),
 		PolicyRevision:     prog.PolicyRevision(),
-		AuthorizationEpoch: rev.Epoch("p1"),
+		AuthorizationEpoch: epoch,
 	}
 	return store, rev, grant, prog
 }
@@ -94,7 +98,9 @@ func TestProgramValidatorDeniesExpiredGrant(t *testing.T) {
 func TestProgramValidatorDeniesRevokedEpoch(t *testing.T) {
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 	store, rev, grant, _ := validatorFixture(t, now)
-	rev.Bump("p1")
+	if _, err := rev.Bump(context.Background(), "p1"); err != nil {
+		t.Fatal(err)
+	}
 	v := ProgramValidator{Programs: store, Revocations: rev, Now: func() time.Time { return now }}
 	if err := v.ValidateGrant(context.Background(), grant); !errors.Is(err, ErrGrantRevoked) {
 		t.Fatalf("err = %v, want ErrGrantRevoked", err)
@@ -174,19 +180,63 @@ func TestProgramValidatorWithoutStoreFailsClosed(t *testing.T) {
 }
 
 func TestRevocationRegistryBumpAndEpoch(t *testing.T) {
+	ctx := context.Background()
 	r := NewMemoryRevocationRegistry()
-	if got := r.Epoch("p1"); got != 0 {
-		t.Fatalf("initial epoch = %d, want 0", got)
+	if got, err := r.Epoch(ctx, "p1"); err != nil || got != 0 {
+		t.Fatalf("initial epoch = %d, %v; want 0, nil", got, err)
 	}
-	if got := r.Bump("p1"); got != 1 {
-		t.Fatalf("bump = %d, want 1", got)
+	if got, err := r.Bump(ctx, "p1"); err != nil || got != 1 {
+		t.Fatalf("bump = %d, %v; want 1, nil", got, err)
 	}
-	if got := r.Epoch("p1"); got != 1 {
-		t.Fatalf("epoch after bump = %d, want 1", got)
+	if got, err := r.Epoch(ctx, "p1"); err != nil || got != 1 {
+		t.Fatalf("epoch after bump = %d, %v; want 1, nil", got, err)
 	}
 	// Programs are independent.
-	if got := r.Epoch("p2"); got != 0 {
-		t.Fatalf("other program epoch = %d, want 0", got)
+	if got, err := r.Epoch(ctx, "p2"); err != nil || got != 0 {
+		t.Fatalf("other program epoch = %d, %v; want 0, nil", got, err)
+	}
+	// A cancelled context fails closed rather than reporting epoch 0.
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := r.Epoch(canceled, "p1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled epoch err = %v, want context canceled", err)
+	}
+}
+
+type fakeRevocationStore struct {
+	epoch   uint64
+	bumps   int
+	epochErr error
+	bumpErr  error
+}
+
+func (s *fakeRevocationStore) Epoch(ctx context.Context, _ domain.ProgramID) (uint64, error) {
+	return s.epoch, s.epochErr
+}
+
+func (s *fakeRevocationStore) BumpRevocationEpoch(ctx context.Context, _ domain.ProgramID) (uint64, error) {
+	s.bumps++
+	return s.epoch + uint64(s.bumps), s.bumpErr
+}
+
+func TestPostgresRevocationRegistryDelegates(t *testing.T) {
+	store := &fakeRevocationStore{epoch: 3}
+	reg := PostgresRevocationRegistry{Store: store}
+	ctx := context.Background()
+	if got, err := reg.Epoch(ctx, "p1"); err != nil || got != 3 {
+		t.Fatalf("epoch = %d, %v; want 3", got, err)
+	}
+	if got, err := reg.Bump(ctx, "p1"); err != nil || got != 4 {
+		t.Fatalf("bump = %d, %v; want 4", got, err)
+	}
+	// A configured but unreadable store must fail closed.
+	store.epochErr = errors.New("db down")
+	if _, err := reg.Epoch(ctx, "p1"); err == nil {
+		t.Fatal("unreadable epoch must fail closed")
+	}
+	// A missing store must also fail closed.
+	if _, err := (PostgresRevocationRegistry{}).Epoch(ctx, "p1"); err == nil {
+		t.Fatal("missing store must fail closed")
 	}
 }
 

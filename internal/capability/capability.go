@@ -67,6 +67,14 @@ type Broker interface {
 	Acquire(ctx context.Context, req Request) (Lease, error)
 }
 
+// DurableBroker is a Broker whose daily counter survives a process restart.
+// A production proxy requires one: forwarding on a non-durable counter lets a
+// restart (or a second process) reset the platform's daily budget.
+type DurableBroker interface {
+	Broker
+	Durable() bool
+}
+
 // DailyQuota is the durable daily usage counter. Consume must atomically
 // increment the counter only while it is below limit and report whether the
 // increment happened. A limit of 0 means "no ceiling, but keep counting".
@@ -145,10 +153,14 @@ func NewMemoryBroker(opts ...BrokerOption) *MemoryBroker {
 	return b
 }
 
-// Acquire waits for an RPS slot, consumes one daily request, and takes a
-// concurrency slot, in that order. A request with neither account nor program
-// identity gets an ephemeral (non-shared) limiter, matching the fail-safe
-// behavior of a grant that cannot be attributed to a platform object.
+// Acquire takes a concurrency slot, waits for an RPS slot, and only then
+// consumes one daily request. A request that is cancelled while waiting for
+// concurrency or RPS therefore never spends a daily slot, and a daily-quota
+// rejection releases the concurrency slot it was holding.
+//
+// A request with neither account nor program identity gets an ephemeral
+// (non-shared) limiter, matching the fail-safe behavior of a grant that cannot
+// be attributed to a platform object.
 func (b *MemoryBroker) Acquire(ctx context.Context, req Request) (Lease, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -158,25 +170,45 @@ func (b *MemoryBroker) Acquire(ctx context.Context, req Request) (Lease, error) 
 	if now.IsZero() {
 		now = time.Now()
 	}
+	maxConc := 0
+	if req.MaxConcurrency != nil {
+		maxConc = *req.MaxConcurrency
+	}
+	lease, err := limiter.acquireConc(ctx, maxConc)
+	if err != nil {
+		return nil, err
+	}
+	// Release the concurrency slot on every later failure. The returned lease
+	// owns it once Acquire succeeds.
 	if err := limiter.wait(ctx, req.MaxRPS, now); err != nil {
+		lease.Release()
 		return nil, err
 	}
 	day := now.In(timeutil.BusinessLocation()).Format("2006-01-02")
 	ok, err := b.quota.Consume(ctx, key, day, req.DailyLimit)
 	if err != nil {
+		lease.Release()
 		return nil, err
 	}
 	if !ok {
+		lease.Release()
 		if req.DailyLimit > 0 {
 			return nil, fmt.Errorf("%w: %d reached", ErrLimit, req.DailyLimit)
 		}
 		return nil, ErrLimit
 	}
-	maxConc := 0
-	if req.MaxConcurrency != nil {
-		maxConc = *req.MaxConcurrency
+	return lease, nil
+}
+
+// Durable reports whether the daily counter survives a restart. The broker is
+// only as durable as its injected DailyQuota; the default MemoryDailyQuota is
+// process-local.
+func (b *MemoryBroker) Durable() bool {
+	if b == nil || b.quota == nil {
+		return false
 	}
-	return limiter.acquireConc(ctx, maxConc)
+	d, ok := b.quota.(interface{ Durable() bool })
+	return ok && d.Durable()
 }
 
 // limiterFor returns the shared limiter and quota key for a request. It never
@@ -218,6 +250,9 @@ type dailyCount struct {
 func NewMemoryDailyQuota() *MemoryDailyQuota {
 	return &MemoryDailyQuota{counts: make(map[string]*dailyCount)}
 }
+
+// Durable reports that the counter lives in this process only.
+func (q *MemoryDailyQuota) Durable() bool { return false }
 
 func (q *MemoryDailyQuota) Consume(ctx context.Context, key, businessDate string, limit int64) (bool, error) {
 	if err := ctx.Err(); err != nil {
