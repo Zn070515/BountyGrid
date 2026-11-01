@@ -13,6 +13,11 @@ var (
 	ErrReceiptNotFound = errors.New("execution receipt not found")
 	// ErrReceiptExists means another execution already reserved the key.
 	ErrReceiptExists = errors.New("execution receipt already exists")
+	// ErrNotSent proves that a side effect was not started: the transport
+	// failed before any request bytes left the process. A tool that wraps its
+	// error with this sentinel opts into a retryable FAILED receipt; every other
+	// side-effect error is AMBIGUOUS and requires manual reconciliation.
+	ErrNotSent = errors.New("side effect was not started")
 )
 
 // ExecutionEnvironmentMaxAge bounds how old a runtime observation may be before
@@ -102,14 +107,20 @@ const (
 	ReceiptExecuted ReceiptStatus = "EXECUTED"
 	// ReceiptCompleted means the tool ran and the audit event was written.
 	ReceiptCompleted ReceiptStatus = "COMPLETED"
-	// ReceiptFailed means the tool returned an error before producing a
-	// side-effect receipt; the request may be retried.
+	// ReceiptFailed means the tool proved the side effect did not start (for
+	// example a connect failure before any bytes were sent). Only this status is
+	// safe to retry under the same idempotency key.
 	ReceiptFailed ReceiptStatus = "FAILED"
+	// ReceiptAmbiguous means the tool returned an error but the side effect may
+	// already have happened (a lost response, timeout after send, or a crash).
+	// It must never be retried automatically; a human must reconcile it against
+	// the platform first.
+	ReceiptAmbiguous ReceiptStatus = "AMBIGUOUS"
 )
 
 func (s ReceiptStatus) Valid() bool {
 	switch s {
-	case ReceiptStarted, ReceiptExecuted, ReceiptCompleted, ReceiptFailed:
+	case ReceiptStarted, ReceiptExecuted, ReceiptCompleted, ReceiptFailed, ReceiptAmbiguous:
 		return true
 	default:
 		return false

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
@@ -63,10 +64,53 @@ type Auditor interface {
 	Append(ctx context.Context, e audit.Event) (int64, error)
 }
 
+// CallStore durably reserves a logical call before a provider is invoked and
+// records its outcome. A retry with the same CallID sees the reservation and
+// must not pay for a second model invocation.
+type CallStore interface {
+	Reserve(ctx context.Context, id string, rec CallRecord) (bool, error)
+	Complete(ctx context.Context, id string, rec CallRecord) error
+	Get(ctx context.Context, id string) (CallRecord, bool, error)
+}
+
+type MemoryCallStore struct {
+	mu      sync.Mutex
+	records map[string]CallRecord
+}
+
+func NewMemoryCallStore() *MemoryCallStore {
+	return &MemoryCallStore{records: make(map[string]CallRecord)}
+}
+
+func (s *MemoryCallStore) Reserve(ctx context.Context, id string, rec CallRecord) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.records[id]; ok {
+		return false, nil
+	}
+	s.records[id] = rec
+	return true, nil
+}
+
+func (s *MemoryCallStore) Complete(ctx context.Context, id string, rec CallRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records[id] = rec
+	return nil
+}
+
+func (s *MemoryCallStore) Get(ctx context.Context, id string) (CallRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[id]
+	return r, ok, nil
+}
+
 type Options struct {
 	Providers []Provider
 	Auditor   Auditor
 	CallLog   CallLog
+	CallStore CallStore
 	Now       func() time.Time
 }
 
@@ -74,6 +118,7 @@ type Router struct {
 	providers []Provider
 	auditor   Auditor
 	log       CallLog
+	calls     CallStore
 	now       func() time.Time
 }
 
@@ -93,15 +138,25 @@ func New(opts Options) (*Router, error) {
 		if _, ok := seen[info.Name]; ok {
 			return nil, fmt.Errorf("%w: duplicate provider %q", ErrInvalidRequest, info.Name)
 		}
+		// A provider may not claim locality while pointing at a remote endpoint.
+		// SENSITIVE data is only routed to IsLocal() providers, so a false local
+		// claim would be a data-egress hole.
+		if info.Local && info.Endpoint != "" && !endpointIsLocal(info.Endpoint) {
+			return nil, fmt.Errorf("%w: provider %q declares local but endpoint %q is remote",
+				ErrInvalidRequest, info.Name, info.Endpoint)
+		}
 		seen[info.Name] = struct{}{}
 	}
 	if opts.CallLog == nil {
 		opts.CallLog = NewMemoryCallLog()
 	}
+	if opts.CallStore == nil {
+		opts.CallStore = NewMemoryCallStore()
+	}
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Router{providers: opts.Providers, auditor: opts.Auditor, log: opts.CallLog, now: opts.Now}, nil
+	return &Router{providers: opts.Providers, auditor: opts.Auditor, log: opts.CallLog, calls: opts.CallStore, now: opts.Now}, nil
 }
 
 func (r *Router) CallLog() CallLog { return r.log }
@@ -127,14 +182,25 @@ func (r *Router) Candidates(req ModelRequest) []ProviderInfo {
 }
 
 func eligible(req ModelRequest, info ProviderInfo) bool {
-	if req.DataClass == DataSensitive && !info.Local {
+	class := req.EffectiveDataClass()
+	if class == DataSensitive && !info.IsLocal() {
 		return false
 	}
-	if !info.SupportsDataClass(req.DataClass) || !info.SupportsPurpose(req.Purpose) {
+	if !info.SupportsDataClass(class) || !info.SupportsPurpose(req.Purpose) {
 		return false
 	}
 	if info.MaxOutputTokens > 0 && req.MaxTokens > info.MaxOutputTokens {
 		return false
+	}
+	if info.MaxContextTokens > 0 {
+		if PromptTokens(req)+req.MaxTokens > info.MaxContextTokens {
+			return false
+		}
+	}
+	for _, c := range req.RequiredCapabilities {
+		if !info.SupportsCapability(c) {
+			return false
+		}
 	}
 	return true
 }
@@ -145,17 +211,17 @@ func eligible(req ModelRequest, info ProviderInfo) bool {
 func routeScore(req ModelRequest, info ProviderInfo) int {
 	switch req.Purpose {
 	case PurposePlan, PurposeAnalyze:
-		if info.Local {
+		if info.IsLocal() {
 			return 10
 		}
 		return 10 - info.Strength
 	case PurposeCode, PurposeEmbed:
-		if info.Local {
+		if info.IsLocal() {
 			return 0
 		}
 		return 10
 	case PurposeReport:
-		if info.Local {
+		if info.IsLocal() {
 			return 0
 		}
 		return 5
@@ -178,8 +244,34 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 			ErrNoProvider, req.DataClass, req.Purpose, req.MaxTokens)
 	}
 
+	// Reserve the logical call before any provider is invoked. A retry with the
+	// same CallID is rejected instead of paying for a second call.
+	callID := strings.TrimSpace(req.CallID)
+	if callID == "" {
+		callID = callIDFor(req, r.now())
+	}
+	if r.calls != nil {
+		reserved, err := r.calls.Reserve(ctx, callID, CallRecord{
+			ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
+			DataClass: req.EffectiveDataClass(), PromptHash: PromptHash(req),
+		})
+		if err != nil {
+			return ModelResponse{}, fmt.Errorf("model: reserve call: %w", err)
+		}
+		if !reserved {
+			return ModelResponse{}, fmt.Errorf("%w: %s", ErrDuplicateCall, callID)
+		}
+	}
+
 	budgeted := 0
+	var spent int64
 	var lastErr error
+	finish := func(rec CallRecord) {
+		if r.calls == nil {
+			return
+		}
+		_ = r.calls.Complete(context.WithoutCancel(ctx), callID, rec)
+	}
 	for _, info := range candidates {
 		provider := r.provider(info.Name)
 		if provider == nil {
@@ -191,7 +283,8 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 				return ModelResponse{}, fmt.Errorf("%w: budget currency %q does not match pricing %q",
 					ErrInvalidRequest, req.Budget.Currency, estimate.Currency)
 			}
-			if estimate.Amount > req.Budget.Amount {
+			// The budget bounds the whole fallback chain, not one candidate.
+			if spent+estimate.Amount > req.Budget.Amount {
 				budgeted++
 				continue
 			}
@@ -201,19 +294,29 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		resp, err := provider.Complete(ctx, req)
 		ended := r.now()
 		if err != nil {
+			// A failed provider may still have billed for the attempt. Count the
+			// estimate against the chain budget so fallback cannot overspend.
+			spent += EstimateCost(info, req).Amount
 			lastErr = err
 			if rerr := r.record(ctx, req, info, started, ended, EstimateCost(info, req), resp, "PROVIDER_ERROR"); rerr != nil {
+				finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
+					DataClass: req.EffectiveDataClass(), Provider: info.Name, Model: info.Model, Error: "AUDIT_FAILED"})
 				return ModelResponse{}, errors.Join(err, fmt.Errorf("model: audit failed call: %w", rerr))
 			}
 			continue
 		}
 		cost := ActualCost(info, resp.Usage)
-		if req.Budget.Amount > 0 && cost.Amount > req.Budget.Amount {
-			berr := fmt.Errorf("%w: actual cost %d exceeds budget %d",
-				ErrBudgetExceeded, cost.Amount, req.Budget.Amount)
+		spent += cost.Amount
+		if req.Budget.Amount > 0 && spent > req.Budget.Amount {
+			berr := fmt.Errorf("%w: accumulated cost %d exceeds budget %d",
+				ErrBudgetExceeded, spent, req.Budget.Amount)
 			if rerr := r.record(ctx, req, info, started, ended, cost, resp, "BUDGET_EXCEEDED"); rerr != nil {
 				return ModelResponse{}, errors.Join(berr, fmt.Errorf("model: audit call: %w", rerr))
 			}
+			finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
+				DataClass: req.EffectiveDataClass(), Provider: info.Name, Model: info.Model,
+				Cost: cost, Error: "BUDGET_EXCEEDED", StartedAt: started, EndedAt: ended,
+				PromptHash: PromptHash(req), ResponseHash: ResponseHash(resp.Content), Usage: resp.Usage})
 			return ModelResponse{}, berr
 		}
 		resp.Provider = info.Name
@@ -225,14 +328,26 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		if rerr := r.record(ctx, req, info, started, ended, cost, resp, ""); rerr != nil {
 			// The call happened and its content is still useful, but the audit
 			// trail is incomplete. Return both rather than pretending success.
+			finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
+				DataClass: req.EffectiveDataClass(), Provider: info.Name, Model: info.Model,
+				Cost: cost, Error: "AUDIT_FAILED", StartedAt: started, EndedAt: ended,
+				PromptHash: PromptHash(req), ResponseHash: ResponseHash(resp.Content), Usage: resp.Usage})
 			return resp, fmt.Errorf("model: audit call: %w", rerr)
 		}
+		finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
+			DataClass: req.EffectiveDataClass(), Provider: info.Name, Model: info.Model,
+			Cost: cost, StartedAt: started, EndedAt: ended,
+			PromptHash: PromptHash(req), ResponseHash: ResponseHash(resp.Content), Usage: resp.Usage})
 		return resp, nil
 	}
 	if budgeted > 0 {
-		return ModelResponse{}, fmt.Errorf("%w: every eligible provider exceeds the request budget", ErrBudgetExceeded)
+		finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
+			DataClass: req.EffectiveDataClass(), Error: "BUDGET_EXCEEDED"})
+		return ModelResponse{}, fmt.Errorf("%w: every eligible provider exceeds the remaining request budget", ErrBudgetExceeded)
 	}
 	if lastErr != nil {
+		finish(CallRecord{ID: callID, TaskID: req.TaskID, Purpose: req.Purpose,
+			DataClass: req.EffectiveDataClass(), Error: "PROVIDER_ERROR"})
 		return ModelResponse{}, fmt.Errorf("model: all providers failed: %w", lastErr)
 	}
 	return ModelResponse{}, ErrNoProvider
@@ -249,7 +364,7 @@ func (r *Router) provider(name string) Provider {
 
 func (r *Router) record(ctx context.Context, req ModelRequest, info ProviderInfo, started, ended time.Time, cost domain.Money, resp ModelResponse, errKind string) error {
 	rec := CallRecord{
-		ID:           callID(req, started),
+		ID:           callIDFor(req, started),
 		TaskID:       req.TaskID,
 		Purpose:      req.Purpose,
 		DataClass:    req.DataClass,
@@ -298,10 +413,14 @@ func (r *Router) record(ctx context.Context, req ModelRequest, info ProviderInfo
 	return nil
 }
 
-func callID(req ModelRequest, at time.Time) string {
+var callSeq atomic.Uint64
+
+func callIDFor(req ModelRequest, at time.Time) string {
 	task := string(req.TaskID)
 	if task == "" {
 		task = "adhoc"
 	}
-	return fmt.Sprintf("call/%s/%s", task, at.UTC().Format("20060102T150405.000000000"))
+	// The sequence keeps two auto-generated calls in the same clock tick from
+	// colliding. Explicit ModelRequest.CallID is still the idempotency key.
+	return fmt.Sprintf("call/%s/%s/%d", task, at.UTC().Format("20060102T150405.000000000"), callSeq.Add(1))
 }

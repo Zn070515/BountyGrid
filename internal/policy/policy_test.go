@@ -56,6 +56,7 @@ func testProgram(status domain.ProgramStatus, visibility domain.ScopeVisibility)
 			ContentsKnown: visibility == domain.ScopePublic,
 			ObservedAt:    testNow,
 		},
+		ObservedAt: testNow,
 		Automation: domain.AutomationPolicy{
 			AIAnalysis: domain.CapUnknown, AutonomousAgent: domain.CapUnknown,
 			ActiveHTTP: domain.CapUnknown, BrowserAutomation: domain.CapUnknown,
@@ -912,5 +913,66 @@ func TestPracticalCertificationIsProgramScoped(t *testing.T) {
 	}
 	if st2.Decision != domain.Eligible {
 		t.Fatalf("p2 decision = %s, want ELIGIBLE", st2.Decision)
+	}
+}
+
+func TestStaleAuthorizationInputsFailClosed(t *testing.T) {
+	base := func() DecisionContext {
+		r := req(domain.ActionActiveHTTP)
+		asset := domain.AssetID("a1")
+		r.AssetID = &asset
+		return DecisionContext{
+			Request: r, Account: testAccount(true),
+			Program: testProgram(domain.StatusRunning, domain.ScopePublic),
+			Now:     testNow,
+		}
+	}
+	cases := []struct {
+		name   string
+		mutate func(*DecisionContext)
+		reason string
+	}{
+		{"policy", func(dc *DecisionContext) { dc.Program.ObservedAt = testNow.Add(-domain.PolicyMaxAge - time.Hour) }, "STALE_AUTOMATION_POLICY"},
+		{"scope", func(dc *DecisionContext) { dc.Program.Scope.ObservedAt = testNow.Add(-domain.ScopeMaxAge - time.Hour) }, "STALE_SCOPE"},
+		{"account", func(dc *DecisionContext) {
+			dc.Account.ObservedAt = testNow.Add(-domain.AccountCapabilityMaxAge - time.Hour)
+			dc.Account.Capability.EvaluatedAt = dc.Account.ObservedAt
+		}, "STALE_ACCOUNT_CAPABILITY"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dc := base()
+			c.mutate(&dc)
+			d, err := NewEngine().Decide(context.Background(), dc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.Decision != domain.DecisionRequireMoreEvidence || len(d.Reasons) == 0 || d.Reasons[0] != c.reason {
+				t.Fatalf("decision = %s %v, want REQUIRE_MORE_EVIDENCE %s", d.Decision, d.Reasons, c.reason)
+			}
+		})
+	}
+}
+
+func TestFreshAuthorizationInputsProceed(t *testing.T) {
+	r := req(domain.ActionActiveHTTP)
+	asset := domain.AssetID("a1")
+	r.AssetID = &asset
+	prog := testProgram(domain.StatusRunning, domain.ScopePublic)
+	prog.Scope.Include = []domain.Asset{{ID: asset, ProgramID: "p1", Value: "a1.example.com", InScope: true}}
+	prog.Automation.ActiveHTTP = domain.CapAllowed
+	d, err := NewEngine().Decide(context.Background(), DecisionContext{
+		Request: r, Account: testAccount(true), Program: prog,
+		Asset: &domain.Asset{ID: asset, ProgramID: "p1", Value: "a1.example.com", InScope: true},
+		Now:   testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow {
+		t.Fatalf("decision = %s %v", d.Decision, d.Reasons)
+	}
+	if d.AssetTarget != "a1.example.com" || d.ScopeRevision == "" {
+		t.Fatalf("decision missing asset target/scope revision: %+v", d)
 	}
 }

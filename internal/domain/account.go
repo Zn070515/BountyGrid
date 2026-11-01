@@ -50,6 +50,9 @@ type AccountCapability struct {
 	CanPayout       bool
 	BlockingReasons []EligibilityGate
 	EvaluatedAt     time.Time
+	// ValidUntil is an optional explicit expiry for the capability snapshot.
+	// Zero falls back to EvaluatedAt+AccountCapabilityMaxAge.
+	ValidUntil time.Time
 }
 
 type Account struct {

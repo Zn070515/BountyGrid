@@ -247,6 +247,9 @@ func (s Scope) Validate() error {
 	if s.ObservedAt.IsZero() {
 		return fmt.Errorf("scope: observed_at is zero")
 	}
+	if !s.ValidUntil.IsZero() && !s.ValidUntil.After(s.ObservedAt) {
+		return fmt.Errorf("scope: valid_until must be after observed_at")
+	}
 	if s.Access != ScopeAccessGranted {
 		if s.ContentsKnown || len(s.Include) > 0 || len(s.Exclude) > 0 || len(s.Conditional) > 0 {
 			return fmt.Errorf("scope: non-granted access must not contain contents")
@@ -548,11 +551,19 @@ func (v Verification) Validate() error {
 		if len(v.Evidence) == 0 {
 			return fmt.Errorf("verification %s: VERIFIED requires evidence", v.ID)
 		}
+		if len(v.ReceiptIDs) == 0 {
+			return fmt.Errorf("verification %s: VERIFIED requires an execution receipt", v.ID)
+		}
 		if !v.DuplicateChecked {
 			return fmt.Errorf("verification %s: VERIFIED requires duplicate_check", v.ID)
 		}
-		if v.AIAssisted && (!v.HumanVerified || v.HumanVerificationRef == "") {
-			return fmt.Errorf("verification %s: VERIFIED AI-assisted finding requires human verification trace", v.ID)
+		if v.AIAssisted {
+			if !v.HumanVerified {
+				return fmt.Errorf("verification %s: VERIFIED AI-assisted finding requires human verification", v.ID)
+			}
+			if strings.TrimSpace(v.HumanReviewID) == "" {
+				return fmt.Errorf("verification %s: VERIFIED AI-assisted finding requires a durable human review", v.ID)
+			}
 		}
 	}
 	return nil
@@ -571,8 +582,30 @@ func (s Submission) Validate() error {
 	if s.Receipt == "" {
 		return fmt.Errorf("submission %s: receipt is empty", s.ID)
 	}
-	if strings.TrimSpace(s.Status) == "" {
-		return fmt.Errorf("submission %s: status is empty", s.ID)
+	if !SubmissionStatusValid(s.Status) {
+		return fmt.Errorf("submission %s: invalid canonical status %q", s.ID, s.Status)
+	}
+	return nil
+}
+
+func (r HumanReview) Validate() error {
+	if strings.TrimSpace(r.ID) == "" || r.FindingID == "" {
+		return fmt.Errorf("human review: id/finding_id required")
+	}
+	if strings.TrimSpace(r.Reviewer) == "" {
+		return fmt.Errorf("human review %s: reviewer is empty", r.ID)
+	}
+	if r.ReviewedAt.IsZero() {
+		return fmt.Errorf("human review %s: reviewed_at is zero", r.ID)
+	}
+	if !r.Verdict.Valid() {
+		return fmt.Errorf("human review %s: invalid verdict %q", r.ID, r.Verdict)
+	}
+	if len(r.Evidence) == 0 {
+		return fmt.Errorf("human review %s: evidence is required", r.ID)
+	}
+	if strings.TrimSpace(r.NotesHash) == "" {
+		return fmt.Errorf("human review %s: notes_hash is empty", r.ID)
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -66,6 +67,18 @@ func (s *fakeStore) ReserveSubmissionIntent(ctx context.Context, reportID, appro
 	}
 	s.intents[reportID] = approvalID
 	return true, nil
+}
+func (s *fakeStore) MarkSubmissionIntentSent(ctx context.Context, reportID string) error {
+	if _, ok := s.intents[reportID]; !ok {
+		return errors.New("intent not found")
+	}
+	return nil
+}
+func (s *fakeStore) MarkSubmissionIntentAmbiguous(ctx context.Context, reportID string) error {
+	if _, ok := s.intents[reportID]; !ok {
+		return errors.New("intent not found")
+	}
+	return nil
 }
 func (s *fakeStore) ReleaseSubmissionIntent(ctx context.Context, reportID string) error {
 	delete(s.intents, reportID)
@@ -158,7 +171,8 @@ func verificationFixture() domain.Verification {
 		Reproduced: true, InScope: true, ImpactVerified: true, DataMinimized: true,
 		DuplicateChecked: true, DuplicateRisk: 0.1,
 		VerifiedBy: "rule", VerifiedAt: testNow,
-		Evidence: []domain.EvidenceID{"ev-finding", "ev-repro"},
+		Evidence:   []domain.EvidenceID{"ev-finding", "ev-repro"},
+		ReceiptIDs: []domain.ReceiptID{"rcpt/1"},
 	}
 }
 
@@ -360,9 +374,33 @@ func TestSubmitPlatformFailureRecordsNoSubmission(t *testing.T) {
 	if len(store.submissions) != 0 || store.draft.Status == domain.ReportStatusSubmitted {
 		t.Fatal("failed submit recorded a submission/status")
 	}
-	events, _ := aud.List(context.Background(), audit.Filter{Type: "submission.SUBMIT_ERROR"})
+	events, _ := aud.List(context.Background(), audit.Filter{Type: "submission.SUBMIT_AMBIGUOUS"})
 	if len(events) != 1 {
-		t.Fatalf("failure audit = %+v", events)
+		t.Fatalf("ambiguous failure audit = %+v", events)
+	}
+	// A non-dry-run failure may have reached the platform: the intent must stay
+	// (no automatic retry) so a human reconciles it first.
+	if _, ok := store.intents[draft.ID]; !ok {
+		t.Fatal("ambiguous submit must keep the intent")
+	}
+}
+
+func TestSubmitNotSentReleasesIntent(t *testing.T) {
+	draft := draftFixture(t, true)
+	store := &fakeStore{draft: draft, program: programFixture(), finding: findingFixture(), verification: verificationFixture()}
+	gate := &fakeGate{decision: allowDecision()}
+	sub := &fakeSubmitter{err: fmt.Errorf("dial failed: %w", ErrNotSent)}
+	aud := audit.NewMemoryStore()
+	s := newService(t, store, gate, sub, aud)
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixture(t, draft), Now: testNow}); !errors.Is(err, ErrPlatformSubmit) {
+		t.Fatalf("err = %v, want ErrPlatformSubmit", err)
+	}
+	if _, ok := store.intents[draft.ID]; ok {
+		t.Fatal("a provably unsent report must release the intent")
+	}
+	events, _ := aud.List(context.Background(), audit.Filter{Type: "submission.SUBMIT_NOT_SENT"})
+	if len(events) != 1 {
+		t.Fatalf("not-sent audit = %+v", events)
 	}
 }
 

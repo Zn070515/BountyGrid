@@ -23,6 +23,10 @@ var (
 	ErrAlreadySubmitted     = errors.New("submit: report already submitted")
 	ErrSubmissionInProgress = errors.New("submit: another submission for this report is in progress")
 	ErrPlatformSubmit       = errors.New("submit: platform submit failed")
+	// ErrNotSent is returned by a real SubmitAdapter when it can prove the
+	// platform never received the report. Any other submitter error is treated
+	// as AMBIGUOUS and must be reconciled manually.
+	ErrNotSent = errors.New("submit: report was not sent")
 )
 
 type Store interface {
@@ -32,6 +36,8 @@ type Store interface {
 	GetVerification(ctx context.Context, id string) (domain.Verification, error)
 	GetSubmissionByReport(ctx context.Context, reportID string) (domain.Submission, bool, error)
 	ReserveSubmissionIntent(ctx context.Context, reportID, approvalID string, now time.Time) (bool, error)
+	MarkSubmissionIntentSent(ctx context.Context, reportID string) error
+	MarkSubmissionIntentAmbiguous(ctx context.Context, reportID string) error
 	ReleaseSubmissionIntent(ctx context.Context, reportID string) error
 	RecordSubmission(ctx context.Context, s domain.Submission, d domain.ReportDraft) error
 }
@@ -63,9 +69,17 @@ type Submitter interface {
 	Submit(ctx context.Context, req Request) (Result, error)
 }
 
+// DryRunner lets the service distinguish a local dry run (which can never have
+// reached the platform) from a real adapter before it has a Result.
+type DryRunner interface {
+	IsDryRun() bool
+}
+
 // DryRunSubmitter records a deterministic local receipt without any network or
 // platform action. It is the only submitter in this repository.
 type DryRunSubmitter struct{}
+
+func (DryRunSubmitter) IsDryRun() bool { return true }
 
 func (DryRunSubmitter) Submit(ctx context.Context, req Request) (Result, error) {
 	return Result{
@@ -87,14 +101,21 @@ type Options struct {
 	Submitter Submitter
 	Auditor   Auditor
 	Now       func() time.Time
+	// AttachmentsRoot re-verifies approved attachment content hashes before the
+	// platform call. If a draft has AttachmentHashes and no root is configured,
+	// submission fails closed.
+	AttachmentsRoot    string
+	MaxAttachmentBytes int64
 }
 
 type Service struct {
-	store     Store
-	gate      Gate
-	submitter Submitter
-	auditor   Auditor
-	now       func() time.Time
+	store              Store
+	gate               Gate
+	submitter          Submitter
+	auditor            Auditor
+	now                func() time.Time
+	attachmentsRoot    string
+	maxAttachmentBytes int64
 }
 
 func New(opts Options) (*Service, error) {
@@ -104,7 +125,10 @@ func New(opts Options) (*Service, error) {
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Service{store: opts.Store, gate: opts.Gate, submitter: opts.Submitter, auditor: opts.Auditor, now: opts.Now}, nil
+	return &Service{
+		store: opts.Store, gate: opts.Gate, submitter: opts.Submitter, auditor: opts.Auditor,
+		now: opts.Now, attachmentsRoot: opts.AttachmentsRoot, maxAttachmentBytes: opts.MaxAttachmentBytes,
+	}, nil
 }
 
 type DecisionError struct {
@@ -166,6 +190,11 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 	if !res.Ready {
 		return domain.Submission{}, fmt.Errorf("%w: missing %v", ErrNotReady, res.Missing)
 	}
+	// Re-hash the approved attachments before any platform call. A file swapped
+	// after approval invalidates the approval's content binding.
+	if err := report.VerifyAttachmentHashes(draft, s.attachmentsRoot, s.maxAttachmentBytes); err != nil {
+		return domain.Submission{}, err
+	}
 	// Claim the single in-flight slot before the gateway consumes the approval.
 	// If another submit already holds it, do not consume an approval or call the
 	// platform.
@@ -222,23 +251,52 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 		return domain.Submission{}, fmt.Errorf("submit: gateway authorize: %w", err)
 	}
 
-	// From here on the platform may receive the report; a pre-submit failure
-	// releases the intent, but a submitter error keeps it so a retry cannot
-	// submit twice. Reconciliation is required.
+	// From here on the platform may receive the report. Mark the intent SENT
+	// before the adapter runs. Only PENDING intents (crashed before send) are
+	// reclaimable by TTL; SENT/AMBIGUOUS never auto-retry.
+	drySubmitter := false
+	if dr, ok := s.submitter.(DryRunner); ok && dr.IsDryRun() {
+		drySubmitter = true
+	}
 	keepIntent = true
+	if !drySubmitter {
+		if err := s.store.MarkSubmissionIntentSent(ctx, draft.ID); err != nil {
+			keepIntent = false
+			return domain.Submission{}, fmt.Errorf("submit: mark intent sent: %w", err)
+		}
+	}
 	result, err := s.submitter.Submit(ctx, Request{
 		Report: draft, Program: program, Decision: decision,
 		Approval: in.Approval,
 	})
 	if err != nil {
 		perr := fmt.Errorf("%w: %v", ErrPlatformSubmit, err)
-		if aerr := s.appendAudit(ctx, draft, decision, in.Approval, "SUBMIT_ERROR", now); aerr != nil {
+		if drySubmitter || errors.Is(err, ErrNotSent) {
+			// The adapter proved the platform never received the report.
+			_ = s.store.ReleaseSubmissionIntent(context.WithoutCancel(ctx), draft.ID)
+			keepIntent = false
+			if aerr := s.appendAudit(ctx, draft, decision, in.Approval, "SUBMIT_NOT_SENT", now); aerr != nil {
+				return domain.Submission{}, errors.Join(perr, aerr)
+			}
+			return domain.Submission{}, perr
+		}
+		// The request may have reached the platform. Keep the intent in
+		// AMBIGUOUS: never retry automatically, reconcile manually.
+		if merr := s.store.MarkSubmissionIntentAmbiguous(ctx, draft.ID); merr != nil {
+			perr = errors.Join(perr, fmt.Errorf("submit: mark intent ambiguous: %w", merr))
+		}
+		if aerr := s.appendAudit(ctx, draft, decision, in.Approval, "SUBMIT_AMBIGUOUS", now); aerr != nil {
 			return domain.Submission{}, errors.Join(perr, aerr)
 		}
 		return domain.Submission{}, perr
 	}
 	if result.Receipt == "" || result.Status == "" {
 		perr := fmt.Errorf("%w: submitter returned no receipt/status", ErrPlatformSubmit)
+		if !drySubmitter {
+			if merr := s.store.MarkSubmissionIntentAmbiguous(ctx, draft.ID); merr != nil {
+				perr = errors.Join(perr, fmt.Errorf("submit: mark intent ambiguous: %w", merr))
+			}
+		}
 		if aerr := s.appendAudit(ctx, draft, decision, in.Approval, "SUBMIT_INVALID_RECEIPT", now); aerr != nil {
 			return domain.Submission{}, errors.Join(perr, aerr)
 		}
@@ -248,19 +306,21 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 	// A dry run must not consume the report's real-submission slot or flip the
 	// draft to SUBMITTED; it leaves a DRY_RUN receipt for audit only. Accept
 	// either signal from a Submitter so the status and the unique index agree.
-	dryRun := result.DryRun || result.Status == "DRY_RUN"
+	dryRun := drySubmitter || result.DryRun || result.Status == "DRY_RUN"
+	nativeStatus := result.Status
+	status := domain.NormalizeSubmissionStatus(nativeStatus)
 	if dryRun {
-		// A dry run never reaches the platform, so a failure while recording it
-		// must not keep the intent and block a later real submission.
+		// A dry run never reaches the platform, so it must not keep the intent.
 		keepIntent = false
-		result.Status = "DRY_RUN"
+		status = domain.SubmissionDryRun
 	} else {
 		draft.Status = domain.ReportStatusSubmitted
 	}
 	sub := domain.Submission{
 		ID:       domain.SubmissionID(fmt.Sprintf("sub/%s/%s/%s", draft.ID, in.Approval.ID, now.UTC().Format("20060102T150405.000000000"))),
 		ReportID: draft.ID, ProgramID: program.ID, SubmittedAt: now,
-		PlatformURL: result.PlatformURL, Receipt: result.Receipt, Status: result.Status,
+		PlatformURL: result.PlatformURL, Receipt: result.Receipt,
+		Status: status, NativeStatus: nativeStatus,
 		ApprovalID: in.Approval.ID, ContentHash: contentHash,
 		Evidence: append([]domain.EvidenceID{}, verification.Evidence...),
 	}

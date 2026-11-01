@@ -4,12 +4,19 @@
 package report
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/redact"
@@ -67,13 +74,22 @@ type Input struct {
 	Fields       Fields
 	AI           AIUse
 	Attachments  []string
-	Now          time.Time
+	// AttachmentsRoot, when set, enables strict attachment validation: the file
+	// must resolve inside this os.Root, be non-empty and within
+	// MaxAttachmentBytes, have magic bytes matching its extension, and pass the
+	// sensitive-value scan. AttachmentEvidence gives each attachment its
+	// evidence provenance; strict mode requires it.
+	AttachmentsRoot    string
+	MaxAttachmentBytes int64
+	AttachmentEvidence map[string][]domain.EvidenceID
+	Now                time.Time
 }
 
 type Result struct {
-	Draft   domain.ReportDraft
-	Missing []string
-	Ready   bool
+	Draft            domain.ReportDraft
+	Missing          []string
+	Ready            bool
+	AttachmentHashes map[string]string
 }
 
 var commonRequired = []string{
@@ -119,7 +135,8 @@ func Build(in Input) (Result, error) {
 	if len(in.Verification.Evidence) == 0 {
 		return Result{}, fmt.Errorf("%w: verification has no evidence", ErrInvalidInput)
 	}
-	if err := validateAttachments(in.Program.Platform, in.Attachments); err != nil {
+	attachmentHashes, err := validateAttachments(in.Program.Platform, in.Attachments, in.AttachmentsRoot, in.MaxAttachmentBytes, in.AttachmentEvidence)
+	if err != nil {
 		return Result{}, err
 	}
 	now := in.Now
@@ -135,20 +152,21 @@ func Build(in Input) (Result, error) {
 	missing := missingFields(in.Program.Platform, fields, disclosure, in.Program, in.Verification.AIAssisted)
 
 	draft := domain.ReportDraft{
-		ID:             fmt.Sprintf("draft/%s/%s", findingKey(in.Finding.ID), now.UTC().Format("20060102T150405.000000000")),
-		FindingID:      in.Finding.ID,
-		ProgramID:      in.Program.ID,
-		VerificationID: in.Verification.ID,
-		Fields:         fields,
-		AIDisclosure:   disclosure,
-		Attachments:    append([]string{}, in.Attachments...),
-		Status:         domain.ReportStatusDraft,
-		CreatedAt:      now,
+		ID:               fmt.Sprintf("draft/%s/%s", findingKey(in.Finding.ID), now.UTC().Format("20060102T150405.000000000")),
+		FindingID:        in.Finding.ID,
+		ProgramID:        in.Program.ID,
+		VerificationID:   in.Verification.ID,
+		Fields:           fields,
+		AIDisclosure:     disclosure,
+		Attachments:      append([]string{}, in.Attachments...),
+		AttachmentHashes: attachmentHashes,
+		Status:           domain.ReportStatusDraft,
+		CreatedAt:        now,
 	}
 	if err := draft.Validate(); err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	return Result{Draft: draft, Missing: missing, Ready: len(missing) == 0}, nil
+	return Result{Draft: draft, Missing: missing, Ready: len(missing) == 0, AttachmentHashes: attachmentHashes}, nil
 }
 
 // ContentHash binds an approval to the report content, not just its ID. The
@@ -156,17 +174,19 @@ func Build(in Input) (Result, error) {
 // reference, so editing a draft after approval invalidates the approval.
 func ContentHash(d domain.ReportDraft) (string, error) {
 	payload := struct {
-		ReportID       string            `json:"report_id"`
-		FindingID      string            `json:"finding_id"`
-		ProgramID      string            `json:"program_id"`
-		VerificationID string            `json:"verification_id"`
-		Fields         map[string]string `json:"fields"`
-		AIDisclosure   map[string]string `json:"ai_disclosure"`
-		Attachments    []string          `json:"attachments"`
+		ReportID         string            `json:"report_id"`
+		FindingID        string            `json:"finding_id"`
+		ProgramID        string            `json:"program_id"`
+		VerificationID   string            `json:"verification_id"`
+		Fields           map[string]string `json:"fields"`
+		AIDisclosure     map[string]string `json:"ai_disclosure"`
+		Attachments      []string          `json:"attachments"`
+		AttachmentHashes map[string]string `json:"attachment_hashes,omitempty"`
 	}{
 		ReportID: d.ID, FindingID: string(d.FindingID), ProgramID: string(d.ProgramID),
 		VerificationID: d.VerificationID, Fields: d.Fields,
 		AIDisclosure: d.AIDisclosure, Attachments: d.Attachments,
+		AttachmentHashes: d.AttachmentHashes,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -196,8 +216,18 @@ func Recheck(draft domain.ReportDraft, finding domain.Finding, program domain.Pr
 	if err := verification.Validate(); err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	if err := validateAttachments(program.Platform, draft.Attachments); err != nil {
+	// Recheck intentionally does not inspect files: it validates the stored draft
+	// shape. File existence/hash re-verification happens in the submit service
+	// against the approved AttachmentHashes.
+	if _, err := validateAttachments(program.Platform, draft.Attachments, "", 0, nil); err != nil {
 		return Result{}, err
+	}
+	if len(draft.AttachmentHashes) > 0 {
+		for _, a := range draft.Attachments {
+			if strings.TrimSpace(draft.AttachmentHashes[a]) == "" {
+				return Result{}, fmt.Errorf("%w: %s has no approved hash", ErrInvalidAttachment, a)
+			}
+		}
 	}
 	if err := checkSensitive(draft.Fields, draft.AIDisclosure); err != nil {
 		return Result{}, err
@@ -310,20 +340,151 @@ func checkSensitive(fields, disclosure map[string]string) error {
 	return nil
 }
 
-func validateAttachments(platform domain.Platform, attachments []string) error {
+const DefaultMaxAttachmentBytes = 20 << 20
+
+// magicByExt lists the allowed container signatures per extension. A .zip that
+// is not a zip (or a .pdf that is an executable) is rejected instead of being
+// forwarded to the platform by name.
+var magicByExt = map[string][][]byte{
+	".zip":  {[]byte{'P', 'K', 0x03, 0x04}, []byte{'P', 'K', 0x05, 0x06}},
+	".docx": {[]byte{'P', 'K', 0x03, 0x04}, []byte{'P', 'K', 0x05, 0x06}},
+	".xlsx": {[]byte{'P', 'K', 0x03, 0x04}, []byte{'P', 'K', 0x05, 0x06}},
+	".rar":  {[]byte("Rar!\x1a\x07")},
+	".pdf":  {[]byte("%PDF-")},
+	".doc":  {{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}},
+	".xls":  {{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}},
+}
+
+func validateAttachments(platform domain.Platform, attachments []string, rootDir string, maxBytes int64, provenance map[string][]domain.EvidenceID) (map[string]string, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxAttachmentBytes
+	}
+	var root *os.Root
+	if strings.TrimSpace(rootDir) != "" {
+		r, err := os.OpenRoot(rootDir)
+		if err != nil {
+			return nil, fmt.Errorf("%w: open attachments root: %v", ErrInvalidAttachment, err)
+		}
+		defer func() { _ = r.Close() }()
+		root = r
+	}
+	hashes := map[string]string{}
 	for _, a := range attachments {
 		if strings.TrimSpace(a) == "" {
-			return fmt.Errorf("%w: empty attachment path", ErrInvalidAttachment)
+			return nil, fmt.Errorf("%w: empty attachment path", ErrInvalidAttachment)
 		}
 		switch platform {
 		case domain.PlatformVulbox:
 			if !allowedExt(a, ".rar", ".zip", ".doc", ".docx", ".pdf", ".xls", ".xlsx") {
-				return fmt.Errorf("%w: %s is not a Vulbox attachment type", ErrInvalidAttachment, a)
+				return nil, fmt.Errorf("%w: %s is not a Vulbox attachment type", ErrInvalidAttachment, a)
 			}
 		case domain.PlatformButian:
 			if !allowedExt(a, ".zip", ".rar") {
-				return fmt.Errorf("%w: %s is not a Butian archive", ErrInvalidAttachment, a)
+				return nil, fmt.Errorf("%w: %s is not a Butian archive", ErrInvalidAttachment, a)
 			}
+		}
+		if root == nil {
+			continue
+		}
+		// Strict mode: the attachment must exist inside the workspace, match its
+		// extension's magic bytes, be bounded in size, and have evidence
+		// provenance.
+		if len(provenance[a]) == 0 {
+			return nil, fmt.Errorf("%w: %s has no evidence provenance", ErrInvalidAttachment, a)
+		}
+		hash, err := inspectAttachment(root, a, maxBytes)
+		if err != nil {
+			return nil, err
+		}
+		hashes[a] = hash
+	}
+	return hashes, nil
+}
+
+func inspectAttachment(root *os.Root, path string, maxBytes int64) (string, error) {
+	f, err := root.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s: %v", ErrInvalidAttachment, path, err)
+	}
+	defer func() { _ = f.Close() }()
+	if st, err := f.Stat(); err != nil || st.Size() <= 0 {
+		return "", fmt.Errorf("%w: %s is empty or unreadable", ErrInvalidAttachment, path)
+	} else if st.Size() > maxBytes {
+		return "", fmt.Errorf("%w: %s exceeds %d bytes", ErrInvalidAttachment, path, maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("%w: %s: %v", ErrInvalidAttachment, path, err)
+	}
+	if int64(len(data)) > maxBytes {
+		return "", fmt.Errorf("%w: %s exceeds %d bytes", ErrInvalidAttachment, path, maxBytes)
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	sigs, ok := magicByExt[ext]
+	if !ok {
+		return "", fmt.Errorf("%w: %s has no recognized signature", ErrInvalidAttachment, path)
+	}
+	matched := false
+	for _, sig := range sigs {
+		if len(data) >= len(sig) && bytes.Equal(data[:len(sig)], sig) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return "", fmt.Errorf("%w: %s content does not match %s", ErrInvalidAttachment, path, ext)
+	}
+	if isTextLike(data) {
+		if findings := redact.ScanReport(string(data)); len(findings) > 0 {
+			return "", fmt.Errorf("%w: %s contains a sensitive value (%s)", ErrInvalidAttachment, path, findings[0].Kind)
+		}
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func isTextLike(data []byte) bool {
+	if len(data) == 0 || !utf8.Valid(data) {
+		return false
+	}
+	printable := 0
+	for _, r := range string(data) {
+		if r == '\n' || r == '\r' || r == '\t' || unicode.IsPrint(r) {
+			printable++
+		}
+	}
+	return printable*10 >= len([]rune(string(data)))*9
+}
+
+// VerifyAttachmentHashes re-hashes stored draft attachments against the hashes
+// bound by the approval. A missing root when hashes exist is an error: the
+// submitter must not send a file it cannot verify.
+func VerifyAttachmentHashes(d domain.ReportDraft, rootDir string, maxBytes int64) error {
+	if len(d.AttachmentHashes) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(rootDir) == "" {
+		return fmt.Errorf("%w: attachment root is required to verify hashes", ErrInvalidAttachment)
+	}
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxAttachmentBytes
+	}
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		return fmt.Errorf("%w: open attachments root: %v", ErrInvalidAttachment, err)
+	}
+	defer func() { _ = root.Close() }()
+	for _, a := range d.Attachments {
+		want, ok := d.AttachmentHashes[a]
+		if !ok {
+			return fmt.Errorf("%w: %s has no approved hash", ErrInvalidAttachment, a)
+		}
+		got, err := inspectAttachment(root, a, maxBytes)
+		if err != nil {
+			return err
+		}
+		if got != want {
+			return fmt.Errorf("%w: %s changed after approval", ErrInvalidAttachment, a)
 		}
 	}
 	return nil

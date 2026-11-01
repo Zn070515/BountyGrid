@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type ResearchTask struct {
 	ID            TaskID
@@ -26,7 +29,17 @@ type Finding struct {
 	Evidence  []EvidenceID
 	Status    string
 	CreatedAt time.Time
+	// SourceDecisionIDs and ExecutionReceipts make the claim "this finding came
+	// from an executed, authorized action" auditable. An ALLOW decision alone is
+	// not proof that the tool ran; VERIFIED requires a completed receipt that
+	// covers this finding's evidence.
+	SourceDecisionIDs []DecisionID
+	ExecutionReceipts []ReceiptID
 }
+
+// ReceiptID is the stable identifier of an ExecutionReceipt (receipts are
+// looked up by idempotency key in storage; the ID is what a Finding records).
+type ReceiptID string
 
 type VerificationVerdict string
 
@@ -59,14 +72,21 @@ type Verification struct {
 	PubliclyKnown    bool
 	// AIAssisted and the human-verification trace are persisted so a later
 	// audit can prove an AI-assisted finding was reviewed by a human.
-	AIAssisted           bool
-	HumanVerified        bool
+	AIAssisted    bool
+	HumanVerified bool
+	// HumanVerificationRef is free-form legacy text. It is no longer sufficient
+	// on its own: AI-assisted VERIFIED requires HumanReviewID, which is resolved
+	// from the durable human_reviews store.
 	HumanVerificationRef string
-	Verdict              VerificationVerdict
-	VerifiedBy           string
-	Reasons              []string
-	Evidence             []EvidenceID
-	VerifiedAt           time.Time
+	HumanReviewID        string
+	// ReceiptIDs are the completed execution receipts that prove the finding
+	// came from an action that actually ran (not merely an ALLOW decision).
+	ReceiptIDs []ReceiptID
+	Verdict    VerificationVerdict
+	VerifiedBy string
+	Reasons    []string
+	Evidence   []EvidenceID
+	VerifiedAt time.Time
 }
 
 type ReportDraft struct {
@@ -77,8 +97,12 @@ type ReportDraft struct {
 	Fields         map[string]string
 	AIDisclosure   map[string]string
 	Attachments    []string
-	Status         string
-	CreatedAt      time.Time
+	// AttachmentHashes binds each attachment path to its content hash. It is
+	// part of ContentHash so replacing an attachment after approval invalidates
+	// the approval.
+	AttachmentHashes map[string]string
+	Status           string
+	CreatedAt        time.Time
 }
 
 const (
@@ -101,6 +125,90 @@ func ReportStatusValid(s string) bool {
 	}
 }
 
+// HumanReviewVerdict is the reviewer's decision. Only APPROVED satisfies the
+// AI-assisted verification gate.
+type HumanReviewVerdict string
+
+const (
+	HumanReviewApproved HumanReviewVerdict = "APPROVED"
+	HumanReviewRejected HumanReviewVerdict = "REJECTED"
+)
+
+func (v HumanReviewVerdict) Valid() bool {
+	switch v {
+	case HumanReviewApproved, HumanReviewRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+// HumanReview is the durable object behind a human-verification claim. A bare
+// string ("I checked it") is not evidence that a human reviewed the finding;
+// the verifier resolves this object and checks the finding, reviewer, time,
+// evidence and verdict.
+type HumanReview struct {
+	ID         string             `json:"id"`
+	FindingID  FindingID          `json:"finding_id"`
+	Reviewer   string             `json:"reviewer"`
+	ReviewedAt time.Time          `json:"reviewed_at"`
+	Verdict    HumanReviewVerdict `json:"verdict"`
+	Evidence   []EvidenceID       `json:"evidence"`
+	// NotesHash is the hash of the reviewer's notes. The notes themselves may
+	// contain sensitive detail and stay local.
+	NotesHash string `json:"notes_hash"`
+}
+
+// SubmissionStatus is the canonical status. NativeStatus keeps the platform's
+// raw string so an unrecognized value is recorded as AMBIGUOUS rather than
+// flowing into domain logic as success.
+type SubmissionStatus string
+
+const (
+	SubmissionPending   SubmissionStatus = "PENDING"
+	SubmissionSubmitted SubmissionStatus = "SUBMITTED"
+	SubmissionAccepted  SubmissionStatus = "ACCEPTED"
+	SubmissionRejected  SubmissionStatus = "REJECTED"
+	SubmissionDuplicate SubmissionStatus = "DUPLICATE"
+	SubmissionWithdrawn SubmissionStatus = "WITHDRAWN"
+	SubmissionAmbiguous SubmissionStatus = "AMBIGUOUS"
+	SubmissionDryRun    SubmissionStatus = "DRY_RUN"
+)
+
+func SubmissionStatusValid(s SubmissionStatus) bool {
+	switch s {
+	case SubmissionPending, SubmissionSubmitted, SubmissionAccepted, SubmissionRejected,
+		SubmissionDuplicate, SubmissionWithdrawn, SubmissionAmbiguous, SubmissionDryRun:
+		return true
+	default:
+		return false
+	}
+}
+
+// NormalizeSubmissionStatus maps a platform/native status to the canonical set.
+// Unknown non-empty statuses become AMBIGUOUS: a platform saying "审核中" or
+// "done" must not be interpreted as SUBMITTED or ACCEPTED by accident.
+func NormalizeSubmissionStatus(raw string) SubmissionStatus {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "DRY_RUN":
+		return SubmissionDryRun
+	case "PENDING", "QUEUED", "IN_REVIEW", "REVIEWING":
+		return SubmissionPending
+	case "SUBMITTED", "SENT":
+		return SubmissionSubmitted
+	case "ACCEPTED", "VALID", "APPROVED":
+		return SubmissionAccepted
+	case "REJECTED", "INVALID", "DENIED":
+		return SubmissionRejected
+	case "DUPLICATE", "DUP":
+		return SubmissionDuplicate
+	case "WITHDRAWN", "CANCELLED":
+		return SubmissionWithdrawn
+	default:
+		return SubmissionAmbiguous
+	}
+}
+
 type Submission struct {
 	ID          SubmissionID
 	ReportID    string
@@ -108,8 +216,11 @@ type Submission struct {
 	SubmittedAt time.Time
 	PlatformURL string
 	Receipt     string
-	Status      string
-	ApprovalID  string
+	// Status is canonical (SubmissionStatus). NativeStatus preserves the raw
+	// platform value for audit.
+	Status       SubmissionStatus
+	NativeStatus string
+	ApprovalID   string
 	// ContentHash is the report content bound by the approval. Legacy rows may
 	// leave it empty.
 	ContentHash string

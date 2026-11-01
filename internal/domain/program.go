@@ -26,8 +26,13 @@ type Scope struct {
 	AssetTiers         []string
 	EnvironmentTypes   []EnvironmentType
 	ChangeHistoryKnown bool
-	ObservedAt         time.Time
-	Evidence           []EvidenceID
+	// ObservedAt/ValidUntil make the scope snapshot's freshness explicit. A
+	// recently observed program status does not make an old scope current; an
+	// execution decision requires both. Zero ValidUntil falls back to
+	// ObservedAt+ScopeMaxAge.
+	ObservedAt time.Time
+	ValidUntil time.Time
+	Evidence   []EvidenceID
 }
 
 type Money struct {

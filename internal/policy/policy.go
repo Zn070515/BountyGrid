@@ -94,7 +94,7 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		return domain.ActionDecision{}, err
 	}
 	decide := func(d domain.Decision, reasons ...string) domain.ActionDecision {
-		return domain.ActionDecision{
+		out := domain.ActionDecision{
 			ID:                domain.DecisionID(decisionID(dc.Request.ID, now)),
 			RequestID:         dc.Request.ID,
 			ProgramID:         dc.Request.ProgramID,
@@ -111,7 +111,12 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 			BudgetSpent:       dc.BudgetSpent,
 			Environment:       dc.Environment,
 			RequestParameters: string(dc.Request.Parameters),
+			ScopeRevision:     dc.Program.Scope.Revision(),
 		}
+		if dc.Asset != nil {
+			out.AssetTarget = dc.Asset.Value
+		}
+		return out
 	}
 
 	// 0a. The decision must be about exactly the account/program in the
@@ -127,11 +132,27 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	// 0b. Freshness and confidence are required for execution/submission, not
 	// for viewing.
 	if requiresFreshState(dc.Request.Action) {
-		if dc.Program.Status.ValidUntil.IsZero() || !dc.Program.Status.ValidUntil.After(now) {
+		if !dc.Program.StatusFreshAt(now) {
 			return decide(domain.DecisionRequireMoreEvidence, "STALE_PROGRAM_STATE"), nil
 		}
 		if dc.Program.Status.Confidence < MinExecutionConfidence {
 			return decide(domain.DecisionRequireMoreEvidence, "LOW_CONFIDENCE_STATE"), nil
+		}
+	}
+
+	// 0c. Every authorization input has its own freshness window. A fresh
+	// Program.Status says nothing about the scope, automation rules, constraints
+	// or account capability captured earlier, so each is checked separately and
+	// any stale input fails closed.
+	if requiresFreshAuthorizationInputs(dc.Request.Action) {
+		if !dc.Program.PolicyFreshAt(now) {
+			return decide(domain.DecisionRequireMoreEvidence, "STALE_AUTOMATION_POLICY"), nil
+		}
+		if !dc.Account.CapabilityFreshAt(now) {
+			return decide(domain.DecisionRequireMoreEvidence, "STALE_ACCOUNT_CAPABILITY"), nil
+		}
+		if !dc.Program.Scope.FreshAt(now) {
+			return decide(domain.DecisionRequireMoreEvidence, "STALE_SCOPE"), nil
 		}
 	}
 
@@ -305,6 +326,21 @@ func (e *Engine) allow(dc DecisionContext, now time.Time, decide func(domain.Dec
 	if a := dc.HumanApproval; a != nil && !a.ExpiresAt.IsZero() && a.ExpiresAt.Before(expires) {
 		expires = a.ExpiresAt
 	}
+	// An executable ALLOW must not outlive any authorization input it depends
+	// on. The 5-minute cache window is normally the tightest bound, but this
+	// keeps the invariant explicit if the freshness windows change.
+	if requiresFreshAuthorizationInputs(dc.Request.Action) {
+		for _, until := range []time.Time{
+			dc.Program.StatusFreshUntil(),
+			dc.Program.Scope.FreshUntil(),
+			dc.Program.PolicyFreshUntil(),
+			dc.Account.CapabilityFreshUntil(),
+		} {
+			if until.After(now) && until.Before(expires) {
+				expires = until
+			}
+		}
+	}
 	out := decide(domain.DecisionAllow)
 	out.ExpiresAt = &expires
 	out.Constraints = &dc.Program.Constraints
@@ -362,6 +398,13 @@ func requiresFreshState(a domain.Action) bool {
 	default:
 		return true
 	}
+}
+
+// requiresFreshAuthorizationInputs selects actions whose execution decision
+// depends on scope contents, automation policy, constraints and account
+// capability. Each of those inputs must be fresh independently of Program.Status.
+func requiresFreshAuthorizationInputs(a domain.Action) bool {
+	return a.NeedsScope() || a == domain.ActionReportSubmit
 }
 
 func automationCapability(p domain.AutomationPolicy, a domain.Action) (domain.CapabilityStatus, bool) {

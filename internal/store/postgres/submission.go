@@ -30,28 +30,52 @@ func (r *Repo) GetSubmissionByReport(ctx context.Context, reportID string) (doma
 	return s, true, nil
 }
 
-// ReservationTTL bounds how long an abandoned intent blocks a report. It is
-// deliberately longer than a dry-run (instant) and must be revisited when a
-// real platform SubmitAdapter is added.
+// ReservationTTL bounds how long an abandoned PENDING intent blocks a report.
+// Only a PENDING intent (the process crashed before anything was sent) is
+// reclaimable. SENT/AMBIGUOUS intents never auto-retry: the platform may
+// already have received the report and a human must reconcile it.
 const ReservationTTL = time.Hour
 
 // ReserveSubmissionIntent claims the single in-flight submission slot for a
 // report. It is called before the platform action; a second concurrent submit
-// sees the intent and refuses instead of reaching the Submitter twice. A
-// crashed process leaves a stale intent, which is reclaimable after
-// ReservationTTL.
+// sees the intent and refuses instead of reaching the Submitter twice.
 func (r *Repo) ReserveSubmissionIntent(ctx context.Context, reportID, approvalID string, now time.Time) (bool, error) {
 	tag, err := r.Pool.Exec(ctx, `
-		INSERT INTO submission_intents (report_id, approval_id, started_at)
-		VALUES ($1,$2,$3)
+		INSERT INTO submission_intents (report_id, approval_id, started_at, status)
+		VALUES ($1,$2,$3,'PENDING')
 		ON CONFLICT (report_id) DO UPDATE
-		SET approval_id=EXCLUDED.approval_id, started_at=EXCLUDED.started_at
-		WHERE submission_intents.started_at < now() - ($4 * interval '1 second')`,
+		SET approval_id=EXCLUDED.approval_id, started_at=EXCLUDED.started_at, status='PENDING'
+		WHERE submission_intents.status = 'PENDING'
+		  AND submission_intents.started_at < now() - ($4 * interval '1 second')`,
 		reportID, approvalID, now, int64(ReservationTTL.Seconds()))
 	if err != nil {
 		return false, fmt.Errorf("postgres: reserve submission intent: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// MarkSubmissionIntentSent records that a real adapter is about to call the
+// platform. From this point the intent is not TTL-reclaimable.
+func (r *Repo) MarkSubmissionIntentSent(ctx context.Context, reportID string) error {
+	return r.setSubmissionIntentStatus(ctx, reportID, "SENT")
+}
+
+// MarkSubmissionIntentAmbiguous records that the adapter failed after it may
+// have sent the report. Manual reconciliation is required.
+func (r *Repo) MarkSubmissionIntentAmbiguous(ctx context.Context, reportID string) error {
+	return r.setSubmissionIntentStatus(ctx, reportID, "AMBIGUOUS")
+}
+
+func (r *Repo) setSubmissionIntentStatus(ctx context.Context, reportID, status string) error {
+	tag, err := r.Pool.Exec(ctx,
+		`UPDATE submission_intents SET status=$2 WHERE report_id=$1`, reportID, status)
+	if err != nil {
+		return fmt.Errorf("postgres: set submission intent %s: %w", status, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("postgres: submission intent %s not found", reportID)
+	}
+	return nil
 }
 
 func (r *Repo) ReleaseSubmissionIntent(ctx context.Context, reportID string) error {

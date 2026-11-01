@@ -71,6 +71,14 @@ type ActionDecision struct {
 	UsageToday  map[string]int64
 	BudgetSpent *Money
 	Environment *ExecutionEnvironment
+	// AssetTarget is the canonical asset value resolved from Program.Scope by
+	// the Action Gateway. Harness egress binds to it so a tool cannot retarget a
+	// request at another host while keeping the approved AssetID.
+	AssetTarget string
+	// ScopeRevision is a digest of the scope snapshot the decision was evaluated
+	// against. A later scope edit changes the revision and invalidates the
+	// approval path.
+	ScopeRevision string
 	// RequestParameters preserves the exact parameter bytes supplied by the
 	// caller. PostgreSQL JSONB normalizes JSON whitespace/key order, so the
 	// nested Request.Parameters cannot be used to re-validate an approval hash.

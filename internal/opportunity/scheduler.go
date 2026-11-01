@@ -14,6 +14,8 @@ type Candidate struct {
 	Status      domain.ProgramStatus
 	Account     domain.Account
 	Competition *domain.CompetitionSnapshot
+	// History is the ledger feedback for this program (nil = no history).
+	History *History
 }
 
 type Options struct {
@@ -80,7 +82,7 @@ func Schedule(engine Engine, candidates []Candidate, opts Options) Result {
 		}
 		opp, err := engine.Evaluate(Input{
 			Program: c.Program, Status: status, Account: c.Account,
-			Competition: c.Competition, Now: opts.Now,
+			Competition: c.Competition, History: c.History, Now: opts.Now,
 		})
 		if err != nil {
 			out.Excluded = append(out.Excluded, Excluded{ProgramID: c.Program.ID, Reason: "NO_REWARD_DATA"})

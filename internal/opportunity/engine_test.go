@@ -2,6 +2,7 @@ package opportunity
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,5 +196,50 @@ func BenchmarkEvaluate(b *testing.B) {
 		if _, err := e.Evaluate(Input{Program: p, Status: domain.StatusRunning, Competition: comp, Now: testNow}); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestHistoryLowersScoreForLowAcceptance(t *testing.T) {
+	engine := NewEngine()
+	base := Input{Program: scoringProgram("p1", 1000, 10000, domain.TypeBrandSRC),
+		Status: domain.StatusRunning, Competition: testCompetition(0.5, 0.5, 0.5, 0.8), Now: testNow}
+	without, err := engine.Evaluate(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.History = &History{Submitted: 20, Accepted: 2, Paid: 2,
+		AvgPaid: domain.Money{Amount: 500, Currency: "CNY"}}
+	with, err := engine.Evaluate(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *with.ExpectedReturnPerCost >= *without.ExpectedReturnPerCost {
+		t.Fatalf("history did not lower score: with=%v without=%v",
+			*with.ExpectedReturnPerCost, *without.ExpectedReturnPerCost)
+	}
+	joined := ""
+	for _, s := range with.Inputs {
+		joined += s + " "
+	}
+	if !strings.Contains(joined, "history_submitted=20") || !strings.Contains(joined, "history_accepted=2") {
+		t.Fatalf("history inputs missing: %v", with.Inputs)
+	}
+}
+
+func TestHistoryUsesActualCost(t *testing.T) {
+	engine := NewEngine()
+	in := Input{Program: scoringProgram("p1", 1000, 10000, domain.TypeBrandSRC),
+		Status: domain.StatusRunning, Competition: testCompetition(0.5, 0.5, 0.5, 0.8), Now: testNow}
+	cheap, err := engine.Evaluate(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.History = &History{ActualCost: domain.Money{Amount: 100000, Currency: "CNY"}}
+	expensive, err := engine.Evaluate(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *expensive.ExpectedReturnPerCost >= *cheap.ExpectedReturnPerCost {
+		t.Fatal("actual cost did not lower the score")
 	}
 }

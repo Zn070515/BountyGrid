@@ -13,13 +13,15 @@ import (
 )
 
 type fakeVerifyStore struct {
-	program     domain.Program
-	decision    domain.ActionDecision
-	finding     domain.Finding
-	evidence    map[domain.EvidenceID]domain.Evidence
-	verifs      []domain.Verification
-	programErr  error
-	decisionErr error
+	program      domain.Program
+	decision     domain.ActionDecision
+	finding      domain.Finding
+	evidence     map[domain.EvidenceID]domain.Evidence
+	verifs       []domain.Verification
+	receipts     map[string]domain.ExecutionReceipt
+	humanReviews map[string]domain.HumanReview
+	programErr   error
+	decisionErr  error
 }
 
 func (s *fakeVerifyStore) GetProgram(ctx context.Context, id domain.ProgramID) (domain.Program, error) {
@@ -56,6 +58,38 @@ func (s *fakeVerifyStore) GetEvidence(ctx context.Context, id domain.EvidenceID)
 func (s *fakeVerifyStore) PutVerification(ctx context.Context, v domain.Verification) error {
 	s.verifs = append(s.verifs, v)
 	return nil
+}
+func (s *fakeVerifyStore) GetReceiptByID(ctx context.Context, id string) (domain.ExecutionReceipt, error) {
+	if r, ok := s.receipts[id]; ok {
+		return r, nil
+	}
+	if id == "rcpt/1" {
+		return verifyReceipt(), nil
+	}
+	return domain.ExecutionReceipt{}, domain.ErrReceiptNotFound
+}
+func (s *fakeVerifyStore) GetHumanReview(ctx context.Context, id string) (domain.HumanReview, error) {
+	if h, ok := s.humanReviews[id]; ok {
+		return h, nil
+	}
+	return domain.HumanReview{}, postgres.ErrNotFound
+}
+func (s *fakeVerifyStore) PutHumanReview(ctx context.Context, h domain.HumanReview) error {
+	if s.humanReviews == nil {
+		s.humanReviews = map[string]domain.HumanReview{}
+	}
+	s.humanReviews[h.ID] = h
+	return nil
+}
+
+func verifyReceipt() domain.ExecutionReceipt {
+	a := domain.AssetID("a1")
+	return domain.ExecutionReceipt{
+		ID: "rcpt/1", IdempotencyKey: "idem-1", DecisionID: "d1",
+		Action: domain.ActionActiveHTTP, ProgramID: "p1", AssetID: &a,
+		Status: domain.ReceiptCompleted, Evidence: []domain.EvidenceID{"ev-repro"},
+		StartedAt: testNow, UpdatedAt: testNow,
+	}
 }
 
 func verifyProgram() domain.Program {
@@ -108,7 +142,8 @@ func validVerifyFile() verifyFile {
 			Evidence: f.Evidence, Status: f.Status, CreatedAt: f.CreatedAt,
 		},
 		ProgramID: "p1", DecisionID: "d1",
-		Reproduced: true, ReproductionEvidence: []domain.EvidenceID{"ev-repro"},
+		ExecutionReceipts: []string{"rcpt/1"},
+		Reproduced:        true, ReproductionEvidence: []domain.EvidenceID{"ev-repro"},
 		ImpactVerified: true, ImpactEvidence: []domain.EvidenceID{"ev-impact"},
 		DataMinimized: &yes, DuplicateChecked: true, DuplicateRisk: 0.1,
 	}

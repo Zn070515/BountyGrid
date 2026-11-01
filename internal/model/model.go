@@ -9,6 +9,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
@@ -19,6 +22,9 @@ var (
 	ErrInvalidRequest = errors.New("model: invalid request")
 	ErrNoProvider     = errors.New("model: no eligible provider")
 	ErrBudgetExceeded = errors.New("model: budget exceeded")
+	// ErrDuplicateCall means this logical call already has a reservation. It is
+	// returned instead of invoking a provider again and paying twice.
+	ErrDuplicateCall = errors.New("model: call already recorded")
 )
 
 type Purpose string
@@ -57,6 +63,49 @@ func (d DataClass) Valid() bool {
 	}
 }
 
+func (d DataClass) rank() int {
+	switch d {
+	case DataPublic:
+		return 0
+	case DataInternal:
+		return 1
+	case DataSensitive:
+		return 2
+	default:
+		return 2 // unknown is treated as the most sensitive
+	}
+}
+
+// MaxDataClass returns the more sensitive of two classes. Classification is
+// monotonic: a caller (or a model) may raise the class, never lower it.
+func MaxDataClass(a, b DataClass) DataClass {
+	if a.rank() >= b.rank() {
+		return a
+	}
+	return b
+}
+
+// EffectiveDataClass is the maximum of the requested class and every provenance
+// class. Provenance must be supplied by the caller from evidence/task
+// classification; the router refuses to let a request label sensitive content as
+// PUBLIC.
+func (r ModelRequest) EffectiveDataClass() DataClass {
+	out := r.DataClass
+	for _, d := range r.Provenance {
+		out = MaxDataClass(out, d)
+	}
+	return out
+}
+
+// Capability is an optional provider feature a request depends on.
+type Capability string
+
+const (
+	CapabilityToolCalling      Capability = "TOOL_CALLING"
+	CapabilityVision           Capability = "VISION"
+	CapabilityStructuredOutput Capability = "STRUCTURED_OUTPUT"
+)
+
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -73,9 +122,18 @@ type ModelRequest struct {
 	TaskID    domain.TaskID `json:"task_id,omitempty"`
 	Purpose   Purpose       `json:"purpose"`
 	DataClass DataClass     `json:"data_class"`
-	Input     []Message     `json:"input"`
-	MaxTokens int           `json:"max_tokens"`
-	Budget    domain.Money  `json:"budget"`
+	// Provenance records the data classes of the inputs (evidence, task, source
+	// files). The router uses max(DataClass, Provenance...) so a request cannot
+	// under-classify sensitive content.
+	Provenance []DataClass  `json:"provenance,omitempty"`
+	Input      []Message    `json:"input"`
+	MaxTokens  int          `json:"max_tokens"`
+	Budget     domain.Money `json:"budget"`
+	// CallID is an optional idempotency key. When set, a retry with the same ID
+	// is rejected instead of paying for a second model call.
+	CallID string `json:"call_id,omitempty"`
+	// RequiredCapabilities filters out providers lacking a needed feature.
+	RequiredCapabilities []Capability `json:"required_capabilities,omitempty"`
 }
 
 func (r ModelRequest) Validate() error {
@@ -118,16 +176,70 @@ type ModelResponse struct {
 // ProviderInfo declares what a provider may be used for. Prices are in the
 // smallest currency unit (fen) per million tokens.
 type ProviderInfo struct {
-	Name               string
-	Model              string
-	Local              bool
-	DataClasses        []DataClass
-	Purposes           []Purpose
+	Name        string
+	Model       string
+	Local       bool
+	DataClasses []DataClass
+	Purposes    []Purpose
+	// MaxContextTokens bounds input+output. Zero means unknown (not checked).
+	MaxContextTokens   int
 	MaxOutputTokens    int
 	InputPricePerMTok  int64
 	OutputPricePerMTok int64
+	// Endpoint is the provider's transport identity. A provider declared Local
+	// must use a loopback/unix/in-process endpoint; Router.New rejects a "local"
+	// provider pointed at a remote URL. An empty endpoint is an in-process
+	// provider (for example StaticProvider).
+	Endpoint string
+	// ToolCalling/Vision/StructuredOutput describe optional capabilities.
+	ToolCalling      bool
+	Vision           bool
+	StructuredOutput bool
+	ReasoningMode    string
+	LocalKVPrivacy   bool
 	// Strength is the planning/analysis preference; higher is stronger.
 	Strength int
+}
+
+// IsLocal reports whether the provider's transport is local. Locality is a
+// property of the transport, not a self-declared boolean: a non-empty remote
+// endpoint is never local even if Local=true.
+func (i ProviderInfo) IsLocal() bool {
+	if endpointIsLocal(i.Endpoint) {
+		return true
+	}
+	if i.Endpoint != "" {
+		return false
+	}
+	return i.Local
+}
+
+// endpointIsLocal accepts loopback hosts, unix/named-pipe/static schemes and
+// localhost. Anything else is treated as remote.
+func endpointIsLocal(endpoint string) bool {
+	e := strings.ToLower(strings.TrimSpace(endpoint))
+	if e == "" {
+		return false
+	}
+	for _, prefix := range []string{"unix://", "npipe://", "static://", "stdio://"} {
+		if strings.HasPrefix(e, prefix) {
+			return true
+		}
+	}
+	host := e
+	if u, err := url.Parse(e); err == nil && u.Hostname() != "" {
+		host = u.Hostname()
+	} else if h, _, err := net.SplitHostPort(e); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.Unmap().IsLoopback()
+	}
+	return false
 }
 
 func (i ProviderInfo) SupportsDataClass(d DataClass) bool {
@@ -152,6 +264,19 @@ func (i ProviderInfo) SupportsPurpose(p Purpose) bool {
 		}
 	}
 	return false
+}
+
+func (i ProviderInfo) SupportsCapability(c Capability) bool {
+	switch c {
+	case CapabilityToolCalling:
+		return i.ToolCalling
+	case CapabilityVision:
+		return i.Vision
+	case CapabilityStructuredOutput:
+		return i.StructuredOutput
+	default:
+		return false
+	}
 }
 
 type Provider interface {

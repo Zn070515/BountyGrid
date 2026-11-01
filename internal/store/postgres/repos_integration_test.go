@@ -388,17 +388,27 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err != nil || gotVerification.FindingID != findingID || gotVerification.Verdict != verification.Verdict {
 		t.Fatalf("verification roundtrip = %+v %v", gotVerification, err)
 	}
-	// Re-persisting the same verification ID must update, not silently keep the
-	// old verdict.
+	// Verification is append-only: same ID + same content is a no-op.
+	if err := r.PutVerification(ctx, verification); err != nil {
+		t.Fatalf("idempotent verification = %v", err)
+	}
+	// Same ID + different content is a conflict, not a rewrite of history.
 	verification.Verdict = domain.VerdictRejected
 	verification.Reasons = []string{"DATA_NOT_MINIMIZED"}
-	if err := r.PutVerification(ctx, verification); err != nil {
-		t.Fatal(err)
+	if err := r.PutVerification(ctx, verification); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("conflicting verification err = %v, want ErrConflict", err)
 	}
 	gotVerification, err = r.GetVerification(ctx, verification.ID)
-	if err != nil || gotVerification.Verdict != domain.VerdictRejected {
-		t.Fatalf("verification update = %+v %v", gotVerification, err)
+	if err != nil || gotVerification.Verdict != domain.VerdictNeedsEvidence {
+		t.Fatalf("verification was rewritten = %+v %v", gotVerification, err)
 	}
+	// A real re-verification uses a new ID.
+	reverified := verification
+	reverified.ID = verification.ID + "-2"
+	if err := r.PutVerification(ctx, reverified); err != nil {
+		t.Fatalf("new verification = %v", err)
+	}
+	verification = reverified
 	report := domain.ReportDraft{ID: reportID, FindingID: findingID, ProgramID: progID,
 		VerificationID: verification.ID, Status: domain.ReportStatusDraft, CreatedAt: now,
 		Fields: map[string]string{"title": "it"}, AIDisclosure: map[string]string{}}

@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Go-1.27.3-00ADD8?logo=go&logoColor=white" alt="Go 1.27.3">
   <img src="https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
   <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/Phase-0--6%20partial%20%C2%B7%20execution%20disabled-blue" alt="Phase 0–6 partial; active execution disabled">
+  <img src="https://img.shields.io/badge/Phase-0--8%20control%20plane%20%C2%B7%20execution%20disabled-blue" alt="Phase 0–8 control plane; active execution disabled">
 </p>
 
 <p>
@@ -111,7 +111,7 @@ bash probes/butian/grow-dates.sh
 
 ## 实现进度 · Implementation
 
-> **真实状态：Phase 0 complete; Phase 1–6 partially implemented; active execution remains disabled.** 三平台 Reader 主路径已通并落库；Policy/Gateway/Opportunity/Scheduler/Harness 已有实现并在控制层收口；Verification 规则引擎已实现；ReportDraft/Submission/Ledger 仍未进入。
+> **真实状态：Phase 0 complete; Phase 1–8 control plane implemented; active execution remains disabled.** 三平台 Reader 主路径已通并落库；Policy/Gateway/Opportunity/Scheduler/Harness 已有实现并在控制层收口；Verification 规则引擎（执行回执 + durable human review）、ReportDraft、dry-run Submission、CNY 现金 Ledger（含 Feedback 回灌 Opportunity）已实现。**真实平台 SubmitAdapter 与真实模型 Provider 仍未实现**；`ACTIVE_HTTP` 工具不存在，主动执行保持 disabled。执行可信度硬化（输入新鲜度、逐请求 Egress 授权、SSRF/DNS rebinding、AMBIGUOUS 回执/提交意图、模型调用持久化）见下方 hardening 记录。
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
@@ -122,6 +122,18 @@ bash probes/butian/grow-dates.sh
 | Phase 4 | Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、CompetitionSnapshot TTL/decay |
 | Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 的路由/数据分级/预算/审计已实现（仅本地 dry-run，**无真实 Provider**）；**无 ACTIVE_HTTP 工具** |
 | Phase 6 | Verification / Report / Submission / Ledger | Verification 规则引擎、ReportDraft、Submission dry-run 控制层、CNY 现金 Ledger（append-only/ExternalRef/REVERSAL/Summary/Reconcile/Feedback）已实现；**真实平台 SubmitAdapter 未实现**；非现金奖励仅留接口 |
+
+### Execution-trust hardening（2026-11-01）
+
+- **输入新鲜度独立检查**：执行/提交动作分别要求 `Program.Status`、`Scope`、`Program`（automation/constraints）与 `AccountCapability` 在各自窗口内；任一 stale → `REQUIRE_MORE_EVIDENCE`（`STALE_PROGRAM_STATE` / `STALE_SCOPE` / `STALE_AUTOMATION_POLICY` / `STALE_ACCOUNT_CAPABILITY`）。
+- **逐请求 Egress 授权**：网络工具拿到的是绑定 `ExecutionGrant`（approved method、canonical asset host/path、RPS、并发、日限额）的 `Egress`；每次请求与重定向都重新校验，不能被一次 ALLOW 放大成任意请求。
+- **SSRF / DNS rebinding**：连接前解析 DNS，拒绝 loopback/private/link-local/ULA/multicast/unspecified 并固定到校验后的 IP；默认不使用环境代理，只有显式 `ApprovedProxy` 才启用。
+- **执行回执 ≠ ALLOW**：Finding 记录 `source_decision_ids` / `execution_receipts`；`VERIFIED` 必须有 `COMPLETED` 回执，且 program/asset/action/decision/evidence 与 Finding 匹配。网络/破坏性工具报错默认 `AMBIGUOUS`（人工对账），只有工具证明 `ErrNotSent` 才能自动重试。
+- **人工复核是对象**：AI-assisted `VERIFIED` 必须引用 `human_reviews` 中的 `HumanReviewID`，并校验 finding/reviewer/time/verdict/evidence；裸字符串不再足够。
+- **提交意图状态机**：`PENDING → SENT → CONFIRMED/AMBIGUOUS/FAILED_BEFORE_SEND`；只有 `PENDING` 可被 TTL 回收，`SENT/AMBIGUOUS` 永不自动重投。
+- **模型调用可信**：`DataClass` 取请求与 provenance 的最大敏感度；`Local` 由 transport 身份（loopback/unix/in-process）判定；新增 context window/capability 过滤、整条 fallback 链累计预算、`model_calls` 持久化与 `CallID` 幂等。
+- **附件严格校验**：提供 `attachments_root` 时校验 workspace 边界、大小、magic bytes、SHA-256 与敏感值扫描，并把 hash 绑定进报告内容审批。
+- **反馈闭环**：`schedule` 读取 Ledger `Feedback`，用实际接受率/到账/成本回灌 Opportunity 评分。
 
 ### Phase 1 progress · Browser Sidecar + Vulbox Reader
 

@@ -50,10 +50,36 @@ func allowDecision(action domain.Action, asset *domain.AssetID) *domain.ActionDe
 	}
 }
 
+func testEvidence() fakeEvidence {
+	return fakeEvidence{exists: map[domain.EvidenceID]bool{
+		"ev-finding": true, "ev-repro": true, "ev-impact": true, "ev-review": true,
+	}}
+}
+
+func testReceipt() domain.ExecutionReceipt {
+	return domain.ExecutionReceipt{
+		ID: "rcpt/1", IdempotencyKey: "idem-1", DecisionID: "d1",
+		ToolName: "active_http", Action: domain.ActionActiveHTTP,
+		AccountID: "acc1", ProgramID: "p1", AssetID: assetID("a1"),
+		Status: domain.ReceiptCompleted, Evidence: []domain.EvidenceID{"ev-repro"},
+		StartedAt: testNow, UpdatedAt: testNow,
+	}
+}
+
+func testHumanReview() *domain.HumanReview {
+	return &domain.HumanReview{
+		ID: "hr1", FindingID: "f1", Reviewer: "human",
+		ReviewedAt: testNow, Verdict: domain.HumanReviewApproved,
+		Evidence: []domain.EvidenceID{"ev-review"}, NotesHash: "notes-hash",
+	}
+}
+
 func validInput() Input {
 	return Input{
 		Finding: testFinding(), Program: testProgram(),
 		Decision:             allowDecision(domain.ActionActiveHTTP, assetID("a1")),
+		Evidence:             testEvidence(),
+		Receipts:             []domain.ExecutionReceipt{testReceipt()},
 		Reproduced:           true,
 		ReproductionEvidence: []domain.EvidenceID{"ev-repro"},
 		ImpactVerified:       true,
@@ -222,16 +248,18 @@ func TestAIGate(t *testing.T) {
 	}
 
 	in.HumanVerified = true
-	if v := verifyInput(t, in); v.Verdict != domain.VerdictNeedsEvidence || v.Reasons[0] != "AI_HUMAN_VERIFICATION_REF_MISSING" {
-		t.Fatalf("AI without ref = %s %v", v.Verdict, v.Reasons)
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictNeedsEvidence || v.Reasons[0] != "AI_HUMAN_REVIEW_MISSING" {
+		t.Fatalf("AI without review = %s %v", v.Verdict, v.Reasons)
 	}
 
+	in.HumanReview = testHumanReview()
+	in.HumanReviewID = in.HumanReview.ID
 	in.HumanVerificationRef = "manually reproduced and screenshotted"
 	v := verifyInput(t, in)
 	if v.Verdict != domain.VerdictVerified {
-		t.Fatalf("AI with human ref = %s %v", v.Verdict, v.Reasons)
+		t.Fatalf("AI with human review = %s %v", v.Verdict, v.Reasons)
 	}
-	if !v.AIAssisted || !v.HumanVerified || v.HumanVerificationRef == "" {
+	if !v.AIAssisted || !v.HumanVerified || v.HumanReviewID == "" || v.HumanVerificationRef == "" {
 		t.Fatalf("AI trace not persisted: %+v", v)
 	}
 	if !v.DuplicateChecked {
@@ -283,7 +311,7 @@ func TestVerificationValidateRejectsUnbackedVerified(t *testing.T) {
 		ID: "v1", FindingID: "f1", Verdict: domain.VerdictVerified,
 		Reproduced: true, InScope: true, ImpactVerified: true, DataMinimized: false,
 		DuplicateChecked: true, VerifiedBy: "rule", VerifiedAt: testNow,
-		Evidence: []domain.EvidenceID{"ev1"},
+		Evidence: []domain.EvidenceID{"ev1"}, ReceiptIDs: []domain.ReceiptID{"rcpt/1"},
 	}
 	if err := v.Validate(); err == nil {
 		t.Fatal("VERIFIED without data_minimized must be rejected")
@@ -298,6 +326,10 @@ func TestVerificationValidateRejectsUnbackedVerified(t *testing.T) {
 	}
 	v.HumanVerified = true
 	v.HumanVerificationRef = "reviewed manually"
+	if err := v.Validate(); err == nil {
+		t.Fatal("AI-assisted VERIFIED without a durable human review must be rejected")
+	}
+	v.HumanReviewID = "hr1"
 	if err := v.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -309,5 +341,114 @@ func TestEvidenceIsDeduplicated(t *testing.T) {
 	v := verifyInput(t, in)
 	if len(v.Evidence) != 3 {
 		t.Fatalf("evidence = %v, want deduplicated non-empty IDs", v.Evidence)
+	}
+}
+
+type fakeReceipts map[string]domain.ExecutionReceipt
+
+func (f fakeReceipts) GetReceiptByID(ctx context.Context, id string) (domain.ExecutionReceipt, error) {
+	r, ok := f[id]
+	if !ok {
+		return domain.ExecutionReceipt{}, domain.ErrReceiptNotFound
+	}
+	return r, nil
+}
+
+type fakeReviews map[string]domain.HumanReview
+
+func (f fakeReviews) GetHumanReview(ctx context.Context, id string) (domain.HumanReview, error) {
+	h, ok := f[id]
+	if !ok {
+		return domain.HumanReview{}, domain.ErrNotFound
+	}
+	return h, nil
+}
+
+func TestExecutionReceiptIsRequiredForVerified(t *testing.T) {
+	in := validInput()
+	in.Receipts = nil
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictNeedsEvidence || v.Reasons[0] != "EXECUTION_RECEIPT_MISSING" {
+		t.Fatalf("no receipt = %s %v", v.Verdict, v.Reasons)
+	}
+
+	in = validInput()
+	rec := testReceipt()
+	rec.Status = domain.ReceiptStarted
+	in.Receipts = []domain.ExecutionReceipt{rec}
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictNeedsEvidence || v.Reasons[0] != "EXECUTION_RECEIPT_NOT_PROVEN" {
+		t.Fatalf("unsettled receipt = %s %v", v.Verdict, v.Reasons)
+	}
+
+	in = validInput()
+	rec = testReceipt()
+	rec.DecisionID = "d-other"
+	in.Receipts = []domain.ExecutionReceipt{rec}
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictNeedsEvidence || v.Reasons[0] != "EXECUTION_RECEIPT_NOT_PROVEN" {
+		t.Fatalf("wrong decision receipt = %s %v", v.Verdict, v.Reasons)
+	}
+
+	in = validInput()
+	rec = testReceipt()
+	rec.Evidence = []domain.EvidenceID{"ev-unrelated"}
+	in.Receipts = []domain.ExecutionReceipt{rec}
+	in.Evidence = fakeEvidence{exists: map[domain.EvidenceID]bool{
+		"ev-finding": true, "ev-repro": true, "ev-impact": true, "ev-unrelated": true,
+	}}
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictNeedsEvidence || v.Reasons[0] != "EXECUTION_RECEIPT_NOT_PROVEN" {
+		t.Fatalf("unrelated evidence receipt = %s %v", v.Verdict, v.Reasons)
+	}
+}
+
+func TestExecutionReceiptResolvedFromFinding(t *testing.T) {
+	in := validInput()
+	in.Receipts = nil
+	in.Finding.ExecutionReceipts = []domain.ReceiptID{"rcpt/1"}
+	in.ReceiptChecker = fakeReceipts{"rcpt/1": testReceipt()}
+	v := verifyInput(t, in)
+	if v.Verdict != domain.VerdictVerified || len(v.ReceiptIDs) != 1 {
+		t.Fatalf("resolved receipt = %s %v %v", v.Verdict, v.Reasons, v.ReceiptIDs)
+	}
+}
+
+func TestHumanReviewResolvedFromStore(t *testing.T) {
+	in := validInput()
+	in.AIAssisted = true
+	in.HumanVerified = true
+	in.HumanReviewID = "hr1"
+	in.HumanReviewLookup = fakeReviews{"hr1": *testHumanReview()}
+	v := verifyInput(t, in)
+	if v.Verdict != domain.VerdictVerified || v.HumanReviewID != "hr1" {
+		t.Fatalf("resolved review = %s %v", v.Verdict, v.Reasons)
+	}
+
+	in = validInput()
+	in.AIAssisted = true
+	in.HumanVerified = true
+	in.HumanReviewID = "missing"
+	in.HumanReviewLookup = fakeReviews{}
+	if v := verifyInput(t, in); v.Verdict == domain.VerdictVerified {
+		t.Fatal("missing review record must not verify")
+	}
+}
+
+func TestHumanReviewRejectionAndFindingMismatch(t *testing.T) {
+	in := validInput()
+	in.AIAssisted = true
+	in.HumanVerified = true
+	review := testHumanReview()
+	review.Verdict = domain.HumanReviewRejected
+	in.HumanReview = review
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictRejected || v.Reasons[0] != "AI_HUMAN_REVIEW_REJECTED" {
+		t.Fatalf("rejected review = %s %v", v.Verdict, v.Reasons)
+	}
+
+	in = validInput()
+	in.AIAssisted = true
+	in.HumanVerified = true
+	review = testHumanReview()
+	review.FindingID = "f-other"
+	in.HumanReview = review
+	if v := verifyInput(t, in); v.Verdict != domain.VerdictRejected || v.Reasons[0] != "AI_HUMAN_REVIEW_FINDING_MISMATCH" {
+		t.Fatalf("mismatched review = %s %v", v.Verdict, v.Reasons)
 	}
 }

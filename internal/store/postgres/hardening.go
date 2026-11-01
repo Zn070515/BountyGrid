@@ -116,6 +116,24 @@ func (r *Repo) GetReceipt(ctx context.Context, idempotencyKey string) (domain.Ex
 	return rec, nil
 }
 
+// GetReceiptByID resolves a receipt by its stable ID (the value recorded on a
+// Finding), not its idempotency key.
+func (r *Repo) GetReceiptByID(ctx context.Context, id string) (domain.ExecutionReceipt, error) {
+	var rec domain.ExecutionReceipt
+	var data []byte
+	err := r.Pool.QueryRow(ctx, `SELECT data FROM execution_receipts WHERE id=$1`, id).Scan(&data)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ExecutionReceipt{}, domain.ErrReceiptNotFound
+		}
+		return domain.ExecutionReceipt{}, fmt.Errorf("postgres: get receipt by id: %w", err)
+	}
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return domain.ExecutionReceipt{}, fmt.Errorf("postgres: decode receipt: %w", err)
+	}
+	return rec, nil
+}
+
 func (r *Repo) CreateReceipt(ctx context.Context, rec domain.ExecutionReceipt) error {
 	if err := rec.Validate(); err != nil {
 		return err

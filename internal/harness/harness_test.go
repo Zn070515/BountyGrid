@@ -3,9 +3,13 @@ package harness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -439,7 +443,7 @@ func TestEgressResponseLimit(t *testing.T) {
 		_, _ = w.Write([]byte("0123456789"))
 	}))
 	defer srv.Close()
-	e := NewEgress(&Sandbox{AllowedHosts: []string{"127.0.0.1"}})
+	e := NewEgress(&Sandbox{AllowedHosts: []string{"127.0.0.1"}, AllowLoopback: true})
 	e.SetMaxBytes(4)
 	if _, _, err := e.GetBytes(context.Background(), srv.URL); !errors.Is(err, ErrResponseTooLarge) {
 		t.Fatalf("oversize body err = %v, want ErrResponseTooLarge", err)
@@ -493,5 +497,137 @@ func TestBuiltinRegistry(t *testing.T) {
 		if _, err := r.Get(name); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
+	}
+}
+
+func networkTestHarness(tool Tool, decision domain.ActionDecision) *Harness {
+	reg := NewRegistry()
+	if err := reg.Register(tool); err != nil {
+		panic(err)
+	}
+	return New(reg, &fakeGate{decision: decision}, &fakeAuditor{},
+		&Sandbox{AllowedHosts: []string{"127.0.0.1"}, AllowLoopback: true}, nil)
+}
+
+func allowDecisionFor(action domain.Action) domain.ActionDecision {
+	exp := testNow.Add(time.Hour)
+	return domain.ActionDecision{
+		ID: "d1", Decision: domain.DecisionAllow, Action: action, ProgramID: "p1",
+		DecidedAt: testNow, ExpiresAt: &exp,
+	}
+}
+
+type failingNetworkTool struct {
+	fakeTool
+	err error
+}
+
+func (t *failingNetworkTool) Execute(ctx context.Context, tc ToolContext) (ToolResult, error) {
+	t.calls++
+	return ToolResult{}, t.err
+}
+
+func TestExecutionGrantEnforcesMethodAndTarget(t *testing.T) {
+	e := NewEgress(&Sandbox{AllowedHosts: []string{"*.example.com"}, AllowLoopback: true})
+	g := e.WithGrant(ExecutionGrant{
+		AllowedMethods: map[string]struct{}{"GET": {}},
+		AssetTarget:    "api.example.com",
+	})
+	postReq, _ := http.NewRequest(http.MethodPost, "https://api.example.com/x", nil)
+	if _, err := g.Do(context.Background(), postReq); !errors.Is(err, ErrGrantDenied) {
+		t.Fatalf("POST err = %v, want ErrGrantDenied", err)
+	}
+	otherReq, _ := http.NewRequest(http.MethodGet, "https://other.example.com/x", nil)
+	if _, err := g.Do(context.Background(), otherReq); !errors.Is(err, ErrGrantDenied) {
+		t.Fatalf("off-asset err = %v, want ErrGrantDenied", err)
+	}
+}
+
+func TestExecutionGrantDailyLimit(t *testing.T) {
+	g := &requestGate{day: businessDay(testNow)}
+	if err := g.count(testNow, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.count(testNow, 1); !errors.Is(err, ErrGrantDenied) {
+		t.Fatalf("second request err = %v, want daily limit", err)
+	}
+}
+
+func TestPublicAddressFilter(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "10.0.0.1", "169.254.1.1", "::1", "fc00::1", "0.0.0.0"} {
+		if isPublicAddr(netip.MustParseAddr(host)) {
+			t.Fatalf("%s must not be public", host)
+		}
+	}
+	if !isPublicAddr(netip.MustParseAddr("8.8.8.8")) {
+		t.Fatal("8.8.8.8 must be public")
+	}
+	if _, err := resolvePublicIP(context.Background(), "127.0.0.1", false); !errors.Is(err, ErrNonPublicAddress) {
+		t.Fatalf("loopback resolve err = %v", err)
+	}
+}
+
+func TestNetworkErrorBecomesAmbiguousUnlessNotSent(t *testing.T) {
+	tool := &failingNetworkTool{
+		fakeTool: fakeTool{spec: ToolSpec{Name: "net", RequiredAction: domain.ActionActiveHTTP, NetworkEgress: true}},
+		err:      errors.New("connection reset after write"),
+	}
+	h := networkTestHarness(tool, allowDecisionFor(domain.ActionActiveHTTP))
+	in := gateway.EvaluateInput{Request: testRequest(domain.ActionActiveHTTP), Now: testNow}
+	in.Request.IdempotencyKey = "idem-ambiguous"
+	in.Request.Method = http.MethodGet
+	if _, _, err := h.Execute(context.Background(), "net", in); err == nil {
+		t.Fatal("expected tool error")
+	}
+	if _, _, err := h.Execute(context.Background(), "net", in); err == nil ||
+		!strings.Contains(err.Error(), "reconcile manually") {
+		t.Fatalf("ambiguous retry err = %v", err)
+	}
+	if tool.calls != 1 {
+		t.Fatalf("ambiguous receipt was retried: calls=%d", tool.calls)
+	}
+}
+
+func TestNotSentErrorIsRetryable(t *testing.T) {
+	tool := &failingNetworkTool{
+		fakeTool: fakeTool{spec: ToolSpec{Name: "net", RequiredAction: domain.ActionActiveHTTP, NetworkEgress: true}},
+		err:      fmt.Errorf("dial failed: %w", domain.ErrNotSent),
+	}
+	h := networkTestHarness(tool, allowDecisionFor(domain.ActionActiveHTTP))
+	in := gateway.EvaluateInput{Request: testRequest(domain.ActionActiveHTTP), Now: testNow}
+	in.Request.IdempotencyKey = "idem-not-sent"
+	in.Request.Method = http.MethodGet
+	if _, _, err := h.Execute(context.Background(), "net", in); err == nil {
+		t.Fatal("expected first failure")
+	}
+	// The second attempt may run again because the first proved nothing was sent.
+	if _, _, err := h.Execute(context.Background(), "net", in); err == nil {
+		t.Fatal("expected second failure")
+	}
+	if tool.calls != 2 {
+		t.Fatalf("not-sent receipt was not retried: calls=%d", tool.calls)
+	}
+}
+
+func TestBudgetReserveIsAtomic(t *testing.T) {
+	b := &Budget{MaxRequests: 1}
+	var ok int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if r, err := b.Reserve(domain.Money{}); err == nil {
+				mu.Lock()
+				ok++
+				mu.Unlock()
+				r.Commit()
+			}
+		}()
+	}
+	wg.Wait()
+	if ok != 1 {
+		t.Fatalf("reserved %d slots, want 1", ok)
 	}
 }
