@@ -63,8 +63,12 @@ func (r *Repo) CompleteModelCall(ctx context.Context, id string, rec model.Model
 		// started, leaving it permanently non-reclaimable and retry-blocked.
 		status = model.CallCompleted
 	}
-	if !status.Valid() {
-		return fmt.Errorf("%w: call %s: unknown status %q", model.ErrInvalidCallTransition, id, status)
+	if !status.Valid() || status == model.CallReserved {
+		// RESERVED is an initial state, never a transition target: the memory
+		// store's CanTransition has the same matrix, and the SQL below enforces
+		// it again.
+		return fmt.Errorf("%w: call %s: status %q is not a valid target",
+			model.ErrInvalidCallTransition, id, status)
 	}
 	rec.FinalStatus = status
 	data, err := mustJSON(rec)
@@ -80,7 +84,8 @@ func (r *Repo) CompleteModelCall(ctx context.Context, id string, rec model.Model
 			started_at=$6, ended_at=$7, status=$8,
 			total_cost_cents=$9, cost_cents=$9, currency=$10,
 			has_ambiguous_attempt=$11, updated_at=now(), data=$12::jsonb
-		WHERE id=$1 AND status IN ('RESERVED','STARTED')`,
+		WHERE id=$1 AND status IN ('RESERVED','STARTED')
+			AND $8 IN ('STARTED','COMPLETED','AMBIGUOUS','FAILED_BEFORE_SEND')`,
 		id, rec.StepID, rec.Purpose, rec.DataClass, rec.Error,
 		nullTime(rec.StartedAt), nullTime(rec.EndedAt), status,
 		rec.TotalCost.Amount, nullString(rec.TotalCost.Currency),
@@ -113,7 +118,29 @@ func (r *Repo) CompleteModelCall(ctx context.Context, id string, rec model.Model
 // was STARTED, COMPLETED or left AMBIGUOUS may already have reached and been
 // charged by the provider.
 func (r *Repo) ReclaimModelCall(ctx context.Context, id string) error {
-	tag, err := r.Pool.Exec(ctx, `
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: begin reclaim model call: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Archive before the cascade delete. The history insert and the logical
+	// delete commit together; a non-reclaimable call rolls both back.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO model_call_attempt_history
+			(attempt_id, call_id, provider, model, status,
+			 estimated_cost_cents, actual_cost_cents, currency,
+			 input_tokens, output_tokens, prompt_hash, response_hash,
+			 error, started_at, ended_at, data)
+		SELECT attempt_id, call_id, provider, model, status,
+			 estimated_cost_cents, actual_cost_cents, currency,
+			 input_tokens, output_tokens, prompt_hash, response_hash,
+			 error, started_at, ended_at, data
+		FROM model_call_attempts WHERE call_id=$1
+		ON CONFLICT (attempt_id) DO NOTHING`, id); err != nil {
+		return fmt.Errorf("postgres: archive model call attempts: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
 		DELETE FROM model_calls WHERE id=$1 AND status=$2`,
 		id, model.CallFailedBeforeSend)
 	if err != nil {
@@ -122,7 +149,39 @@ func (r *Repo) ReclaimModelCall(ctx context.Context, id string) error {
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("postgres: model call %s is not reclaimable", id)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: commit reclaim model call: %w", err)
+	}
 	return nil
+}
+
+// ListModelCallAttemptHistory returns archived attempts for a reclaimed call.
+// The current attempts table no longer contains them.
+func (r *Repo) ListModelCallAttemptHistory(ctx context.Context, callID string) ([]model.ModelCallAttempt, error) {
+	rows, err := r.Pool.Query(ctx, `
+		SELECT data FROM model_call_attempt_history
+		WHERE call_id=$1
+		ORDER BY started_at NULLS FIRST, attempt_id`, callID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list model call attempt history: %w", err)
+	}
+	defer rows.Close()
+	var out []model.ModelCallAttempt
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, fmt.Errorf("postgres: scan model call attempt history: %w", err)
+		}
+		var attempt model.ModelCallAttempt
+		if err := json.Unmarshal(data, &attempt); err != nil {
+			return nil, fmt.Errorf("postgres: decode model call attempt history: %w", err)
+		}
+		out = append(out, attempt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: list model call attempt history: %w", err)
+	}
+	return out, nil
 }
 
 func (r *Repo) GetModelCall(ctx context.Context, id string) (model.ModelCall, bool, error) {

@@ -30,6 +30,10 @@ func TestModelCallCompleteIsCompareAndSwap(t *testing.T) {
 	if ok, err := store.Reserve(ctx, id, rec); err != nil || !ok {
 		t.Fatalf("reserve = %v %v", ok, err)
 	}
+	// RESERVED is not a transition target, even though it is a valid status.
+	if err := store.Complete(ctx, id, rec); !errors.Is(err, model.ErrInvalidCallTransition) {
+		t.Fatalf("RESERVED -> RESERVED err = %v, want ErrInvalidCallTransition", err)
+	}
 	started := rec
 	started.FinalStatus = model.CallStarted
 	if err := store.Complete(ctx, id, started); err != nil {
