@@ -100,6 +100,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "report:", err)
 			os.Exit(1)
 		}
+	case "submit":
+		submitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := runSubmit(submitCtx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "submit:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("bountygrid dev")
 	default:
@@ -109,7 +116,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|decide|schedule|competition|harness|model|verify|report|version>")
+	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|decide|schedule|competition|harness|model|verify|report|submit|version>")
 }
 
 func dsn() (string, error) {

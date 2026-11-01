@@ -492,11 +492,11 @@ func (d ActionDecision) Validate() error {
 }
 
 func (d ReportDraft) Validate() error {
-	if d.ID == "" || d.FindingID == "" || d.ProgramID == "" {
-		return fmt.Errorf("report draft: id/finding_id/program_id required")
+	if d.ID == "" || d.FindingID == "" || d.ProgramID == "" || d.VerificationID == "" {
+		return fmt.Errorf("report draft: id/finding_id/program_id/verification_id required")
 	}
-	if strings.TrimSpace(d.Status) == "" {
-		return fmt.Errorf("report draft %s: status is empty", d.ID)
+	if !ReportStatusValid(d.Status) {
+		return fmt.Errorf("report draft %s: invalid status %q", d.ID, d.Status)
 	}
 	if d.CreatedAt.IsZero() {
 		return fmt.Errorf("report draft %s: created_at is zero", d.ID)
@@ -559,6 +559,9 @@ func (s Submission) Validate() error {
 	}
 	if s.Receipt == "" {
 		return fmt.Errorf("submission %s: receipt is empty", s.ID)
+	}
+	if strings.TrimSpace(s.Status) == "" {
+		return fmt.Errorf("submission %s: status is empty", s.ID)
 	}
 	return nil
 }

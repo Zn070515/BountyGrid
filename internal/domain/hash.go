@@ -28,6 +28,11 @@ func CanonicalParametersHash(p []byte) string {
 	return hashBytes(b)
 }
 
+// ParametersHash is the raw SHA-256 of the caller's parameter bytes. Approvals
+// may use either this or CanonicalParametersHash; new callers should prefer the
+// canonical form so JSONB round-trips do not change the hash.
+func ParametersHash(p []byte) string { return hashBytes(p) }
+
 func hashBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])

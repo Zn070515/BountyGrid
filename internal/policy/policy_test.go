@@ -666,6 +666,24 @@ func TestProgramSignupRequiresAccountCapabilityAndRunningProgram(t *testing.T) {
 	}
 }
 
+func TestReportSubmitIgnoresExecutionUsage(t *testing.T) {
+	e := NewEngine()
+	p := testProgram(domain.StatusRunning, domain.ScopePublic)
+	p.Constraints.PerInterfaceDailyLimits = []domain.DailyLimit{{Interface: "item_api", Amount: 1}}
+	p.Constraints.BudgetCap = &domain.Money{Amount: 1, Currency: "CNY"}
+	d, err := e.Decide(context.Background(), DecisionContext{
+		Request: req(domain.ActionReportSubmit), Account: testAccount(true),
+		Program: p, Now: testNow, ResourceID: "report1",
+		HumanApproval: approval(domain.ActionReportSubmit, "report1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow {
+		t.Fatalf("report submit = %s %v, want ALLOW without execution usage", d.Decision, d.Reasons)
+	}
+}
+
 func TestPayoutRequiresAccountPayoutCapability(t *testing.T) {
 	e := NewEngine()
 	dc := DecisionContext{

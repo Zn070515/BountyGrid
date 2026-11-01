@@ -4,6 +4,7 @@
 package report
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -129,19 +130,78 @@ func Build(in Input) (Result, error) {
 	missing := missingFields(in.Program.Platform, fields, disclosure, in.AI, in.Program, len(in.Verification.Evidence))
 
 	draft := domain.ReportDraft{
-		ID:           fmt.Sprintf("draft/%s/%s", findingKey(in.Finding.ID), now.UTC().Format("20060102T150405.000000000")),
-		FindingID:    in.Finding.ID,
-		ProgramID:    in.Program.ID,
-		Fields:       fields,
-		AIDisclosure: disclosure,
-		Attachments:  append([]string{}, in.Attachments...),
-		Status:       "DRAFT",
-		CreatedAt:    now,
+		ID:             fmt.Sprintf("draft/%s/%s", findingKey(in.Finding.ID), now.UTC().Format("20060102T150405.000000000")),
+		FindingID:      in.Finding.ID,
+		ProgramID:      in.Program.ID,
+		VerificationID: in.Verification.ID,
+		Fields:         fields,
+		AIDisclosure:   disclosure,
+		Attachments:    append([]string{}, in.Attachments...),
+		Status:         domain.ReportStatusDraft,
+		CreatedAt:      now,
 	}
 	if err := draft.Validate(); err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	return Result{Draft: draft, Missing: missing, Ready: len(missing) == 0}, nil
+}
+
+// ContentHash binds an approval to the report content, not just its ID. The
+// hash covers every field, the AI disclosure, attachments and the verification
+// reference, so editing a draft after approval invalidates the approval.
+func ContentHash(d domain.ReportDraft) (string, error) {
+	payload := struct {
+		ReportID       string            `json:"report_id"`
+		FindingID      string            `json:"finding_id"`
+		ProgramID      string            `json:"program_id"`
+		VerificationID string            `json:"verification_id"`
+		Fields         map[string]string `json:"fields"`
+		AIDisclosure   map[string]string `json:"ai_disclosure"`
+		Attachments    []string          `json:"attachments"`
+	}{
+		ReportID: d.ID, FindingID: string(d.FindingID), ProgramID: string(d.ProgramID),
+		VerificationID: d.VerificationID, Fields: d.Fields,
+		AIDisclosure: d.AIDisclosure, Attachments: d.Attachments,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("report: content hash: %w", err)
+	}
+	return domain.CanonicalParametersHash(raw), nil
+}
+
+// Recheck re-validates a stored draft against the stored Finding/Program/
+// Verification before submission. The draft maps are converted back to the
+// structured fields so the same completeness rules apply.
+func Recheck(draft domain.ReportDraft, finding domain.Finding, program domain.Program, verification domain.Verification) (Result, error) {
+	fields := Fields{
+		Title: draft.Fields["title"], AssetURL: draft.Fields["asset_url"],
+		VulnType: draft.Fields["vuln_type"], Severity: draft.Fields["severity"],
+		Summary: draft.Fields["summary"], Steps: draft.Fields["steps"],
+		PoC: draft.Fields["poc"], Impact: draft.Fields["impact"],
+		Remediation: draft.Fields["remediation"], TaskID: draft.Fields["task_id"],
+		AccountName: draft.Fields["account_name"], Vendor: draft.Fields["vendor"],
+		Category: draft.Fields["category"], Activity: draft.Fields["activity"],
+		Industry: draft.Fields["industry"], Region: draft.Fields["region"],
+		Contact: draft.Fields["contact"],
+	}
+	ai := AIUse{
+		Assisted:          draft.AIDisclosure["ai_assisted"] == "true",
+		ModelName:         draft.AIDisclosure["model_name"],
+		ModelVersion:      draft.AIDisclosure["model_version"],
+		ToolName:          draft.AIDisclosure["tool_name"],
+		HumanVerification: draft.AIDisclosure["human_verification"],
+	}
+	if v := draft.AIDisclosure["ai_generated_sections"]; v != "" {
+		ai.GeneratedSections = strings.Split(v, ", ")
+	}
+	if v := draft.AIDisclosure["human_edited_sections"]; v != "" {
+		ai.HumanEditedSections = strings.Split(v, ", ")
+	}
+	return Build(Input{
+		Finding: finding, Program: program, Verification: verification,
+		Fields: fields, AI: ai, Attachments: draft.Attachments, Now: draft.CreatedAt,
+	})
 }
 
 func buildFields(in Input) map[string]string {
