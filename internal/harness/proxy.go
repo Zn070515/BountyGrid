@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/audit"
+	"github.com/Zn070515/BountyGrid/internal/capability"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 )
@@ -117,6 +118,12 @@ type ProxyConfig struct {
 	// PolicyVersion is an optional fingerprint of the loaded policy data,
 	// recorded with every audit event.
 	PolicyVersion string
+	// Broker enforces the same account/program/interface RPS, concurrency and
+	// daily quota as the client-side Egress. When set, an allowed request
+	// acquires a lease before forwarding/tunneling and releases it afterwards.
+	// The policy must expose the limits (GrantPolicy does via
+	// CapabilityRequest); otherwise the request fails closed with 429.
+	Broker capability.Broker
 }
 
 // Proxy is a forward proxy that evaluates an explicit NetworkPolicy for every
@@ -132,6 +139,7 @@ type Proxy struct {
 	allowUngranted  bool
 	allowOpaqueConn bool
 	policyVersion   string
+	broker          capability.Broker
 	configErr       error
 
 	mu       sync.Mutex
@@ -172,6 +180,7 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 		allowUngranted:  cfg.AllowUngrantedForTests,
 		allowOpaqueConn: cfg.AllowOpaqueConnect,
 		policyVersion:   cfg.PolicyVersion,
+		broker:          cfg.Broker,
 	}
 	p.configErr = p.validate()
 	return p
@@ -304,6 +313,18 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The same shared broker as Egress enforces RPS, concurrency and the daily
+	// quota. Acquire only after the request is allowed and audited, and hold the
+	// lease until the response has been written.
+	lease, err := p.acquireCapability(r.Context(), "http")
+	if err != nil {
+		http.Error(w, "proxy: rate limit: "+err.Error(), http.StatusTooManyRequests)
+		return
+	}
+	if lease != nil {
+		defer lease.Release()
+	}
+
 	body, err := p.readRequestBody(r)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
@@ -379,6 +400,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if auditErr != nil {
 		http.Error(w, "proxy: network policy audit failed", http.StatusBadGateway)
 		return
+	}
+
+	// CONNECT holds a concurrency slot for the lifetime of the tunnel, so the
+	// shared broker reflects the real in-flight connection count.
+	lease, err := p.acquireCapability(r.Context(), "http")
+	if err != nil {
+		http.Error(w, "proxy: rate limit: "+err.Error(), http.StatusTooManyRequests)
+		return
+	}
+	if lease != nil {
+		defer lease.Release()
 	}
 
 	// CONNECT target dialing is filtered here; the policy may allow the host by
@@ -467,6 +499,31 @@ func (p *Proxy) record(ctx context.Context, req Request, decision PolicyDecision
 		return fmt.Errorf("proxy: record network decision: %w", err)
 	}
 	return nil
+}
+
+// CapabilitySource is implemented by a policy that knows the execution limits
+// bound to it (GrantPolicy reads them from its ExecutionGrant).
+type CapabilitySource interface {
+	CapabilityRequest(now time.Time) (capability.Request, bool)
+}
+
+// acquireCapability takes a lease from the configured broker. A configured
+// broker with a policy that exposes no limits fails closed: the proxy must not
+// forward traffic whose platform budget it cannot account for.
+func (p *Proxy) acquireCapability(ctx context.Context, iface string) (capability.Lease, error) {
+	if p.broker == nil {
+		return nil, nil
+	}
+	src, ok := p.policy.(CapabilitySource)
+	if !ok {
+		return nil, errors.New("policy exposes no execution limits")
+	}
+	req, ok := src.CapabilityRequest(time.Now())
+	if !ok {
+		return nil, errors.New("policy has no execution grant")
+	}
+	req.Interface = iface
+	return p.broker.Acquire(ctx, req)
 }
 
 var errBodyTooLarge = errors.New("proxy: body too large")
@@ -708,6 +765,29 @@ type GrantPolicy struct {
 	Next NetworkPolicy
 	// Now is injectable for tests. Nil uses time.Now.
 	Now func() time.Time
+	// Validator re-checks the grant against authoritative state (lease,
+	// program status/scope freshness, revisions and revocation epoch) before
+	// Next runs. A nil validator keeps the local expiry/target checks only;
+	// production should configure capability.ProgramValidator.
+	Validator capability.GrantValidator
+}
+
+// CapabilityRequest exposes the grant's shared limits to the proxy broker so a
+// proxied request consumes the same RPS/concurrency/daily budget as Egress.
+func (p GrantPolicy) CapabilityRequest(now time.Time) (capability.Request, bool) {
+	g := p.Grant
+	if g == nil {
+		return capability.Request{}, false
+	}
+	return capability.Request{
+		AccountID:      g.AccountID,
+		ProgramID:      g.ProgramID,
+		Interface:      "http",
+		MaxRPS:         g.MaxRPS,
+		MaxConcurrency: g.MaxConcurrency,
+		DailyLimit:     g.DailyLimit,
+		Now:            now,
+	}, true
 }
 
 func (p GrantPolicy) Decide(ctx context.Context, req Request) (PolicyDecision, string) {
@@ -749,8 +829,17 @@ func (p GrantPolicy) Decide(ctx context.Context, req Request) (PolicyDecision, s
 	if err != nil {
 		return Deny, "invalid grant request: " + err.Error()
 	}
-	if err := g.allowsTarget(u); err != nil {
+	if err := g.AllowsTarget(u); err != nil {
 		return Deny, err.Error()
+	}
+
+	// Re-check the grant against authoritative state before any upstream I/O.
+	// An expired lease, a paused/stale program, a changed scope/policy snapshot
+	// or a bumped revocation epoch is a hard Deny.
+	if p.Validator != nil {
+		if err := p.Validator.ValidateGrant(ctx, *g); err != nil {
+			return Deny, "execution grant is not valid: " + err.Error()
+		}
 	}
 
 	if p.Next == nil {
