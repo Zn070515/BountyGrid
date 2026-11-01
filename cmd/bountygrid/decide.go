@@ -18,6 +18,7 @@ import (
 type decideOptions struct {
 	RequestFile string
 	Authorize   string
+	ContextFile string
 }
 
 type decideInput struct {
@@ -36,6 +37,7 @@ func parseDecideOptions(args []string) (decideOptions, error) {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&o.RequestFile, "request", "", "JSON file with request (AssetID only), approval, usage and execution_environment")
 	fs.StringVar(&o.Authorize, "authorize", "", "re-check an ALLOW decision id before execution")
+	fs.StringVar(&o.ContextFile, "context", "", "with -authorize: JSON file with fresh usage_today/budget_spent/execution_environment")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -44,6 +46,9 @@ func parseDecideOptions(args []string) (decideOptions, error) {
 	}
 	if o.RequestFile != "" && o.Authorize != "" {
 		return o, fmt.Errorf("decide: use -request or -authorize, not both")
+	}
+	if o.ContextFile != "" && o.Authorize == "" {
+		return o, fmt.Errorf("decide: -context is only valid with -authorize")
 	}
 	return o, nil
 }
@@ -67,19 +72,28 @@ func runDecide(ctx context.Context, args []string) error {
 	g := gateway.New(repo, engine, postgres.NewAuditStore(pool), postgres.NewPostgresApprovalLedger(pool))
 
 	if opts.Authorize != "" {
-		if err := g.Authorize(ctx, domain.DecisionID(opts.Authorize)); err != nil {
+		ai := gateway.AuthorizeInput{}
+		if opts.ContextFile != "" {
+			in, err := loadDecideInput(opts.ContextFile)
+			if err != nil {
+				return err
+			}
+			ai.UsageToday = in.UsageToday
+			ai.BudgetSpent = in.BudgetSpent
+			ai.Environment = in.Environment
+			if in.Now != nil {
+				ai.Now = in.Now.UTC()
+			}
+		}
+		if err := g.AuthorizeWith(ctx, domain.DecisionID(opts.Authorize), ai); err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"authorized": true, "decision_id": opts.Authorize})
 	}
 
-	raw, err := os.ReadFile(opts.RequestFile)
+	in, err := loadDecideInput(opts.RequestFile)
 	if err != nil {
-		return fmt.Errorf("decide: read request: %w", err)
-	}
-	var in decideInput
-	if err := json.Unmarshal(raw, &in); err != nil {
-		return fmt.Errorf("decide: decode request: %w", err)
+		return err
 	}
 	now := time.Now().UTC()
 	if in.Now != nil {
@@ -97,4 +111,16 @@ func runDecide(ctx context.Context, args []string) error {
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(decision)
+}
+
+func loadDecideInput(path string) (decideInput, error) {
+	var in decideInput
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return in, fmt.Errorf("decide: read input: %w", err)
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return in, fmt.Errorf("decide: decode input: %w", err)
+	}
+	return in, nil
 }

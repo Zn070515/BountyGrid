@@ -174,6 +174,65 @@ func TestStateValidityDoesNotOutliveInputFacts(t *testing.T) {
 	}
 }
 
+func listedFact(id domain.FactID, at time.Time) domain.ObservedFact {
+	pid := domain.ProgramID("butian/pub/c1")
+	return domain.ObservedFact{
+		ID: domain.FactID(id), Subject: domain.SubjectProgram, Platform: domain.PlatformButian,
+		ProgramID: &pid, Predicate: facts.PredProgramListed, Value: true,
+		ObservedAt: at, EvidenceRefs: []domain.EvidenceID{"ev-listed"},
+		Confidence: 0.8, ExtractorVersion: "test",
+	}
+}
+
+func TestListedSignalDerivesRunning(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	in, err := ProgramInputFromFacts(facts.NewFactSet([]domain.ObservedFact{listedFact("f-listed", now)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := DeriveProgramState(in, now, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != domain.StatusRunning || st.Reason != "listed_as_open" {
+		t.Fatalf("listed state = %s/%s, want RUNNING/listed_as_open", st.Status, st.Reason)
+	}
+	if st.Confidence != 0.8 {
+		t.Fatalf("confidence = %v, want 0.8", st.Confidence)
+	}
+}
+
+func TestListedDoesNotOverrideEndedOrPaused(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	end := now.Add(-time.Hour)
+	in, err := ProgramInputFromFacts(facts.NewFactSet([]domain.ObservedFact{listedFact("f-listed", now)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.End = &end
+	st, err := DeriveProgramState(in, now, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != domain.StatusEnded {
+		t.Fatalf("listed + passed end = %s, want ENDED", st.Status)
+	}
+
+	paused := domain.StatusPaused
+	in, err = ProgramInputFromFacts(facts.NewFactSet([]domain.ObservedFact{listedFact("f-listed", now)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Status = &paused
+	st, err = DeriveProgramState(in, now, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != domain.StatusPaused {
+		t.Fatalf("listed + explicit pause = %s, want PAUSED", st.Status)
+	}
+}
+
 func TestProgramStateKeepsProvenance(t *testing.T) {
 	in, err := ProgramInputFromFacts(growFacts(t))
 	if err != nil {

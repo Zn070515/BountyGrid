@@ -285,7 +285,7 @@ type Auditor interface {
 
 type Gate interface {
 	Evaluate(ctx context.Context, in gateway.EvaluateInput) (domain.ActionDecision, error)
-	Authorize(ctx context.Context, id domain.DecisionID) error
+	AuthorizeWith(ctx context.Context, id domain.DecisionID, ai gateway.AuthorizeInput) error
 }
 
 type DeniedError struct {
@@ -375,9 +375,8 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 		rec, err := h.receipts.GetReceipt(ctx, key)
 		switch {
 		case err == nil:
-			if rec.ToolName != "" && rec.ToolName != toolName {
-				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
-					"harness: idempotency key %s is bound to tool %s, not %s", key, rec.ToolName, toolName)
+			if err := checkReceiptBinding(rec, in, toolName); err != nil {
+				return domain.ActionDecision{}, ToolResult{}, err
 			}
 			switch rec.Status {
 			case domain.ReceiptCompleted, domain.ReceiptExecuted:
@@ -410,7 +409,10 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	if err := h.budget.Check(cost); err != nil {
 		return decision, ToolResult{}, err
 	}
-	if err := h.gate.Authorize(ctx, decision.ID); err != nil {
+	if err := h.gate.AuthorizeWith(ctx, decision.ID, gateway.AuthorizeInput{
+		UsageToday: in.UsageToday, BudgetSpent: in.BudgetSpent,
+		Environment: in.Environment, Now: in.Now,
+	}); err != nil {
 		return decision, ToolResult{}, err
 	}
 
@@ -419,31 +421,40 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	if key != "" {
 		now := h.now().UTC()
 		if reserved == nil {
-			rec := domain.ExecutionReceipt{
-				ID: "rcpt/" + key, IdempotencyKey: key, DecisionID: decision.ID,
-				ToolName: toolName, Action: in.Request.Action, ProgramID: in.Request.ProgramID,
-				Actor: in.Request.Actor, Status: domain.ReceiptStarted, StartedAt: now, UpdatedAt: now,
-			}
+			rec := newReceipt(key, decision, in, toolName, now)
 			if err := h.receipts.CreateReceipt(ctx, rec); err != nil {
-				if errors.Is(err, domain.ErrReceiptExists) {
-					existing, gerr := h.receipts.GetReceipt(ctx, key)
-					if gerr != nil {
-						return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: read existing receipt: %w", gerr)
-					}
-					if existing.ToolName != "" && existing.ToolName != toolName {
-						return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
-							"harness: idempotency key %s is bound to tool %s, not %s", key, existing.ToolName, toolName)
-					}
-					return h.replay(ctx, existing, toolName)
+				if !errors.Is(err, domain.ErrReceiptExists) {
+					return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: reserve receipt: %w", err)
 				}
-				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: reserve receipt: %w", err)
+				existing, gerr := h.receipts.GetReceipt(ctx, key)
+				if gerr != nil {
+					return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: read existing receipt: %w", gerr)
+				}
+				if berr := checkReceiptBinding(existing, in, toolName); berr != nil {
+					return domain.ActionDecision{}, ToolResult{}, berr
+				}
+				switch existing.Status {
+				case domain.ReceiptCompleted, domain.ReceiptExecuted:
+					return h.replay(ctx, existing, toolName)
+				case domain.ReceiptStarted:
+					return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+						"harness: execution for key %s is unsettled; refusing to repeat it", key)
+				case domain.ReceiptFailed:
+					reserved = &existing
+				default:
+					return domain.ActionDecision{}, ToolResult{}, fmt.Errorf(
+						"harness: receipt %s has unknown status %q", key, existing.Status)
+				}
+			} else {
+				reserved = &rec
 			}
-			reserved = &rec
-		} else {
-			reserved.DecisionID = decision.ID
-			reserved.Status = domain.ReceiptStarted
-			reserved.Error = ""
-			reserved.UpdatedAt = now
+		}
+		// A FAILED receipt from an earlier attempt may be retried. Fill in the
+		// binding fields as well, so receipts written before the binding existed
+		// become fully checked after one retry.
+		if reserved != nil && reserved.Status == domain.ReceiptFailed {
+			*reserved = newReceipt(key, decision, in, toolName, now)
+			reserved.StartedAt = now
 			if err := h.receipts.UpdateReceipt(ctx, *reserved); err != nil {
 				return domain.ActionDecision{}, ToolResult{}, fmt.Errorf("harness: re-arm receipt: %w", err)
 			}
@@ -469,6 +480,7 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	if reserved != nil {
 		reserved.DecisionID = decision.ID
 		reserved.Output = res.Output
+		reserved.Evidence = res.Evidence
 		reserved.Status = domain.ReceiptExecuted
 		reserved.UpdatedAt = h.now().UTC()
 		if err := h.receipts.UpdateReceipt(ctx, *reserved); err != nil {
@@ -490,6 +502,62 @@ func (h *Harness) Execute(ctx context.Context, toolName string, in gateway.Evalu
 	return decision, res, nil
 }
 
+func newReceipt(key string, decision domain.ActionDecision, in gateway.EvaluateInput, toolName string, now time.Time) domain.ExecutionReceipt {
+	var asset *domain.AssetID
+	if in.Request.AssetID != nil {
+		v := *in.Request.AssetID
+		asset = &v
+	}
+	return domain.ExecutionReceipt{
+		ID: "rcpt/" + key, IdempotencyKey: key, DecisionID: decision.ID,
+		ToolName: toolName, Action: in.Request.Action,
+		AccountID: in.Request.AccountID, ProgramID: in.Request.ProgramID,
+		AssetID: asset, ResourceID: in.ResourceID,
+		ParametersHash: domain.CanonicalParametersHash(in.Request.Parameters),
+		Actor:          in.Request.Actor,
+		Status:         domain.ReceiptStarted, StartedAt: now, UpdatedAt: now,
+	}
+}
+
+// checkReceiptBinding refuses a replay whose request identity differs from the
+// one that produced the receipt. The idempotency key identifies one logical
+// action; it must never return another program's/asset's result without policy.
+func checkReceiptBinding(rec domain.ExecutionReceipt, in gateway.EvaluateInput, toolName string) error {
+	if rec.ToolName != "" && rec.ToolName != toolName {
+		return fmt.Errorf("harness: idempotency key %s is bound to tool %s, not %s",
+			rec.IdempotencyKey, rec.ToolName, toolName)
+	}
+	if rec.Action != "" && rec.Action != in.Request.Action {
+		return fmt.Errorf("harness: idempotency key %s is bound to action %s, not %s",
+			rec.IdempotencyKey, rec.Action, in.Request.Action)
+	}
+	if rec.AccountID != "" && rec.AccountID != in.Request.AccountID {
+		return fmt.Errorf("harness: idempotency key %s is bound to another account", rec.IdempotencyKey)
+	}
+	if rec.ProgramID != "" && rec.ProgramID != in.Request.ProgramID {
+		return fmt.Errorf("harness: idempotency key %s is bound to another program", rec.IdempotencyKey)
+	}
+	if !sameAssetID(rec.AssetID, in.Request.AssetID) {
+		return fmt.Errorf("harness: idempotency key %s is bound to another asset", rec.IdempotencyKey)
+	}
+	// New receipts always carry a ParametersHash; compare the resource exactly
+	// so an empty original resource cannot be replayed for a report/finding.
+	if rec.ParametersHash != "" && rec.ResourceID != in.ResourceID {
+		return fmt.Errorf("harness: idempotency key %s is bound to another resource", rec.IdempotencyKey)
+	}
+	if rec.ParametersHash != "" && rec.ParametersHash != domain.CanonicalParametersHash(in.Request.Parameters) {
+		return fmt.Errorf("harness: idempotency key %s is bound to different parameters", rec.IdempotencyKey)
+	}
+	return nil
+}
+
+func sameAssetID(a, b *domain.AssetID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
 // replay returns the recorded result without calling the tool. An EXECUTED
 // receipt gets its pending audit event written first.
 func (h *Harness) replay(ctx context.Context, rec domain.ExecutionReceipt, toolName string) (domain.ActionDecision, ToolResult, error) {
@@ -504,7 +572,7 @@ func (h *Harness) replay(ctx context.Context, rec domain.ExecutionReceipt, toolN
 			return decision, ToolResult{}, fmt.Errorf("harness: complete replayed receipt: %w", err)
 		}
 	}
-	return decision, ToolResult{Output: rec.Output}, nil
+	return decision, ToolResult{Output: rec.Output, Evidence: rec.Evidence}, nil
 }
 
 func (h *Harness) appendAudit(ctx context.Context, toolName string, req domain.ActionRequest, decision domain.ActionDecision) error {

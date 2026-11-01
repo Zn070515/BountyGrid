@@ -15,8 +15,13 @@ const (
 )
 
 const (
-	PredProgramStatus     = "program.status"
-	PredProgramPaused     = "program.paused"
+	PredProgramStatus = "program.status"
+	PredProgramPaused = "program.paused"
+	// PredProgramListed is a canonical observation that the program is listed
+	// as accepting reports. It is weaker than an explicit platform status: a
+	// derived state may use it to conclude RUNNING, but it never overrides an
+	// explicit pause/end.
+	PredProgramListed     = "program.listed"
 	PredProgramStart      = "program.start"
 	PredProgramEnd        = "program.end"
 	PredRegistrationStart = "program.registration_start"

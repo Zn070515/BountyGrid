@@ -48,6 +48,10 @@ type ProgramBatch struct {
 	Evidence       []domain.Evidence
 	ObservedCount  int
 	EstimatedTotal int
+	// JoinedProgramIDs are programs the logged-in account has explicitly
+	// joined/registered according to the list page. They feed the account's
+	// JoinedProgramIDs so policy can resolve PROGRAM_SIGNUP gates at runtime.
+	JoinedProgramIDs []domain.ProgramID
 	// Estimated is true when the platform count is derived from pagination or
 	// category sums rather than an exact per-program listing.
 	Estimated bool
@@ -85,6 +89,21 @@ type Reader interface {
 	SyncProgram(ctx context.Context, id domain.ProgramID) (ProgramSnapshot, error)
 	SyncScope(ctx context.Context, id domain.ProgramID) (ScopeSnapshot, error)
 	SyncPolicy(ctx context.Context, id domain.ProgramID) (PolicySnapshot, error)
+}
+
+// ProgramSignupSatisfied reports whether the captured gates explicitly prove
+// that the account has joined/registered for the program. UNKNOWN and
+// UNSATISFIED both return false; callers must not infer enrollment from a
+// visible button alone.
+func ProgramSignupSatisfied(p domain.Program) bool {
+	for _, gates := range [][]domain.EligibilityGate{p.Gates, p.Eligibility.Gates} {
+		for _, g := range gates {
+			if g.Kind == domain.GateProgramSignup && g.Satisfied == domain.GateSatisfied {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Optional reader capabilities. A platform exposes only the extra sources it

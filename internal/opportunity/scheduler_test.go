@@ -61,6 +61,25 @@ func TestScheduleHardFilters(t *testing.T) {
 	}
 }
 
+func TestScheduleUsesAccountResolvedEligibility(t *testing.T) {
+	c := candidate("exclusive", domain.StatusRunning, true, true, true, 10000, domain.TypePrivateExclusive)
+	pid := c.Program.ID
+	gate := domain.EligibilityGate{
+		Kind: domain.GatePracticalCertification, ProgramID: &pid,
+		Required: true, Satisfied: domain.GateUnknown, Blocking: true,
+	}
+	c.Program.Eligibility.Decision = domain.EligibilityUnknown
+	c.Program.Eligibility.Gates = []domain.EligibilityGate{gate}
+	c.Program.Gates = []domain.EligibilityGate{gate}
+	practical := true
+	c.Account.PracticalCertification = &practical
+
+	res := Schedule(NewEngine(), []Candidate{c}, Options{TopK: 1, MaxPerPlatform: 1, MaxPerProgram: 1, Now: testNow})
+	if res.ResearchCount != 1 || res.HumanCount != 0 {
+		t.Fatalf("account-resolved eligibility not used: research=%d human=%d", res.ResearchCount, res.HumanCount)
+	}
+}
+
 func TestScheduleQuotas(t *testing.T) {
 	var cands []Candidate
 	for _, id := range []string{"a", "b", "c", "d", "e"} {

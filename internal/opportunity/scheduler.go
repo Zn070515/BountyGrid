@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/policy"
 )
 
 type Candidate struct {
@@ -86,11 +87,15 @@ func Schedule(engine Engine, candidates []Candidate, opts Options) Result {
 		}
 		out.Evaluated++
 		s := Scheduled{Opportunity: opp, Program: c.Program}
+		// Recompute eligibility from the account's current state instead of
+		// trusting the Program row. Policy does the same at decision time, so a
+		// gate resolved there cannot still look blocked here.
+		elig, eligErr := policy.EvaluateEligibility(c.Account, c.Program, opts.Now, policy.DefaultPolicyVersion)
 		switch {
 		case !c.Account.Capability.CanSubmit:
 			s.Reason = "ACCOUNT_CAPABILITY"
 			out.HumanQueue = append(out.HumanQueue, s)
-		case c.Program.Eligibility.Decision != domain.Eligible:
+		case eligErr != nil || elig.Decision != domain.Eligible:
 			s.Reason = "PROGRAM_GATE"
 			out.HumanQueue = append(out.HumanQueue, s)
 		case c.Program.Scope.Access != domain.ScopeAccessGranted || !c.Program.Scope.ContentsKnown:

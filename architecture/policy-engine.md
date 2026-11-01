@@ -328,13 +328,10 @@ func (e *Engine) Decide(ctx context.Context, req domain.ActionRequest) (domain.A
         return requireHuman(req, "APPROVAL_REQUIRED"), nil
     }
     if req.HumanApproval != nil {
+        // Validate only. Consumption happens in Gateway.Authorize after the
+        // decision is re-evaluated against fresh state.
         if err := validateApproval(req, dc.ResourceID); err != nil {
             return requireHuman(req, "INVALID_APPROVAL"), nil
-        }
-        if req.HumanApproval.SingleUse {
-            if err := e.ledger.Consume(ctx, req.HumanApproval.ID); err != nil {
-                return requireHuman(req, "APPROVAL_ALREADY_CONSUMED"), nil
-            }
         }
     }
     return allow(dc)
@@ -361,7 +358,7 @@ expires_at（默认 24h，提交类更短）
 single_use（human-only 动作必须 true）
 ```
 
-`REPORT_SUBMIT` 必须做到**单报告、单审批、单消费**：审批绑定 `resource_id` 与 `parameters_hash`，由 `ApprovalLedger` 原子消费；重复使用返回 `REQUIRE_HUMAN`，不能凭一张旧审批提交多份报告。产品实现使用 PostgreSQL `consumed_approvals`（`INSERT ... ON CONFLICT DO NOTHING`），进程重启后仍保持单次消费。
+`REPORT_SUBMIT` 必须做到**单报告、单审批、单消费**：审批绑定 `resource_id` 与 `parameters_hash`。`Policy.Decide` 只校验审批；`Gateway.Authorize` 在重新加载 Account/Program、重新解析 Asset 并重跑 Policy 之后，才由 `ApprovalLedger` 原子消费；重复使用在 Authorize 阶段失败，不能凭一张旧审批提交多份报告。产品实现使用 PostgreSQL `consumed_approvals`（`INSERT ... ON CONFLICT DO NOTHING`），进程重启后仍保持单次消费。`parameters_hash` 同时接受原始 SHA-256 与 canonical JSON SHA-256，避免 JSONB 重新编码导致合法审批被拒。
 
 - 报告提交：审批时展示完整报告、AI披露、证据、影响、范围、重复风险。
 - 报名/NDA/合规考核/认证：审批只代表“允许打开/发起人工流程”，不代表自动完成。

@@ -97,21 +97,22 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 	}
 	decide := func(d domain.Decision, reasons ...string) domain.ActionDecision {
 		return domain.ActionDecision{
-			ID:             domain.DecisionID(decisionID(dc.Request.ID, now)),
-			RequestID:      dc.Request.ID,
-			ProgramID:      dc.Request.ProgramID,
-			Action:         dc.Request.Action,
-			Decision:       d,
-			Reasons:        reasons,
-			GatesEvaluated: elig.Gates,
-			PolicyVersion:  version,
-			DecidedAt:      now,
-			HumanApproval:  dc.HumanApproval,
-			Request:        dc.Request,
-			ResourceID:     dc.ResourceID,
-			UsageToday:     dc.UsageToday,
-			BudgetSpent:    dc.BudgetSpent,
-			Environment:    dc.Environment,
+			ID:                domain.DecisionID(decisionID(dc.Request.ID, now)),
+			RequestID:         dc.Request.ID,
+			ProgramID:         dc.Request.ProgramID,
+			Action:            dc.Request.Action,
+			Decision:          d,
+			Reasons:           reasons,
+			GatesEvaluated:    elig.Gates,
+			PolicyVersion:     version,
+			DecidedAt:         now,
+			HumanApproval:     dc.HumanApproval,
+			Request:           dc.Request,
+			ResourceID:        dc.ResourceID,
+			UsageToday:        dc.UsageToday,
+			BudgetSpent:       dc.BudgetSpent,
+			Environment:       dc.Environment,
+			RequestParameters: string(dc.Request.Parameters),
 		}
 	}
 
@@ -230,9 +231,9 @@ func (e *Engine) Decide(ctx context.Context, dc DecisionContext) (domain.ActionD
 		}
 	}
 
-	// 7. Rate/budget constraints, when usage is supplied by the caller.
-	if err := checkUsage(dc); err != nil {
-		return decide(domain.DecisionDeny, err.Error()), nil
+	// 7. Rate/budget constraints. Missing usage/budget is unknown, not zero.
+	if d, reason := checkUsage(dc); d != "" {
+		return decide(d, reason), nil
 	}
 
 	// 7b. Runtime constraints. A constraint that the caller cannot prove is
@@ -333,7 +334,11 @@ func validateApproval(a *domain.HumanApproval, req domain.ActionRequest, resourc
 			return fmt.Errorf("approval report resource mismatch")
 		}
 	}
-	if a.ParametersHash != parametersHash(req.Parameters) {
+	// Accept both the raw and canonical hashes: approvals created before the
+	// canonical hash existed keep working, while a request that round-tripped
+	// through JSONB can still match.
+	if a.ParametersHash != parametersHash(req.Parameters) &&
+		a.ParametersHash != domain.CanonicalParametersHash(req.Parameters) {
 		return fmt.Errorf("approval parameters mismatch")
 	}
 	if a.ApprovedAt.After(now) {
@@ -399,29 +404,43 @@ func automationCapability(p domain.AutomationPolicy, a domain.Action) (domain.Ca
 	}
 }
 
-func checkUsage(dc DecisionContext) error {
-	for _, limit := range dc.Program.Constraints.PerInterfaceDailyLimits {
+// checkUsage validates per-interface daily limits and the budget cap. A
+// constraint with no observation is unknown, not "zero used": returning ALLOW
+// because UsageToday/BudgetSpent were omitted would fail open.
+func checkUsage(dc DecisionContext) (domain.Decision, string) {
+	limits := dc.Program.Constraints.PerInterfaceDailyLimits
+	for _, limit := range limits {
 		if limit.Interface == "" || limit.Amount <= 0 {
-			return fmt.Errorf("INVALID_DAILY_LIMIT")
+			return domain.DecisionDeny, "INVALID_DAILY_LIMIT"
 		}
-		if used := dc.UsageToday[limit.Interface]; used >= limit.Amount {
-			return fmt.Errorf("DAILY_LIMIT_EXCEEDED:%s", limit.Interface)
+	}
+	if len(limits) > 0 && dc.UsageToday == nil {
+		return domain.DecisionRequireMoreEvidence, "USAGE_UNKNOWN"
+	}
+	for _, limit := range limits {
+		used, observed := dc.UsageToday[limit.Interface]
+		if !observed {
+			return domain.DecisionRequireMoreEvidence, "USAGE_UNKNOWN:" + limit.Interface
+		}
+		if used >= limit.Amount {
+			return domain.DecisionDeny, "DAILY_LIMIT_EXCEEDED:" + limit.Interface
 		}
 	}
 	if cap := dc.Program.Constraints.BudgetCap; cap != nil {
 		if cap.Amount <= 0 || cap.Currency == "" {
-			return fmt.Errorf("INVALID_BUDGET_CAP")
+			return domain.DecisionDeny, "INVALID_BUDGET_CAP"
 		}
-		if dc.BudgetSpent != nil {
-			if cap.Currency != dc.BudgetSpent.Currency {
-				return fmt.Errorf("BUDGET_CURRENCY_MISMATCH")
-			}
-			if dc.BudgetSpent.Amount >= cap.Amount {
-				return fmt.Errorf("BUDGET_EXCEEDED")
-			}
+		if dc.BudgetSpent == nil {
+			return domain.DecisionRequireMoreEvidence, "BUDGET_UNKNOWN"
+		}
+		if cap.Currency != dc.BudgetSpent.Currency {
+			return domain.DecisionDeny, "BUDGET_CURRENCY_MISMATCH"
+		}
+		if dc.BudgetSpent.Amount >= cap.Amount {
+			return domain.DecisionDeny, "BUDGET_EXCEEDED"
 		}
 	}
-	return nil
+	return "", ""
 }
 
 func overridableByAutomation(a domain.Action) bool {

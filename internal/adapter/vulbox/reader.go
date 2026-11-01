@@ -132,6 +132,9 @@ func (r *Reader) SyncPrograms(ctx context.Context, opts adapter.SyncOptions) (ad
 			}
 			batch.Programs = append(batch.Programs, prog)
 			batch.Facts = append(batch.Facts, fs...)
+			if p.IsJoin {
+				batch.JoinedProgramIDs = append(batch.JoinedProgramIDs, prog.ID)
+			}
 		}
 		batch.ObservedCount = len(batch.Programs)
 		batch.EstimatedTotal = resp.Data.Total

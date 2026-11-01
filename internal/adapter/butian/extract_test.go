@@ -7,6 +7,7 @@ import (
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/facts"
+	"github.com/Zn070515/BountyGrid/internal/state"
 )
 
 var testNow = time.Date(2026, 10, 31, 17, 0, 0, 0, time.UTC)
@@ -112,23 +113,43 @@ func TestPublicWelfareEmitsListedFactNotStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var listedID domain.FactID
+	var nativeID, canonicalID domain.FactID
 	for _, f := range fs {
 		if f.Predicate == facts.PredProgramStatus || f.Predicate == facts.PredProgramPaused {
 			t.Fatalf("public welfare must not emit a platform status fact: %s", f.Predicate)
 		}
-		if f.Predicate == "butian.pub.listed" {
-			listedID = f.ID
+		switch f.Predicate {
+		case "butian.pub.listed":
+			nativeID = f.ID
+		case facts.PredProgramListed:
+			canonicalID = f.ID
 		}
 	}
-	if listedID == "" {
-		t.Fatal("butian.pub.listed fact missing")
+	if nativeID == "" || canonicalID == "" {
+		t.Fatalf("listed facts missing: native=%q canonical=%q", nativeID, canonicalID)
 	}
-	if len(prog.Status.Inputs) != 1 || prog.Status.Inputs[0] != listedID {
-		t.Fatalf("status inputs = %v, want the listed fact %s", prog.Status.Inputs, listedID)
+	if len(prog.Status.Inputs) != 2 {
+		t.Fatalf("status inputs = %v, want both listed facts", prog.Status.Inputs)
 	}
 	if prog.Status.Confidence != 0.8 {
 		t.Fatalf("status confidence = %v, want 0.8", prog.Status.Confidence)
+	}
+
+	// `derive` must reproduce RUNNING from the same facts (the adapter's
+	// hand-written status is not what the scheduler reads).
+	in, err := state.ProgramInputFromFacts(facts.NewFactSet(fs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.DeriveProgramState(in, testNow, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != domain.StatusRunning {
+		t.Fatalf("derived status = %s, want RUNNING from program.listed", st.Status)
+	}
+	if st.Confidence != 0.8 {
+		t.Fatalf("derived confidence = %v, want 0.8", st.Confidence)
 	}
 }
 

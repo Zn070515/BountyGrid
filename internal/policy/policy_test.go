@@ -700,11 +700,11 @@ func TestRuntimeConstraintsFailClosed(t *testing.T) {
 	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionRequireMoreEvidence || d.Reasons[0] != "VPN_STATE_UNKNOWN" {
 		t.Fatalf("vpn unknown = %s %v", d.Decision, d.Reasons)
 	}
-	dc.Environment = &domain.ExecutionEnvironment{VPNConnected: domain.TriNo}
+	dc.Environment = &domain.ExecutionEnvironment{ObservedAt: testNow, VPNConnected: domain.TriNo}
 	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionDeny || d.Reasons[0] != "VPN_REQUIRED" {
 		t.Fatalf("vpn absent = %s %v", d.Decision, d.Reasons)
 	}
-	dc.Environment = &domain.ExecutionEnvironment{VPNConnected: domain.TriYes}
+	dc.Environment = &domain.ExecutionEnvironment{ObservedAt: testNow, VPNConnected: domain.TriYes}
 	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionAllow {
 		t.Fatalf("vpn present = %s %v, want ALLOW", d.Decision, d.Reasons)
 	}
@@ -717,7 +717,7 @@ func TestRuntimeConstraintsFailClosed(t *testing.T) {
 		t.Fatalf("rps unknown = %s %v", d.Decision, d.Reasons)
 	}
 	rps := 3.0
-	dc.Environment = &domain.ExecutionEnvironment{CurrentRPS: &rps}
+	dc.Environment = &domain.ExecutionEnvironment{ObservedAt: testNow, CurrentRPS: &rps}
 	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionDeny || d.Reasons[0] != "RATE_LIMIT_EXCEEDED" {
 		t.Fatalf("rps exceeded = %s %v", d.Decision, d.Reasons)
 	}
@@ -737,7 +737,7 @@ func TestRuntimeConstraintsFailClosed(t *testing.T) {
 	// A program that pins an exact egress IP rejects any other source address.
 	dc = base()
 	dc.Program.Constraints.AllowedEgressIPs = []string{"203.0.113.7"}
-	dc.Environment = &domain.ExecutionEnvironment{EgressIP: "198.51.100.9"}
+	dc.Environment = &domain.ExecutionEnvironment{ObservedAt: testNow, EgressIP: "198.51.100.9"}
 	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionDeny || d.Reasons[0] != "EGRESS_IP_NOT_ALLOWED" {
 		t.Fatalf("wrong egress ip = %s %v", d.Decision, d.Reasons)
 	}
@@ -749,6 +749,89 @@ func TestRuntimeConstraintsFailClosed(t *testing.T) {
 	}}
 	if d, _ := e.Decide(context.Background(), dc); d.Decision != domain.DecisionDeny || d.Reasons[0] != "OUTSIDE_ALLOWED_TIME_WINDOW" {
 		t.Fatalf("outside window = %s %v", d.Decision, d.Reasons)
+	}
+}
+
+func TestMissingUsageAndBudgetFailClosed(t *testing.T) {
+	e := NewEngine()
+	base := func() DecisionContext {
+		p := executableProgram()
+		return DecisionContext{
+			Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+			Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+		}
+	}
+
+	dc := base()
+	dc.Program.Constraints.PerInterfaceDailyLimits = []domain.DailyLimit{{Interface: "item_api", Amount: 10}}
+	d, err := e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireMoreEvidence || d.Reasons[0] != "USAGE_UNKNOWN" {
+		t.Fatalf("missing usage = %s %v, want REQUIRE_MORE_EVIDENCE USAGE_UNKNOWN", d.Decision, d.Reasons)
+	}
+
+	dc = base()
+	dc.Program.Constraints.BudgetCap = &domain.Money{Amount: 100, Currency: "CNY"}
+	d, err = e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireMoreEvidence || d.Reasons[0] != "BUDGET_UNKNOWN" {
+		t.Fatalf("missing budget = %s %v, want REQUIRE_MORE_EVIDENCE BUDGET_UNKNOWN", d.Decision, d.Reasons)
+	}
+}
+
+func TestStaleExecutionEnvironmentFailsClosed(t *testing.T) {
+	e := NewEngine()
+	p := executableProgram()
+	vpn := domain.TriYes
+	p.Constraints.VPNRequired = vpn
+	dc := DecisionContext{
+		Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+		Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+		Environment: &domain.ExecutionEnvironment{
+			ObservedAt:   testNow.Add(-2 * domain.ExecutionEnvironmentMaxAge),
+			VPNConnected: domain.TriYes,
+		},
+	}
+	d, err := e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireMoreEvidence || d.Reasons[0] != "VPN_STATE_UNKNOWN" {
+		t.Fatalf("stale environment = %s %v, want REQUIRE_MORE_EVIDENCE VPN_STATE_UNKNOWN", d.Decision, d.Reasons)
+	}
+}
+
+func TestEmptyTestAccountIsUnknownNotDenied(t *testing.T) {
+	e := NewEngine()
+	p := executableProgram()
+	p.Constraints.TestAccountRequired = domain.TriYes
+	dc := DecisionContext{
+		Request: assetRequest("a1"), Account: testAccount(true), Program: p,
+		Asset: scopedAsset("a1", "a1.example.com"), Now: testNow,
+		Environment: &domain.ExecutionEnvironment{ObservedAt: testNow},
+	}
+	d, err := e.Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireMoreEvidence || d.Reasons[0] != "TEST_ACCOUNT_UNKNOWN" {
+		t.Fatalf("empty test account = %s %v, want REQUIRE_MORE_EVIDENCE TEST_ACCOUNT_UNKNOWN", d.Decision, d.Reasons)
+	}
+}
+
+func TestApprovalAcceptsCanonicalParametersHash(t *testing.T) {
+	pretty := []byte("{\n  \"b\": 2,\n  \"a\": 1\n}")
+	compact := []byte(`{"a":1,"b":2}`)
+	appr := approval(domain.ActionReportSubmit, "report1")
+	appr.ParametersHash = domain.CanonicalParametersHash(pretty)
+	r := req(domain.ActionReportSubmit)
+	r.Parameters = compact
+	if err := validateApproval(appr, r, "report1", testNow); err != nil {
+		t.Fatalf("canonical hash rejected after JSON reformatting: %v", err)
 	}
 }
 

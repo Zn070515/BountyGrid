@@ -11,6 +11,7 @@ import (
 
 	"github.com/Zn070515/BountyGrid/internal/adapter"
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 )
 
 type fakeReader struct {
@@ -76,9 +77,23 @@ func (w *fakeWriter) PutFacts(ctx context.Context, fs []domain.ObservedFact) err
 	w.facts = append(w.facts, fs...)
 	return nil
 }
+func (w *fakeWriter) GetAccount(ctx context.Context, id domain.AccountID) (domain.Account, error) {
+	for _, a := range w.accounts {
+		if a.ID == id {
+			return a, nil
+		}
+	}
+	return domain.Account{}, postgres.ErrNotFound
+}
 func (w *fakeWriter) UpsertAccount(ctx context.Context, a domain.Account) error {
 	if w.err != nil {
 		return w.err
+	}
+	for i := range w.accounts {
+		if w.accounts[i].ID == a.ID {
+			w.accounts[i] = a
+			return nil
+		}
 	}
 	w.accounts = append(w.accounts, a)
 	return nil
@@ -89,6 +104,57 @@ func (w *fakeWriter) UpsertProgram(ctx context.Context, p domain.Program) error 
 	}
 	w.programs = append(w.programs, p)
 	return nil
+}
+
+func TestExecuteSyncMergesJoinedProgramIDs(t *testing.T) {
+	p := domain.Program{ID: "vulbox/444", Platform: domain.PlatformVulbox}
+	f := &fakeReader{programs: adapter.ProgramBatch{
+		Programs:         []domain.Program{p},
+		JoinedProgramIDs: []domain.ProgramID{p.ID},
+	}}
+	w := &fakeWriter{accounts: []domain.Account{{
+		ID: "vulbox/account", Platform: domain.PlatformVulbox,
+		Registered: true, ObservedAt: testNow,
+	}}}
+	var buf bytes.Buffer
+	if err := executeSync(context.Background(), f, syncOptions{Programs: true}, &buf, w); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.accounts) != 1 {
+		t.Fatalf("accounts = %d, want 1", len(w.accounts))
+	}
+	acct := w.accounts[0]
+	if !acct.Registered {
+		t.Fatal("merging joined programs must preserve existing account fields")
+	}
+	if len(acct.JoinedProgramIDs) != 1 || acct.JoinedProgramIDs[0] != p.ID {
+		t.Fatalf("joined program IDs = %v, want [%s]", acct.JoinedProgramIDs, p.ID)
+	}
+}
+
+func TestExecuteSyncAccountDoesNotEraseJoinedProgramIDs(t *testing.T) {
+	p := domain.Program{ID: "vulbox/444", Platform: domain.PlatformVulbox}
+	f := &fakeReader{
+		programs: adapter.ProgramBatch{
+			Programs:         []domain.Program{p},
+			JoinedProgramIDs: []domain.ProgramID{p.ID},
+		},
+		account: adapter.AccountSnapshot{
+			Account: domain.Account{ID: "vulbox/account", Platform: domain.PlatformVulbox, ObservedAt: testNow},
+		},
+	}
+	w := &fakeWriter{}
+	var buf bytes.Buffer
+	if err := executeSync(context.Background(), f, syncOptions{Programs: true, Account: true}, &buf, w); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.accounts) != 1 {
+		t.Fatalf("accounts = %d, want 1", len(w.accounts))
+	}
+	acct := w.accounts[0]
+	if len(acct.JoinedProgramIDs) != 1 || acct.JoinedProgramIDs[0] != p.ID {
+		t.Fatalf("account sync erased joined IDs: %v", acct.JoinedProgramIDs)
+	}
 }
 
 func TestExecuteSyncPersistsPrograms(t *testing.T) {
