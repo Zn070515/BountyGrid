@@ -1,0 +1,12 @@
+{
+  "id": "t03_inventory_restock",
+  "fixture": "inventory",
+  "prompt": "Implement Store.restock(name, amount) so that it adds amount to the existing quantity, creates the item when missing, and raises ValueError for negative amounts. Do not modify the tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["inventory/store.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "feature",
+  "context_band": "medium"
+}

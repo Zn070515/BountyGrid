@@ -1,0 +1,12 @@
+{
+  "id": "t05_gocalc_bugfix",
+  "fixture": "gocalc",
+  "prompt": "The Go test suite fails. Find and fix the bug in gocalc/ops.go so that all tests pass. Do not modify the tests.",
+  "acceptance": ["go test ./..."],
+  "setup": [],
+  "allowed_files": ["gocalc/ops.go"],
+  "timeout_s": 180,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "context_band": "low"
+}

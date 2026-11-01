@@ -1,0 +1,12 @@
+{
+  "id": "t02_textutil_fix",
+  "fixture": "textutil",
+  "prompt": "The test suite fails in two places: case handling and truncation length. Fix both bugs in textutil/core.py. Do not modify the tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["textutil/core.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "context_band": "low"
+}

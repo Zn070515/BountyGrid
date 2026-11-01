@@ -1,0 +1,48 @@
+{"probe": "json", "mode": "off", "run": 1, "valid": true, "completion_tokens": 33, "wall_s": 1.358, "finish": "stop"}
+{"probe": "tool-known", "mode": "off", "run": 1, "valid": true, "why": "", "calls": 1, "completion_tokens": 28, "wall_s": 1.457, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "off", "run": 1, "valid": true, "why": "", "calls": 0, "completion_tokens": 256, "wall_s": 3.952, "finish": "length"}
+{"probe": "json", "mode": "on", "run": 1, "valid": true, "completion_tokens": 199, "wall_s": 3.059, "finish": "stop"}
+{"probe": "tool-known", "mode": "on", "run": 1, "valid": true, "why": "", "calls": 1, "completion_tokens": 49, "wall_s": 1.639, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "on", "run": 1, "valid": true, "why": "", "calls": 2, "completion_tokens": 253, "wall_s": 3.529, "finish": "tool_calls"}
+{"probe": "json", "mode": "on", "run": 2, "valid": true, "completion_tokens": 159, "wall_s": 2.425, "finish": "stop"}
+{"probe": "tool-known", "mode": "on", "run": 2, "valid": true, "why": "", "calls": 1, "completion_tokens": 49, "wall_s": 1.598, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "on", "run": 2, "valid": true, "why": "", "calls": 2, "completion_tokens": 146, "wall_s": 2.573, "finish": "tool_calls"}
+{"probe": "json", "mode": "off", "run": 2, "valid": true, "completion_tokens": 47, "wall_s": 1.138, "finish": "stop"}
+{"probe": "tool-known", "mode": "off", "run": 2, "valid": true, "why": "", "calls": 1, "completion_tokens": 28, "wall_s": 1.335, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "off", "run": 2, "valid": true, "why": "", "calls": 1, "completion_tokens": 77, "wall_s": 1.836, "finish": "tool_calls"}
+{"probe": "json", "mode": "off", "run": 3, "valid": true, "completion_tokens": 33, "wall_s": 0.949, "finish": "stop"}
+{"probe": "tool-known", "mode": "off", "run": 3, "valid": true, "why": "", "calls": 1, "completion_tokens": 28, "wall_s": 1.315, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "off", "run": 3, "valid": true, "why": "", "calls": 0, "completion_tokens": 44, "wall_s": 1.534, "finish": "stop"}
+{"probe": "json", "mode": "on", "run": 3, "valid": true, "completion_tokens": 166, "wall_s": 2.677, "finish": "stop"}
+{"probe": "tool-known", "mode": "on", "run": 3, "valid": true, "why": "", "calls": 1, "completion_tokens": 49, "wall_s": 1.539, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "on", "run": 3, "valid": true, "why": "", "calls": 1, "completion_tokens": 256, "wall_s": 3.537, "finish": "length"}
+{"probe": "json", "mode": "on", "run": 4, "valid": true, "completion_tokens": 165, "wall_s": 2.615, "finish": "stop"}
+{"probe": "tool-known", "mode": "on", "run": 4, "valid": true, "why": "", "calls": 1, "completion_tokens": 49, "wall_s": 1.564, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "on", "run": 4, "valid": true, "why": "", "calls": 2, "completion_tokens": 218, "wall_s": 3.213, "finish": "tool_calls"}
+{"probe": "json", "mode": "off", "run": 4, "valid": true, "completion_tokens": 47, "wall_s": 1.195, "finish": "stop"}
+{"probe": "tool-known", "mode": "off", "run": 4, "valid": true, "why": "", "calls": 1, "completion_tokens": 28, "wall_s": 1.349, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "off", "run": 4, "valid": true, "why": "", "calls": 2, "completion_tokens": 91, "wall_s": 1.876, "finish": "tool_calls"}
+{"probe": "json", "mode": "off", "run": 5, "valid": true, "completion_tokens": 33, "wall_s": 0.937, "finish": "stop"}
+{"probe": "tool-known", "mode": "off", "run": 5, "valid": true, "why": "", "calls": 1, "completion_tokens": 28, "wall_s": 1.323, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "off", "run": 5, "valid": true, "why": "", "calls": 2, "completion_tokens": 89, "wall_s": 1.845, "finish": "tool_calls"}
+{"probe": "json", "mode": "on", "run": 5, "valid": true, "completion_tokens": 160, "wall_s": 2.537, "finish": "stop"}
+{"probe": "tool-known", "mode": "on", "run": 5, "valid": true, "why": "", "calls": 1, "completion_tokens": 49, "wall_s": 1.53, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "on", "run": 5, "valid": true, "why": "", "calls": 0, "completion_tokens": 256, "wall_s": 3.611, "finish": "length"}
+{"probe": "json", "mode": "on", "run": 6, "valid": true, "completion_tokens": 168, "wall_s": 2.605, "finish": "stop"}
+{"probe": "tool-known", "mode": "on", "run": 6, "valid": true, "why": "", "calls": 1, "completion_tokens": 49, "wall_s": 1.609, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "on", "run": 6, "valid": true, "why": "", "calls": 2, "completion_tokens": 235, "wall_s": 3.308, "finish": "tool_calls"}
+{"probe": "json", "mode": "off", "run": 6, "valid": true, "completion_tokens": 33, "wall_s": 1.018, "finish": "stop"}
+{"probe": "tool-known", "mode": "off", "run": 6, "valid": true, "why": "", "calls": 1, "completion_tokens": 28, "wall_s": 1.362, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "off", "run": 6, "valid": true, "why": "", "calls": 0, "completion_tokens": 42, "wall_s": 1.471, "finish": "stop"}
+{"probe": "json", "mode": "off", "run": 7, "valid": true, "completion_tokens": 33, "wall_s": 0.984, "finish": "stop"}
+{"probe": "tool-known", "mode": "off", "run": 7, "valid": true, "why": "", "calls": 1, "completion_tokens": 28, "wall_s": 1.337, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "off", "run": 7, "valid": true, "why": "", "calls": 2, "completion_tokens": 90, "wall_s": 1.826, "finish": "tool_calls"}
+{"probe": "json", "mode": "on", "run": 7, "valid": true, "completion_tokens": 167, "wall_s": 2.66, "finish": "stop"}
+{"probe": "tool-known", "mode": "on", "run": 7, "valid": true, "why": "", "calls": 1, "completion_tokens": 45, "wall_s": 1.51, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "on", "run": 7, "valid": true, "why": "", "calls": 0, "completion_tokens": 256, "wall_s": 3.493, "finish": "length"}
+{"probe": "json", "mode": "on", "run": 8, "valid": true, "completion_tokens": 166, "wall_s": 2.597, "finish": "stop"}
+{"probe": "tool-known", "mode": "on", "run": 8, "valid": true, "why": "", "calls": 1, "completion_tokens": 49, "wall_s": 1.582, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "on", "run": 8, "valid": true, "why": "", "calls": 0, "completion_tokens": 256, "wall_s": 3.323, "finish": "length"}
+{"probe": "json", "mode": "off", "run": 8, "valid": true, "completion_tokens": 33, "wall_s": 1.037, "finish": "stop"}
+{"probe": "tool-known", "mode": "off", "run": 8, "valid": true, "why": "", "calls": 1, "completion_tokens": 28, "wall_s": 1.393, "finish": "tool_calls"}
+{"probe": "tool-unknown", "mode": "off", "run": 8, "valid": true, "why": "", "calls": 1, "completion_tokens": 62, "wall_s": 1.717, "finish": "tool_calls"}

@@ -1,0 +1,15 @@
+{
+  "id": "t10_reporting_refactor",
+  "fixture": "reporting",
+  "prompt": "Extract summarize(rows) from reporting/format.py into a new module reporting/summary.py. reporting.format.summarize must keep working (re-export it), all tests must pass, and only reporting/format.py and reporting/summary.py may change. Do not modify the tests.",
+  "acceptance": [
+    "python -m unittest discover -s tests -v",
+    "python -c \"import pathlib,sys; sys.exit(0 if pathlib.Path('reporting/summary.py').is_file() else 1)\""
+  ],
+  "setup": [],
+  "allowed_files": ["reporting/format.py", "reporting/summary.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "refactor",
+  "context_band": "medium"
+}

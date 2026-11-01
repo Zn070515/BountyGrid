@@ -1,0 +1,12 @@
+{
+  "id": "t04_inventory_refactor",
+  "fixture": "inventory",
+  "prompt": "Implement restock as specified by the tests, and extract the total calculation into a new module inventory/summary.py with a total_of(items) function. Keep all tests passing. Do not modify the tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["inventory/store.py", "inventory/summary.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "refactor",
+  "context_band": "medium"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "t08_paging_feature",
+  "fixture": "paging",
+  "prompt": "Implement page(items, page_number, size) in paging/paging.py. Pages are 1-based, a page beyond the end returns an empty list, and a page_number below 1 or a size below 1 raises ValueError. Do not modify the tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["paging/paging.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "feature",
+  "context_band": "medium"
+}
