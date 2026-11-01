@@ -38,6 +38,15 @@ const (
 	VerdictRejected      VerificationVerdict = "REJECTED"
 )
 
+func (v VerificationVerdict) Valid() bool {
+	switch v {
+	case VerdictVerified, VerdictNeedsEvidence, VerdictOutOfScope, VerdictDuplicateRisk, VerdictRejected:
+		return true
+	default:
+		return false
+	}
+}
+
 type Verification struct {
 	ID             string
 	FindingID      FindingID
@@ -48,6 +57,7 @@ type Verification struct {
 	DuplicateRisk  float64
 	Verdict        VerificationVerdict
 	VerifiedBy     string
+	Reasons        []string
 	Evidence       []EvidenceID
 	VerifiedAt     time.Time
 }

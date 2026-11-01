@@ -24,7 +24,7 @@
 | Phase 3：Policy Engine / Gateway | 已实现并硬化：authoritative Asset、ExecutionEnvironment、Authorize 重评估、审批在执行前消费 |
 | Phase 4：Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、唯一 QUEUED 任务、CompetitionSnapshot TTL/decay |
 | Phase 5：Harness / Model Router | Harness 边界/沙箱/预算/执行回执已实现；Model Router 路由/数据分级/预算/审计已实现（无真实 Provider），无 ACTIVE_HTTP 工具 |
-| Phase 6+：Verification / Submission / Ledger | 领域类型为主，未进入 |
+| Phase 6：Verification / Report / Submission / Ledger | Verification 规则引擎已实现；ReportDraft/Submission/Ledger 未进入 |
 
 > **真实状态：Phase 0 complete; Phase 1–5 partially implemented; active execution remains disabled.**
 >
@@ -204,6 +204,8 @@
 - Scope/复现/影响/数据最小化/重复风险/AI验证。
 - 模型不能单独判 VERIFIED。
 - 退出条件：未复现 Finding 不能进入报告。
+
+**当前实现（2026-11-01）**：`internal/verify.RuleVerifier` 按 Scope → 授权 → 数据最小化/公开已知 → 重复 → AI 人工验证 → 复现/影响的顺序判定；`VERIFIED` 要求四项 flag 全真且有 Evidence。`bountygrid verify -file` 从 PostgreSQL 加载 Program/Decision，`-persist` 写 `verifications`；`PutVerification/GetVerification` 已接入仓储。仍差：Finding 状态机自动推进、ReportDraft AIDisclosure、人工复核 UI。
 
 ### 6.2 ReportDraft
 

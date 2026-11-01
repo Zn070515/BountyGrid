@@ -121,7 +121,7 @@ bash probes/butian/grow-dates.sh
 | Phase 2/3 | Facts/State/Policy | 已实现并硬化；Fact 年龄限制 State TTL，运行环境约束进入 Policy |
 | Phase 4 | Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、CompetitionSnapshot TTL/decay |
 | Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 的路由/数据分级/预算/审计已实现（仅本地 dry-run，**无真实 Provider**）；**无 ACTIVE_HTTP 工具** |
-| Phase 6+ | Verification / Submission / Ledger | 领域类型为主，尚未进入 |
+| Phase 6 | Verification / Report / Submission / Ledger | Verification 规则引擎与 `verifications` 持久化已实现；ReportDraft/Submission/Ledger 仍以领域类型为主 |
 
 ### Phase 1 progress · Browser Sidecar + Vulbox Reader
 
@@ -332,6 +332,13 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - 调用前按 `MaxTokens` 估算成本，调用后按实际 usage 复核；超预算丢弃响应并返回 `ErrBudgetExceeded`。
 - 每次尝试写 `model.call` 审计，payload 只含 `prompt_hash/response_hash/usage/cost`，不含原文。
 - `go run ./cmd/bountygrid model -purpose ANALYZE -data-class INTERNAL -max-tokens 2000 -budget 100` 只打印路由计划，不调用模型。
+
+### Verification（2026-11-01）
+
+- `internal/verify.RuleVerifier`：Scope（`ResolveAsset` + `CheckAsset`）→ 授权决策（必须 ALLOW、Request context 完整、动作属于执行类）→ 数据最小化/公开已知 → 重复检查 → AI 人工验证 → 复现/影响证据。
+- `VERIFIED` 必须 `Reproduced/InScope/ImpactVerified/DataMinimized` 全真且有 Evidence；模型不能单独判 VERIFIED。
+- `go run ./cmd/bountygrid verify -file <json> -persist` 从 PostgreSQL 加载 Program/Decision，写 `verifications`。
+- 未实现：Finding 状态机自动推进、ReportDraft AIDisclosure、人工复核 UI。
 
 ## 文档入口 · Docs
 
