@@ -1,19 +1,23 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/redact"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = errors.New("postgres: not found")
+// ErrNotFound aliases the store-neutral sentinel for callers that already use
+// the postgres package; new code should check domain.ErrNotFound.
+var ErrNotFound = domain.ErrNotFound
 
 type Repo struct {
 	Pool *pgxpool.Pool
@@ -661,12 +665,12 @@ func putReportDraft(ctx context.Context, ex queryExecer, d domain.ReportDraft) e
 	// or full phone/email values. Raw evidence stays local; report text must use
 	// placeholders.
 	for key, value := range d.Fields {
-		if findings := redact.Scan(value); len(findings) > 0 {
+		if findings := redact.ScanReport(value); len(findings) > 0 {
 			return fmt.Errorf("postgres: report draft field %s contains sensitive value (%s)", key, findings[0].Kind)
 		}
 	}
 	for key, value := range d.AIDisclosure {
-		if findings := redact.Scan(value); len(findings) > 0 {
+		if findings := redact.ScanReport(value); len(findings) > 0 {
 			return fmt.Errorf("postgres: report draft disclosure %s contains sensitive value (%s)", key, findings[0].Kind)
 		}
 	}
@@ -741,6 +745,9 @@ func (r *Repo) RecordSubmission(ctx context.Context, s domain.Submission, d doma
 	if err := putReportDraft(ctx, tx, d); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM submission_intents WHERE report_id=$1`, s.ReportID); err != nil {
+		return fmt.Errorf("postgres: release submission intent: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("postgres: commit submission: %w", err)
 	}
@@ -748,14 +755,19 @@ func (r *Repo) RecordSubmission(ctx context.Context, s domain.Submission, d doma
 }
 
 func (r *Repo) PutLedgerEntry(ctx context.Context, e domain.LedgerEntry) error {
+	_, err := putLedgerEntry(ctx, r.Pool, e)
+	return err
+}
+
+func putLedgerEntry(ctx context.Context, ex queryExecer, e domain.LedgerEntry) (bool, error) {
 	if err := e.Validate(); err != nil {
-		return err
+		return false, err
 	}
 	data, err := mustJSON(e)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = r.Pool.Exec(ctx, `
+	tag, err := ex.Exec(ctx, `
 		INSERT INTO ledger_entries
 			(id, platform, program_id, finding_id, submission_id, kind, amount_cents,
 			 currency, status, occurred_at, external_ref, reverses_id, notes, data)
@@ -764,7 +776,90 @@ func (r *Repo) PutLedgerEntry(ctx context.Context, e domain.LedgerEntry) error {
 		e.ID, e.Platform, e.ProgramID, e.FindingID, e.SubmissionID, e.Kind,
 		e.Amount.Amount, e.Amount.Currency, e.Status, e.OccurredAt,
 		e.ExternalRef, e.ReversesID, e.Notes, data)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RecordLedgerEntryWithAudit writes the entry and its audit event in one
+// transaction. Reversals take an advisory lock on the target and re-check the
+// remaining amount under that lock, so concurrent appends cannot over-reverse.
+func (r *Repo) RecordLedgerEntryWithAudit(ctx context.Context, e domain.LedgerEntry, ev audit.Event) error {
+	if err := e.Validate(); err != nil {
+		return err
+	}
+	if err := ev.Validate(); err != nil {
+		return err
+	}
+	data, err := mustJSON(e)
+	if err != nil {
+		return err
+	}
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: begin ledger entry: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if e.Kind == domain.LedgerReversal {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, e.ReversesID); err != nil {
+			return fmt.Errorf("postgres: lock reversal target: %w", err)
+		}
+		var targetAmount int64
+		var targetKind domain.LedgerKind
+		var targetPlatform domain.Platform
+		var targetProgram domain.ProgramID
+		err := tx.QueryRow(ctx, `
+			SELECT amount_cents, kind, platform, program_id
+			FROM ledger_entries WHERE id=$1`, e.ReversesID,
+		).Scan(&targetAmount, &targetKind, &targetPlatform, &targetProgram)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: reversal target %s", domain.ErrNotFound, e.ReversesID)
+		}
+		if err != nil {
+			return fmt.Errorf("postgres: load reversal target: %w", err)
+		}
+		if targetKind != domain.LedgerPaid && targetKind != domain.LedgerRefund {
+			return fmt.Errorf("postgres: reversal target %s is %s", e.ReversesID, targetKind)
+		}
+		if targetPlatform != e.Platform || targetProgram != e.ProgramID {
+			return fmt.Errorf("postgres: reversal target entity mismatch")
+		}
+		var already int64
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(amount_cents),0) FROM ledger_entries
+			WHERE kind=$1 AND reverses_id=$2`, domain.LedgerReversal, e.ReversesID,
+		).Scan(&already); err != nil {
+			return fmt.Errorf("postgres: sum reversals: %w", err)
+		}
+		if already+e.Amount.Amount > targetAmount {
+			return fmt.Errorf("postgres: reversals exceed target %s", e.ReversesID)
+		}
+	}
+
+	inserted, err := putLedgerEntry(ctx, tx, e)
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		var existing []byte
+		if err := tx.QueryRow(ctx, `SELECT data FROM ledger_entries WHERE id=$1`, e.ID).Scan(&existing); err != nil {
+			return fmt.Errorf("postgres: read existing ledger entry: %w", err)
+		}
+		if !bytes.Equal(existing, []byte(data)) {
+			return fmt.Errorf("postgres: ledger entry %s exists with different content", e.ID)
+		}
+		// The original transaction already wrote the audit event.
+		return tx.Commit(ctx)
+	}
+	if _, err := appendAudit(ctx, tx, ev); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: commit ledger entry: %w", err)
+	}
+	return nil
 }
 
 func (r *Repo) GetLedgerEntry(ctx context.Context, id string) (domain.LedgerEntry, error) {

@@ -153,13 +153,32 @@ func (s *Service) Append(ctx context.Context, e domain.LedgerEntry) (domain.Ledg
 		}
 		return e, fmt.Errorf("%w: %s exists with different content", ErrConflict, e.ID)
 	}
+	ev, err := s.auditEvent(e, now)
+	if err != nil {
+		return e, err
+	}
+	if rec, ok := s.store.(auditRecorder); ok {
+		if err := rec.RecordLedgerEntryWithAudit(ctx, e, ev); err != nil {
+			return e, err
+		}
+		return e, nil
+	}
 	if err := s.store.PutLedgerEntry(ctx, e); err != nil {
 		return e, err
 	}
-	if err := s.appendAudit(ctx, e, now); err != nil {
-		return e, err
+	if s.auditor != nil {
+		if _, err := s.auditor.Append(ctx, ev); err != nil {
+			return e, fmt.Errorf("ledger: audit: %w", err)
+		}
 	}
 	return e, nil
+}
+
+// auditRecorder is implemented by stores that can write the entry and its
+// audit event atomically (PostgreSQL). The in-memory fake falls back to
+// PutLedgerEntry + Auditor.
+type auditRecorder interface {
+	RecordLedgerEntryWithAudit(ctx context.Context, e domain.LedgerEntry, ev audit.Event) error
 }
 
 func (s *Service) checkSubmission(ctx context.Context, e domain.LedgerEntry) error {
@@ -202,6 +221,11 @@ func (s *Service) checkReversal(ctx context.Context, e domain.LedgerEntry) error
 	}
 	var already int64
 	for _, x := range entries {
+		// Re-validating the identical entry (idempotent retry) must not count
+		// its already-stored copy against the target.
+		if x.ID == e.ID {
+			continue
+		}
 		if x.Kind == domain.LedgerReversal && x.ReversesID == e.ReversesID {
 			already += x.Amount.Amount
 		}
@@ -212,10 +236,7 @@ func (s *Service) checkReversal(ctx context.Context, e domain.LedgerEntry) error
 	return nil
 }
 
-func (s *Service) appendAudit(ctx context.Context, e domain.LedgerEntry, now time.Time) error {
-	if s.auditor == nil {
-		return nil
-	}
+func (s *Service) auditEvent(e domain.LedgerEntry, now time.Time) (audit.Event, error) {
 	payload, err := json.Marshal(struct {
 		Kind       string `json:"kind"`
 		Amount     int64  `json:"amount_cents"`
@@ -232,21 +253,47 @@ func (s *Service) appendAudit(ctx context.Context, e domain.LedgerEntry, now tim
 		HasExtRef: strings.TrimSpace(e.ExternalRef) != "",
 	})
 	if err != nil {
-		return err
+		return audit.Event{}, err
 	}
-	if _, err := s.auditor.Append(ctx, audit.Event{
+	return audit.Event{
 		Type: "ledger.entry.recorded", EntityType: "ledger", EntityID: e.ID,
 		ActorKind: string(domain.ActorHuman), ActorID: "ledger",
 		Payload: payload, RecordedAt: now,
-	}); err != nil {
-		return fmt.Errorf("ledger: audit: %w", err)
-	}
-	return nil
+	}, nil
 }
 
 func entryID(e domain.LedgerEntry) string {
-	return fmt.Sprintf("ledger/%s/%s/%s/%s",
-		e.Platform, e.ProgramID, e.Kind, e.OccurredAt.UTC().Format("20060102T150405.000000000"))
+	// Include a content discriminator: a platform statement can list multiple
+	// entries for the same program/kind at the same date-only timestamp.
+	key := e.ExternalRef
+	if key == "" {
+		key = fmt.Sprintf("%d|%s|%s|%s|%s|%s",
+			e.Amount.Amount, e.Status, e.ReversesID,
+			submissionIDString(e.SubmissionID), findingIDString(e.FindingID),
+			strings.Join(evidenceStrings(e.Evidence), ","))
+	}
+	digest := domain.ParametersHash([]byte(key))
+	if len(digest) > 12 {
+		digest = digest[:12]
+	}
+	return fmt.Sprintf("ledger/%s/%s/%s/%s/%s",
+		e.Platform, e.ProgramID, e.Kind,
+		e.OccurredAt.UTC().Format("20060102T150405.000000000"), digest)
+}
+
+func findingIDString(id *domain.FindingID) string {
+	if id == nil {
+		return ""
+	}
+	return string(*id)
+}
+
+func evidenceStrings(ids []domain.EvidenceID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, string(id))
+	}
+	return out
 }
 
 func submissionIDString(id *domain.SubmissionID) string {
@@ -271,6 +318,7 @@ func sameEntry(a, b domain.LedgerEntry) bool {
 type Summary struct {
 	Platform      domain.Platform
 	ProgramID     domain.ProgramID
+	Programs      int
 	Currency      string
 	Entries       int
 	Submissions   int
@@ -318,13 +366,58 @@ func (s *Service) Summary(ctx context.Context, platform domain.Platform, program
 		}
 		targets[target.ID] = target
 	}
-	out, err := summarize(entries, targets)
-	if err != nil {
-		return Summary{}, err
+	if programID != "" {
+		out, err := summarize(entries, targets)
+		if err != nil {
+			return Summary{}, err
+		}
+		if out.Platform == "" {
+			out.Platform = platform
+			out.ProgramID = programID
+		}
+		return out, nil
 	}
-	if out.Platform == "" {
-		out.Platform = platform
-		out.ProgramID = programID
+
+	// Platform-wide summary: aggregate per program, because a single
+	// program-scoped summary must not reject entries from other programs.
+	groups := make(map[domain.ProgramID][]domain.LedgerEntry)
+	for _, e := range entries {
+		groups[e.ProgramID] = append(groups[e.ProgramID], e)
+	}
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, string(k))
+	}
+	sort.Strings(keys)
+	out := Summary{
+		Platform: platform, Currency: "CNY", Programs: len(keys),
+		Expected: cny(0), Submitted: cny(0), GrossAccepted: cny(0),
+		Fees: cny(0), Taxes: cny(0), Refunds: cny(0),
+		PaidNet: cny(0), NetCash: cny(0), AvgAccepted: cny(0), AvgPaid: cny(0),
+	}
+	for _, key := range keys {
+		s, err := summarize(groups[domain.ProgramID(key)], targets)
+		if err != nil {
+			return Summary{}, err
+		}
+		out.Entries += s.Entries
+		out.Submissions += s.Submissions
+		out.Accepted += s.Accepted
+		out.PaidCount += s.PaidCount
+		out.Expected.Amount += s.Expected.Amount
+		out.Submitted.Amount += s.Submitted.Amount
+		out.GrossAccepted.Amount += s.GrossAccepted.Amount
+		out.Fees.Amount += s.Fees.Amount
+		out.Taxes.Amount += s.Taxes.Amount
+		out.Refunds.Amount += s.Refunds.Amount
+		out.PaidNet.Amount += s.PaidNet.Amount
+		out.NetCash.Amount += s.NetCash.Amount
+	}
+	if out.Accepted > 0 {
+		out.AvgAccepted.Amount = out.GrossAccepted.Amount / int64(out.Accepted)
+	}
+	if out.PaidCount > 0 {
+		out.AvgPaid.Amount = out.PaidNet.Amount / int64(out.PaidCount)
 	}
 	return out, nil
 }

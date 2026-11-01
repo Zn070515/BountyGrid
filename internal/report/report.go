@@ -45,7 +45,9 @@ type Fields struct {
 	Activity   string `json:"activity,omitempty"`
 	Industry   string `json:"industry,omitempty"`
 	Region     string `json:"region,omitempty"`
-	Contact    string `json:"contact,omitempty"`
+	// Contact is a reference (e.g. "platform account"), not a raw phone/email:
+	// the database must not store full contact values.
+	Contact string `json:"contact,omitempty"`
 }
 
 type AIUse struct {
@@ -178,7 +180,8 @@ func ContentHash(d domain.ReportDraft) (string, error) {
 // structured fields so the same completeness rules apply.
 func Recheck(draft domain.ReportDraft, finding domain.Finding, program domain.Program, verification domain.Verification) (Result, error) {
 	if draft.FindingID != finding.ID || draft.ProgramID != program.ID ||
-		draft.VerificationID != verification.ID {
+		draft.VerificationID != verification.ID ||
+		finding.ProgramID != program.ID || verification.FindingID != finding.ID {
 		return Result{}, fmt.Errorf("%w: stored draft entity mismatch", ErrInvalidInput)
 	}
 	if err := draft.Validate(); err != nil {
@@ -297,11 +300,11 @@ func missingFields(platform domain.Platform, fields, disclosure map[string]strin
 // must not store secrets, and a report should use placeholders instead.
 func checkSensitive(fields, disclosure map[string]string) error {
 	for key, value := range fields {
-		if findings := redact.Scan(value); len(findings) > 0 {
+		if findings := redact.ScanReport(value); len(findings) > 0 {
 			return fmt.Errorf("%w: %s (%s)", ErrSensitive, key, findings[0].Kind)
 		}
 	}
-	if findings := redact.Scan(disclosure["human_verification"]); len(findings) > 0 {
+	if findings := redact.ScanReport(disclosure["human_verification"]); len(findings) > 0 {
 		return fmt.Errorf("%w: human_verification (%s)", ErrSensitive, findings[0].Kind)
 	}
 	return nil

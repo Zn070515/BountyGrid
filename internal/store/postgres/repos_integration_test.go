@@ -42,6 +42,8 @@ func TestRepoRoundTrip(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM consumed_approvals WHERE approval_id LIKE 'it-approval-%'`)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM audit_events WHERE entity_id=$1`, string(progID))
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM audit_events WHERE entity_type='ledger' AND entity_id LIKE 'it-ledger-%'`)
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM submission_intents WHERE report_id LIKE 'it-report-%'`)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM ledger_entries WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM submissions WHERE program_id=$1`, progID)
 		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM report_drafts WHERE program_id=$1`, progID)
@@ -469,8 +471,53 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err := r.PutLedgerEntry(ctx, dupEntry); err == nil {
 		t.Fatal("duplicate external_ref must be rejected")
 	}
-
+	// The entry and its audit event are written atomically.
+	auditEntry := entry
+	auditEntry.ID = entry.ID + "-audit"
+	auditEntry.ExternalRef = "it-bank-audit-" + suffix
+	auditEvent := audit.Event{
+		Type: "ledger.entry.recorded", EntityType: "ledger", EntityID: auditEntry.ID,
+		ActorKind: "HUMAN", ActorID: "it", RecordedAt: now,
+		Payload: json.RawMessage(`{"kind":"PAID"}`),
+	}
+	if err := r.RecordLedgerEntryWithAudit(ctx, auditEntry, auditEvent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.GetLedgerEntry(ctx, auditEntry.ID); err != nil {
+		t.Fatal(err)
+	}
 	auditStore := NewAuditStore(r.Pool)
+	if events, err := auditStore.List(ctx, audit.Filter{EntityID: auditEntry.ID}); err != nil || len(events) != 1 {
+		t.Fatalf("ledger audit = %+v %v", events, err)
+	}
+	// Reversals cannot exceed the target, even through the transactional path.
+	target := entry
+	target.ID = entry.ID + "-target"
+	target.ExternalRef = "it-bank-target-" + suffix
+	if err := r.PutLedgerEntry(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	rev := target
+	rev.ID = entry.ID + "-rev1"
+	rev.Kind = domain.LedgerReversal
+	rev.ReversesID = target.ID
+	rev.ExternalRef = "it-bank-rev1-" + suffix
+	rev.Amount.Amount = 60
+	if err := r.RecordLedgerEntryWithAudit(ctx, rev, audit.Event{
+		Type: "ledger.entry.recorded", EntityType: "ledger", EntityID: rev.ID, RecordedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rev2 := rev
+	rev2.ID = entry.ID + "-rev2"
+	rev2.ExternalRef = "it-bank-rev2-" + suffix
+	if err := r.RecordLedgerEntryWithAudit(ctx, rev2, audit.Event{
+		Type: "ledger.entry.recorded", EntityType: "ledger", EntityID: rev2.ID, RecordedAt: now,
+	}); err == nil {
+		t.Fatal("over-reversal must be rejected")
+	}
+
+	auditStore = NewAuditStore(r.Pool)
 	if _, err := auditStore.Append(ctx, audit.Event{
 		Type: "program.observed", EntityType: "program", EntityID: string(progID),
 		ActorKind: "ADAPTER", ActorID: "it", RecordedAt: now,

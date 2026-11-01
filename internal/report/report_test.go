@@ -231,6 +231,34 @@ func TestSensitiveReportTextIsRejected(t *testing.T) {
 	}
 }
 
+func TestSensitiveReportAllowsLongTimestamp(t *testing.T) {
+	in := validInput()
+	in.Fields.PoC = `{"timestamp": 1700000000000000000}`
+	if _, err := Build(in); err != nil {
+		t.Fatalf("long timestamp should not be mistaken for a bank card: %v", err)
+	}
+}
+
+func TestSensitiveReportRejectsCardContext(t *testing.T) {
+	in := validInput()
+	in.Fields.PoC = "bank card 6222020202020202"
+	if _, err := Build(in); !errors.Is(err, ErrSensitive) {
+		t.Fatalf("err = %v, want ErrSensitive", err)
+	}
+}
+
+func TestRecheckRejectsCrossLink(t *testing.T) {
+	built, err := Build(validInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verification := reportVerification()
+	verification.FindingID = "other-finding"
+	if _, err := Recheck(built.Draft, reportFinding(), reportProgram(domain.PlatformVulbox, domain.TypeEnterpriseSRC), verification); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
 func TestRecheckDoesNotFillDefaults(t *testing.T) {
 	built, err := Build(validInput())
 	if err != nil {
