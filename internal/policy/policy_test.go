@@ -56,7 +56,8 @@ func testProgram(status domain.ProgramStatus, visibility domain.ScopeVisibility)
 			ContentsKnown: visibility == domain.ScopePublic,
 			ObservedAt:    testNow,
 		},
-		ObservedAt: testNow,
+		ObservedAt:       testNow,
+		PolicyObservedAt: testNow,
 		Automation: domain.AutomationPolicy{
 			AIAnalysis: domain.CapUnknown, AutonomousAgent: domain.CapUnknown,
 			ActiveHTTP: domain.CapUnknown, BrowserAutomation: domain.CapUnknown,
@@ -932,7 +933,7 @@ func TestStaleAuthorizationInputsFailClosed(t *testing.T) {
 		mutate func(*DecisionContext)
 		reason string
 	}{
-		{"policy", func(dc *DecisionContext) { dc.Program.ObservedAt = testNow.Add(-domain.PolicyMaxAge - time.Hour) }, "STALE_AUTOMATION_POLICY"},
+		{"policy", func(dc *DecisionContext) { dc.Program.PolicyObservedAt = testNow.Add(-domain.PolicyMaxAge - time.Hour) }, "STALE_AUTOMATION_POLICY"},
 		{"scope", func(dc *DecisionContext) { dc.Program.Scope.ObservedAt = testNow.Add(-domain.ScopeMaxAge - time.Hour) }, "STALE_SCOPE"},
 		{"account", func(dc *DecisionContext) {
 			dc.Account.ObservedAt = testNow.Add(-domain.AccountCapabilityMaxAge - time.Hour)

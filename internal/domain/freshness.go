@@ -104,14 +104,37 @@ func (a Account) capabilityObservedAt() time.Time {
 }
 
 // PolicyFreshAt reports whether the program's automation/constraints snapshot
-// is recent enough to authorize execution now.
+// is recent enough to authorize execution now. A zero PolicyObservedAt is
+// unknown (the policy may never have been read), not "fresh because the
+// program row was synced".
 func (p Program) PolicyFreshAt(now time.Time) bool {
-	return freshAt(p.ObservedAt, time.Time{}, PolicyMaxAge, now)
+	return freshAt(p.PolicyObservedAt, p.PolicyValidUntil, PolicyMaxAge, now)
 }
 
 // PolicyFreshUntil is the absolute deadline for the automation/constraints
 // snapshot.
-func (p Program) PolicyFreshUntil() time.Time { return p.ObservedAt.Add(PolicyMaxAge) }
+func (p Program) PolicyFreshUntil() time.Time {
+	deadline := p.PolicyObservedAt.Add(PolicyMaxAge)
+	if !p.PolicyValidUntil.IsZero() && p.PolicyValidUntil.Before(deadline) {
+		deadline = p.PolicyValidUntil
+	}
+	return deadline
+}
+
+// PolicyRevision is a deterministic digest of the automation and constraint
+// snapshot. It is recorded with decisions so an approval can be tied to the
+// exact policy it was evaluated against.
+func (p Program) PolicyRevision() string {
+	raw, err := json.Marshal(struct {
+		Automation  AutomationPolicy `json:"automation"`
+		Constraints Constraints      `json:"constraints"`
+	}{Automation: p.Automation, Constraints: p.Constraints})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
 
 // StatusFreshAt reports whether the program status may authorize execution now.
 // An explicit ValidUntil is authoritative; otherwise the status is bounded by

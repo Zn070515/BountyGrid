@@ -328,6 +328,8 @@ func executeSync(ctx context.Context, reader adapter.Reader, opts syncOptions, w
 			prog := snap.Program
 			prog.Automation = policy.Automation
 			prog.Constraints = policy.Constraints
+			prog.PolicyObservedAt = policy.ObservedAt
+			prog.PolicyValidUntil = policy.ObservedAt.Add(domain.PolicyMaxAge)
 			evs, err := uniqueEvidence(append(append([]domain.Evidence{}, snap.Evidence...), policy.Evidence...))
 			if err != nil {
 				return err

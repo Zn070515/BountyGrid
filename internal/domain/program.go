@@ -156,5 +156,10 @@ type Program struct {
 	Submission  SubmissionPolicy
 	Evidence    []EvidenceID
 	ObservedAt  time.Time
-	NextCheckAt time.Time
+	// PolicyObservedAt/PolicyValidUntil timestamp the Automation+Constraints
+	// snapshot specifically. A list sync that refreshes Program.ObservedAt must
+	// not make an older automation policy look fresh.
+	PolicyObservedAt time.Time
+	PolicyValidUntil time.Time
+	NextCheckAt      time.Time
 }

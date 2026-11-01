@@ -125,7 +125,7 @@ bash probes/butian/grow-dates.sh
 
 ### Execution-trust hardening（2026-11-01）
 
-- **输入新鲜度独立检查**：执行/提交动作分别要求 `Program.Status`、`Scope`、`Program`（automation/constraints）与 `AccountCapability` 在各自窗口内；任一 stale → `REQUIRE_MORE_EVIDENCE`（`STALE_PROGRAM_STATE` / `STALE_SCOPE` / `STALE_AUTOMATION_POLICY` / `STALE_ACCOUNT_CAPABILITY`）。
+- **输入新鲜度独立检查**：执行/提交动作分别要求 `Program.Status`、`Scope`、`Program.PolicyObservedAt`（automation/constraints 快照）与 `AccountCapability` 在各自窗口内；任一 stale → `REQUIRE_MORE_EVIDENCE`（`STALE_PROGRAM_STATE` / `STALE_SCOPE` / `STALE_AUTOMATION_POLICY` / `STALE_ACCOUNT_CAPABILITY`）。决策记录 `ScopeRevision` 与 `PolicyRevision`。
 - **逐请求 Egress 授权**：网络工具拿到的是绑定 `ExecutionGrant`（approved method、canonical asset host/path、RPS、并发、日限额）的 `Egress`；每次请求与重定向都重新校验，不能被一次 ALLOW 放大成任意请求。
 - **SSRF / DNS rebinding**：连接前解析 DNS，拒绝 loopback/private/link-local/ULA/multicast/unspecified 并固定到校验后的 IP；默认不使用环境代理，只有显式 `ApprovedProxy` 才启用。
 - **执行回执 ≠ ALLOW**：Finding 记录 `source_decision_ids` / `execution_receipts`；`VERIFIED` 必须有 `COMPLETED` 回执，且 program/asset/action/decision/evidence 与 Finding 匹配。网络/破坏性工具报错默认 `AMBIGUOUS`（人工对账），只有工具证明 `ErrNotSent` 才能自动重试。
