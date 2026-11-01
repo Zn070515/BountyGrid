@@ -174,6 +174,7 @@ go run ./cmd/bountygrid ledger -summary -platform vulbox
 | [`architecture/implementation-order.md`](architecture/implementation-order.md) | 依赖顺序实现计划（非 MVP 切分） |
 | [`CLAUDE.md`](CLAUDE.md) | 编码代理的运行约定与仓库红线 |
 | [`docs/implementation-notes.md`](docs/implementation-notes.md) | 详细实现记录、历史 hardening 与平台观测数据（README 已精简；与 architecture/rules 冲突时以后者为准） |
+| [`docs/research-small-model-harness.md`](docs/research-small-model-harness.md) | 本地小模型 harness 调研：失败分类、工具 ACI、上下文、验证、serving metadata 与评测方案 |
 
 ## 工程原则 · Engineering rules
 
