@@ -1,6 +1,13 @@
-// Package sidecar is a read-only client for the agent-browser CLI. It exposes
-// only the commands a Reader needs (open, wait, eval, get, screenshot, state
-// save, close); it never clicks, fills, or submits.
+// Package sidecar is the browser transport used by the read-only Readers. It
+// exposes open/wait/reload/eval/get/screenshot/state save/close.
+//
+// This is NOT a security boundary. Eval runs arbitrary JavaScript in the
+// authenticated page: Readers use it for read-only UI operations (pagination,
+// dismissing promotional drawers, opening rules modals, observed GET), but the
+// primitive itself can mutate page state. Keep it confined to adapters; never
+// hand a Client to a Harness, Model Router, or other untrusted component. The
+// method names below describe the Reader's intended usage, not an enforced
+// read-only guarantee.
 package sidecar
 
 import (
@@ -126,7 +133,10 @@ func isTimeout(err error) bool {
 	return strings.Contains(s, "timed out") || strings.Contains(s, "timeout")
 }
 
-// Eval runs JavaScript in the current page and returns its trimmed output.
+// Eval runs arbitrary JavaScript in the current authenticated page and returns
+// its trimmed output. It is mutation-capable; adapters must restrict scripts to
+// read-only observations and the specific pagination/modal controls documented
+// in the Reader. No policy or sandbox is applied here.
 func (c *Client) Eval(ctx context.Context, script string) ([]byte, error) {
 	if strings.TrimSpace(script) == "" {
 		return nil, fmt.Errorf("sidecar: eval script is empty")
