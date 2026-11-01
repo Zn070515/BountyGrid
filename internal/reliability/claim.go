@@ -1,12 +1,25 @@
 package reliability
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
+
+// ProofResolver resolves proof IDs against the authoritative store. A
+// Reliability layer must never trust a caller-supplied "COMPLETED"/"VERIFIED"
+// string; the resolver owns the association checks (finding/asset/program).
+type ProofResolver interface {
+	ResolveReceipt(ctx context.Context, id string) (ReceiptProof, error)
+	ResolveVerification(ctx context.Context, id string) (VerificationProof, error)
+}
+
+// ErrProofResolverRequired means a VERIFIED_FACT promotion was attempted
+// without an authoritative proof resolver.
+var ErrProofResolverRequired = fmt.Errorf("%w: VERIFIED_FACT requires an authoritative ProofResolver", ErrVerificationRequired)
 
 // PromotionRequest supplies the additional evidence a level requires. The
 // promoted record always carries the union of the existing and supplied
@@ -16,9 +29,15 @@ type PromotionRequest struct {
 	To ClaimLevel
 	// Evidence is attached to the promoted claim.
 	Evidence []domain.EvidenceID
-	// Receipts and Verification are required for VERIFIED_FACT.
+	// Receipts and Verification are required for VERIFIED_FACT. Their IDs are
+	// resolved through Resolver; the supplied summaries are only hints.
 	Receipts     []ReceiptProof
 	Verification *VerificationProof
+	// Resolver is mandatory for VERIFIED_FACT. It resolves the receipt and
+	// verification IDs against the authoritative store.
+	Resolver ProofResolver
+	// Ctx bounds resolver calls; nil uses context.Background().
+	Ctx context.Context
 	// Now is the promotion timestamp. A zero value keeps the record's
 	// UpdatedAt, and a value earlier than UpdatedAt is clamped forward so
 	// timestamps never move backwards.
@@ -73,6 +92,53 @@ func (f FactRecord) Promote(req PromotionRequest) (FactRecord, error) {
 	}
 	out.Claim.Level = req.To
 
+	if req.To == LevelVerifiedFact {
+		ctx := req.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if req.Resolver == nil {
+			return FactRecord{}, ErrProofResolverRequired
+		}
+		resolvedReceipts := make([]ReceiptProof, 0, len(out.Receipts))
+		for _, hint := range out.Receipts {
+			rec, err := req.Resolver.ResolveReceipt(ctx, hint.ID)
+			if err != nil {
+				return FactRecord{}, fmt.Errorf("%w: resolve receipt %s: %w", ErrReceiptRequired, hint.ID, err)
+			}
+			if rec.ID != hint.ID {
+				return FactRecord{}, fmt.Errorf("%w: resolver returned receipt %s for %s", ErrReceiptRequired, rec.ID, hint.ID)
+			}
+			resolvedReceipts = append(resolvedReceipts, rec)
+		}
+		out.Receipts = resolvedReceipts
+		if len(out.Receipts) == 0 {
+			return FactRecord{}, fmt.Errorf("%w: VERIFIED_FACT requires a receipt", ErrReceiptRequired)
+		}
+		completedReceipt := false
+		for _, r := range out.Receipts {
+			if r.Completed() {
+				completedReceipt = true
+				break
+			}
+		}
+		if !completedReceipt {
+			return FactRecord{}, fmt.Errorf("%w: VERIFIED_FACT requires a COMPLETED receipt", ErrReceiptRequired)
+		}
+		verificationHint := req.Verification
+		if verificationHint == nil {
+			verificationHint = out.Verification
+		}
+		if verificationHint == nil || strings.TrimSpace(verificationHint.ID) == "" {
+			return FactRecord{}, fmt.Errorf("%w: VERIFIED_FACT requires a verification id", ErrVerificationRequired)
+		}
+		verification, err := req.Resolver.ResolveVerification(ctx, verificationHint.ID)
+		if err != nil {
+			return FactRecord{}, fmt.Errorf("%w: resolve verification %s: %w", ErrVerificationRequired, verificationHint.ID, err)
+		}
+		out.Verification = &verification
+	}
+
 	now := utc(req.Now)
 	if now.IsZero() {
 		now = out.UpdatedAt
@@ -111,10 +177,19 @@ func requireVerifiedFact(f FactRecord) error {
 	if !f.Claim.HasEvidence() {
 		return fmt.Errorf("%w: VERIFIED_FACT requires claim evidence", ErrEvidenceRequired)
 	}
+	if strings.TrimSpace(string(f.ProgramID)) == "" || strings.TrimSpace(string(f.FindingID)) == "" {
+		return fmt.Errorf("%w: VERIFIED_FACT requires program_id and finding_id", ErrVerificationRequired)
+	}
 	completed := 0
 	for _, r := range f.Receipts {
 		if strings.TrimSpace(r.ID) == "" {
 			return fmt.Errorf("%w: VERIFIED_FACT has a receipt without an id", ErrReceiptRequired)
+		}
+		if !r.Action.Valid() {
+			return fmt.Errorf("%w: receipt %s has invalid action %q", ErrReceiptRequired, r.ID, r.Action)
+		}
+		if r.ProgramID != f.ProgramID || r.FindingID != f.FindingID || !sameAssetID(r.AssetID, f.AssetID) {
+			return fmt.Errorf("%w: receipt %s is not bound to this program/finding/asset", ErrReceiptRequired, r.ID)
 		}
 		if r.Completed() {
 			completed++
@@ -132,10 +207,37 @@ func requireVerifiedFact(f FactRecord) error {
 	if f.Verification.Verdict != domain.VerdictVerified {
 		return fmt.Errorf("%w: verification verdict is %s", ErrVerificationRequired, f.Verification.Verdict)
 	}
+	if f.Verification.ProgramID != f.ProgramID || f.Verification.FindingID != f.FindingID ||
+		!sameAssetID(f.Verification.AssetID, f.AssetID) {
+		return fmt.Errorf("%w: verification %s is not bound to this program/finding/asset", ErrVerificationRequired, f.Verification.ID)
+	}
 	if len(dedupeEvidence(f.Verification.Evidence)) == 0 {
 		return fmt.Errorf("%w: verification has no evidence", ErrVerificationRequired)
 	}
+	if !intersectsEvidence(f.Claim.Evidence, f.Verification.Evidence) {
+		return fmt.Errorf("%w: verification evidence does not cover the claim", ErrVerificationRequired)
+	}
 	return nil
+}
+
+func sameAssetID(a, b *domain.AssetID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func intersectsEvidence(a, b []domain.EvidenceID) bool {
+	seen := make(map[domain.EvidenceID]struct{}, len(a))
+	for _, id := range a {
+		seen[id] = struct{}{}
+	}
+	for _, id := range b {
+		if _, ok := seen[id]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneFactRecord(f FactRecord) FactRecord {
@@ -144,11 +246,7 @@ func cloneFactRecord(f FactRecord) FactRecord {
 	out.SourceObservationIDs = append([]string(nil), f.SourceObservationIDs...)
 	out.Receipts = make([]ReceiptProof, len(f.Receipts))
 	for i, r := range f.Receipts {
-		out.Receipts[i] = ReceiptProof{
-			ID:       r.ID,
-			Status:   r.Status,
-			Evidence: append([]domain.EvidenceID(nil), r.Evidence...),
-		}
+		out.Receipts[i] = cloneReceipt(r)
 	}
 	if f.Verification != nil {
 		v := cloneVerification(*f.Verification)

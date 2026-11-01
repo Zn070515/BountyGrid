@@ -62,6 +62,10 @@ var (
 	ErrInvalidProposal = errors.New("reliability: invalid action proposal")
 	// ErrLoopConfiguration means a Loop was created without proposer/executor.
 	ErrLoopConfiguration = errors.New("reliability: invalid loop configuration")
+	// ErrInvalidResume means Resume was called on a session that is not
+	// STALLED or PARKED. A RUNNING/COMPLETED/ABORTED session must not be
+	// reopened implicitly.
+	ErrInvalidResume = errors.New("reliability: session cannot be resumed")
 )
 
 // ResearchState is the coarse lifecycle of one research session. A model may
@@ -349,9 +353,13 @@ func (c Claim) HasEvidence() bool {
 // The durable receipt is owned by the harness/store; this type only captures the
 // fields required to decide whether a VERIFIED_FACT is justified.
 type ReceiptProof struct {
-	ID       string
-	Status   domain.ReceiptStatus
-	Evidence []domain.EvidenceID
+	ID        string
+	Status    domain.ReceiptStatus
+	ProgramID domain.ProgramID
+	FindingID domain.FindingID
+	AssetID   *domain.AssetID
+	Action    domain.Action
+	Evidence  []domain.EvidenceID
 }
 
 func (r ReceiptProof) Validate() error {
@@ -373,6 +381,9 @@ func (r ReceiptProof) Completed() bool { return r.Status == domain.ReceiptComple
 type VerificationProof struct {
 	ID         string
 	Verdict    domain.VerificationVerdict
+	ProgramID  domain.ProgramID
+	FindingID  domain.FindingID
+	AssetID    *domain.AssetID
 	Evidence   []domain.EvidenceID
 	VerifiedAt time.Time
 }
@@ -398,6 +409,9 @@ func (v VerificationProof) Validate() error {
 type FactRecord struct {
 	ID                   string
 	Claim                Claim
+	ProgramID            domain.ProgramID
+	FindingID            domain.FindingID
+	AssetID              *domain.AssetID
 	SourceObservationIDs []string
 	Receipts             []ReceiptProof
 	Verification         *VerificationProof
@@ -899,6 +913,24 @@ func (s *ResearchSession) AddCandidateFinding(c CandidateFinding) error {
 	s.CandidateFindings = append(s.CandidateFindings, c)
 	s.touch(c.CreatedAt)
 	return nil
+}
+
+// Resume reopens a STALLED or PARKED session for another loop run. Budget,
+// attempts, observations and failed-hypothesis history are preserved, so the
+// next run starts from what was already learned instead of repeating it. Only
+// the deterministic layer may resume a session; a model proposal cannot.
+func (s *ResearchSession) Resume(at time.Time) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrInvalidClaim)
+	}
+	switch s.State {
+	case StateStalled, StateParked:
+	default:
+		return fmt.Errorf("%w: state is %s", ErrInvalidResume, s.State)
+	}
+	s.State = StateRunning
+	s.touch(at)
+	return s.Validate()
 }
 
 func (s *ResearchSession) touch(at time.Time) {

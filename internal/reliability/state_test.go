@@ -1,7 +1,9 @@
 package reliability
 
 import (
+	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -97,54 +99,89 @@ func TestHypothesisWithoutEvidenceCannotBecomeClaim(t *testing.T) {
 	}
 }
 
-func TestVerifiedFactRequiresReceiptAndVerification(t *testing.T) {
-	base := mustFact(t, "fact-c", LevelClaim, []domain.EvidenceID{"ev-1"})
+type fakeProofResolver struct {
+	receipts      map[string]ReceiptProof
+	verifications map[string]VerificationProof
+}
 
-	if _, err := base.Promote(PromotionRequest{To: LevelVerifiedFact}); !errors.Is(err, ErrReceiptRequired) {
-		t.Fatalf("no receipt: want ErrReceiptRequired, got %v", err)
+func (f fakeProofResolver) ResolveReceipt(_ context.Context, id string) (ReceiptProof, error) {
+	r, ok := f.receipts[id]
+	if !ok {
+		return ReceiptProof{}, ErrNotFound
+	}
+	return r, nil
+}
+
+func (f fakeProofResolver) ResolveVerification(_ context.Context, id string) (VerificationProof, error) {
+	v, ok := f.verifications[id]
+	if !ok {
+		return VerificationProof{}, ErrNotFound
+	}
+	return v, nil
+}
+
+func verifiedFactBase(t *testing.T) FactRecord {
+	t.Helper()
+	asset := domain.AssetID("a1")
+	base := mustFact(t, "fact-c", LevelClaim, []domain.EvidenceID{"ev-1"})
+	base.ProgramID = "p1"
+	base.FindingID = "f1"
+	base.AssetID = &asset
+	return base
+}
+
+func TestVerifiedFactRequiresAuthoritativeProofs(t *testing.T) {
+	base := verifiedFactBase(t)
+	asset := domain.AssetID("a1")
+	completed := ReceiptProof{
+		ID: "rcpt-2", Status: domain.ReceiptCompleted, ProgramID: "p1", FindingID: "f1",
+		AssetID: &asset, Action: domain.ActionActiveHTTP, Evidence: []domain.EvidenceID{"ev-1"},
+	}
+	failed := ReceiptProof{
+		ID: "rcpt-1", Status: domain.ReceiptFailed, ProgramID: "p1", FindingID: "f1",
+		AssetID: &asset, Action: domain.ActionActiveHTTP, Evidence: []domain.EvidenceID{"ev-1"},
+	}
+	notVerified := VerificationProof{
+		ID: "ver-1", Verdict: domain.VerdictNeedsEvidence, ProgramID: "p1", FindingID: "f1",
+		AssetID: &asset, Evidence: []domain.EvidenceID{"ev-1"}, VerifiedAt: testNow,
+	}
+	verified := VerificationProof{
+		ID: "ver-2", Verdict: domain.VerdictVerified, ProgramID: "p1", FindingID: "f1",
+		AssetID: &asset, Evidence: []domain.EvidenceID{"ev-1"}, VerifiedAt: testNow,
+	}
+	resolver := fakeProofResolver{
+		receipts:      map[string]ReceiptProof{"rcpt-2": completed, "rcpt-1": failed},
+		verifications: map[string]VerificationProof{"ver-1": notVerified, "ver-2": verified},
 	}
 
-	failedReceipt := ReceiptProof{ID: "rcpt-1", Status: domain.ReceiptFailed}
+	// A VERIFIED_FACT cannot be produced without an authoritative resolver.
+	if _, err := base.Promote(PromotionRequest{To: LevelVerifiedFact}); !errors.Is(err, ErrProofResolverRequired) {
+		t.Fatalf("no resolver: want ErrProofResolverRequired, got %v", err)
+	}
 	if _, err := base.Promote(PromotionRequest{
-		To:       LevelVerifiedFact,
-		Receipts: []ReceiptProof{failedReceipt},
+		To: LevelVerifiedFact, Resolver: resolver,
+	}); !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("no receipt: want ErrReceiptRequired, got %v", err)
+	}
+	if _, err := base.Promote(PromotionRequest{
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{failed}, Resolver: resolver,
 	}); !errors.Is(err, ErrReceiptRequired) {
 		t.Fatalf("failed receipt: want ErrReceiptRequired, got %v", err)
 	}
-
-	completed := ReceiptProof{ID: "rcpt-2", Status: domain.ReceiptCompleted, Evidence: []domain.EvidenceID{"ev-1"}}
 	if _, err := base.Promote(PromotionRequest{
-		To:       LevelVerifiedFact,
-		Receipts: []ReceiptProof{completed},
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{completed}, Resolver: resolver,
 	}); !errors.Is(err, ErrVerificationRequired) {
 		t.Fatalf("no verification: want ErrVerificationRequired, got %v", err)
 	}
-
-	notVerified := VerificationProof{
-		ID:         "ver-1",
-		Verdict:    domain.VerdictNeedsEvidence,
-		Evidence:   []domain.EvidenceID{"ev-1"},
-		VerifiedAt: testNow,
-	}
 	if _, err := base.Promote(PromotionRequest{
-		To:           LevelVerifiedFact,
-		Receipts:     []ReceiptProof{completed},
-		Verification: &notVerified,
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{completed},
+		Verification: &notVerified, Resolver: resolver,
 	}); !errors.Is(err, ErrVerificationRequired) {
 		t.Fatalf("non-VERIFIED verdict: want ErrVerificationRequired, got %v", err)
 	}
-
-	verified := VerificationProof{
-		ID:         "ver-2",
-		Verdict:    domain.VerdictVerified,
-		Evidence:   []domain.EvidenceID{"ev-1"},
-		VerifiedAt: testNow,
-	}
 	out, err := base.Promote(PromotionRequest{
-		To:           LevelVerifiedFact,
-		Receipts:     []ReceiptProof{completed},
-		Verification: &verified,
-		Now:          testNow.Add(time.Minute),
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{completed},
+		Verification: &verified, Resolver: resolver, Now: testNow.Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("valid verified promotion: %v", err)
@@ -161,13 +198,16 @@ func TestVerifiedFactRequiresReceiptAndVerification(t *testing.T) {
 }
 
 func TestFactRecordCannotBeConstructedAtVerifiedFactWithoutProof(t *testing.T) {
-	_, err := NewFactRecord("fact-bypass", Claim{
-		Level:      LevelVerifiedFact,
-		Statement:  "verified without proof",
-		Evidence:   []domain.EvidenceID{"ev-1"},
-		Confidence: 1,
-	}, testNow)
-	if !errors.Is(err, ErrReceiptRequired) {
+	asset := domain.AssetID("a1")
+	f := FactRecord{
+		ID: "fact-bypass", ProgramID: "p1", FindingID: "f1", AssetID: &asset,
+		Claim: Claim{
+			Level: LevelVerifiedFact, Statement: "verified without proof",
+			Evidence: []domain.EvidenceID{"ev-1"}, Confidence: 1,
+		},
+		CreatedAt: testNow, UpdatedAt: testNow,
+	}
+	if err := f.Validate(); !errors.Is(err, ErrReceiptRequired) {
 		t.Fatalf("want ErrReceiptRequired, got %v", err)
 	}
 }
@@ -317,3 +357,109 @@ func TestDuplicateFactIDIsRejected(t *testing.T) {
 }
 
 func ptrAsset(id domain.AssetID) *domain.AssetID { return &id }
+
+func TestVerifiedFactIgnoresForgedProofSummaries(t *testing.T) {
+	base := verifiedFactBase(t)
+	asset := domain.AssetID("a1")
+	resolver := fakeProofResolver{
+		receipts: map[string]ReceiptProof{
+			"rcpt-1": {ID: "rcpt-1", Status: domain.ReceiptFailed, ProgramID: "p1", FindingID: "f1",
+				AssetID: &asset, Action: domain.ActionActiveHTTP, Evidence: []domain.EvidenceID{"ev-1"}},
+			"rcpt-2": {ID: "rcpt-2", Status: domain.ReceiptCompleted, ProgramID: "p1", FindingID: "f1",
+				AssetID: &asset, Action: domain.ActionActiveHTTP, Evidence: []domain.EvidenceID{"ev-1"}},
+		},
+		verifications: map[string]VerificationProof{
+			"ver-1": {ID: "ver-1", Verdict: domain.VerdictNeedsEvidence, ProgramID: "p1", FindingID: "f1",
+				AssetID: &asset, Evidence: []domain.EvidenceID{"ev-1"}, VerifiedAt: testNow},
+		},
+	}
+	// The caller claims COMPLETED/VERIFIED; the authoritative store disagrees.
+	forgedReceipt := ReceiptProof{ID: "rcpt-1", Status: domain.ReceiptCompleted}
+	if _, err := base.Promote(PromotionRequest{
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{forgedReceipt}, Resolver: resolver,
+	}); !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("forged completed receipt: want ErrReceiptRequired, got %v", err)
+	}
+	forgedVerification := VerificationProof{ID: "ver-1", Verdict: domain.VerdictVerified,
+		Evidence: []domain.EvidenceID{"ev-1"}, VerifiedAt: testNow}
+	if _, err := base.Promote(PromotionRequest{
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{{ID: "rcpt-2", Status: domain.ReceiptCompleted}},
+		Verification: &forgedVerification, Resolver: resolver,
+	}); !errors.Is(err, ErrVerificationRequired) {
+		t.Fatalf("forged verification: want ErrVerificationRequired, got %v", err)
+	}
+}
+
+func TestVerifiedFactRequiresBoundProofs(t *testing.T) {
+	base := verifiedFactBase(t)
+	asset := domain.AssetID("a1")
+	completed := ReceiptProof{ID: "rcpt-1", Status: domain.ReceiptCompleted, ProgramID: "p1",
+		FindingID: "f1", AssetID: &asset, Action: domain.ActionActiveHTTP, Evidence: []domain.EvidenceID{"ev-1"}}
+	verified := VerificationProof{ID: "ver-1", Verdict: domain.VerdictVerified, ProgramID: "p1",
+		FindingID: "f1", AssetID: &asset, Evidence: []domain.EvidenceID{"ev-1"}, VerifiedAt: testNow}
+
+	otherProgram := completed
+	otherProgram.ProgramID = "p2"
+	if _, err := base.Promote(PromotionRequest{
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{otherProgram},
+		Verification: &verified, Resolver: fakeProofResolver{
+			receipts:      map[string]ReceiptProof{"rcpt-1": otherProgram},
+			verifications: map[string]VerificationProof{"ver-1": verified},
+		},
+	}); !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("receipt for another program: want ErrReceiptRequired, got %v", err)
+	}
+
+	otherAsset := verified
+	otherAsset.AssetID = ptrAsset("a2")
+	if _, err := base.Promote(PromotionRequest{
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{completed},
+		Verification: &otherAsset, Resolver: fakeProofResolver{
+			receipts:      map[string]ReceiptProof{"rcpt-1": completed},
+			verifications: map[string]VerificationProof{"ver-1": otherAsset},
+		},
+	}); !errors.Is(err, ErrVerificationRequired) {
+		t.Fatalf("verification for another asset: want ErrVerificationRequired, got %v", err)
+	}
+
+	uncovered := verified
+	uncovered.Evidence = []domain.EvidenceID{"ev-2"}
+	if _, err := base.Promote(PromotionRequest{
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{completed},
+		Verification: &uncovered, Resolver: fakeProofResolver{
+			receipts:      map[string]ReceiptProof{"rcpt-1": completed},
+			verifications: map[string]VerificationProof{"ver-1": uncovered},
+		},
+	}); !errors.Is(err, ErrVerificationRequired) {
+		t.Fatalf("verification evidence disjoint from claim: want ErrVerificationRequired, got %v", err)
+	}
+}
+
+func TestVerifiedFactPropagatesResolverNotFound(t *testing.T) {
+	base := verifiedFactBase(t)
+	resolver := fakeProofResolver{receipts: map[string]ReceiptProof{}}
+	_, err := base.Promote(PromotionRequest{
+		To: LevelVerifiedFact, Receipts: []ReceiptProof{{ID: "missing", Status: domain.ReceiptCompleted}},
+		Resolver: resolver,
+	})
+	if !errors.Is(err, ErrReceiptRequired) || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want both ErrReceiptRequired and ErrNotFound, got %v", err)
+	}
+}
+
+func TestCloneFactRecordPreservesProofBindings(t *testing.T) {
+	asset := domain.AssetID("a1")
+	in := FactRecord{
+		ID: "fact-clone", ProgramID: "p1", FindingID: "f1", AssetID: &asset,
+		Claim: Claim{Level: LevelClaim, Statement: "x", Evidence: []domain.EvidenceID{"ev-1"}, Confidence: 0.8},
+		Receipts: []ReceiptProof{{
+			ID: "rcpt-1", Status: domain.ReceiptCompleted, ProgramID: "p1", FindingID: "f1",
+			AssetID: &asset, Action: domain.ActionActiveHTTP, Evidence: []domain.EvidenceID{"ev-1"},
+		}},
+		CreatedAt: testNow, UpdatedAt: testNow,
+	}
+	out := cloneFactRecord(in)
+	if !reflect.DeepEqual(in.Receipts, out.Receipts) {
+		t.Fatalf("receipts lost fields during clone: %+v", out.Receipts)
+	}
+}
