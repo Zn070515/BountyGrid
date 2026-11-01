@@ -98,44 +98,57 @@ func (r *Repo) UpsertProgram(ctx context.Context, p domain.Program) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Lock the existing row so the authority comparison and the epoch bump are
-	// serialized with any concurrent program update. A new program has no
-	// outstanding grants, so there is nothing to revoke.
-	var oldData []byte
-	err = tx.QueryRow(ctx, `SELECT data FROM programs WHERE id=$1 FOR UPDATE`, p.ID).Scan(&oldData)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-	case err != nil:
-		return fmt.Errorf("postgres: read existing program %s: %w", p.ID, err)
-	default:
-		var old domain.Program
-		if err := json.Unmarshal(oldData, &old); err != nil {
-			return fmt.Errorf("postgres: decode existing program %s: %w", p.ID, err)
-		}
-		if programSupersedesAuthority(old, p) {
-			if _, err := bumpRevocationEpoch(ctx, tx, p.ID); err != nil {
-				return err
-			}
-		}
-	}
-
-	if _, err := tx.Exec(ctx, `
+	// Create the row without touching an existing one. If another transaction
+	// is creating the same program, this blocks on the unique index until it
+	// commits and then reports a conflict; the read-compare-write below
+	// therefore always sees a committed row. A plain SELECT ... FOR UPDATE
+	// cannot lock a row that does not exist yet, which previously let two
+	// concurrent first-time upserts both skip the revocation comparison.
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO programs
 			(id, platform, native_id, name, type, status, status_reason,
 			 status_observed_at, status_valid_until, next_check_at, data, observed_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,now())
-		ON CONFLICT (id) DO UPDATE SET
-			platform=EXCLUDED.platform, native_id=EXCLUDED.native_id,
-			name=EXCLUDED.name, type=EXCLUDED.type, status=EXCLUDED.status,
-			status_reason=EXCLUDED.status_reason,
-			status_observed_at=EXCLUDED.status_observed_at,
-			status_valid_until=EXCLUDED.status_valid_until,
-			next_check_at=EXCLUDED.next_check_at, data=EXCLUDED.data,
-			observed_at=EXCLUDED.observed_at, updated_at=now()`,
+		ON CONFLICT (id) DO NOTHING`,
+		p.ID, p.Platform, p.NativeID, p.Name, p.Type, p.Status.Status, p.Status.Reason,
+		p.Status.ObservedAt, p.Status.ValidUntil, p.NextCheckAt, data, p.ObservedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("postgres: insert program: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		// New program: no grants exist yet, so there is nothing to revoke.
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("postgres: commit program insert: %w", err)
+		}
+		return nil
+	}
+
+	// The row exists. Lock it, compare the previous authority snapshot, bump
+	// the epoch if it was superseded, then apply the new state.
+	var oldData []byte
+	if err := tx.QueryRow(ctx, `SELECT data FROM programs WHERE id=$1 FOR UPDATE`, p.ID).Scan(&oldData); err != nil {
+		return fmt.Errorf("postgres: read existing program %s: %w", p.ID, err)
+	}
+	var old domain.Program
+	if err := json.Unmarshal(oldData, &old); err != nil {
+		return fmt.Errorf("postgres: decode existing program %s: %w", p.ID, err)
+	}
+	if programSupersedesAuthority(old, p) {
+		if _, err := bumpRevocationEpoch(ctx, tx, p.ID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE programs SET
+			platform=$2, native_id=$3, name=$4, type=$5, status=$6,
+			status_reason=$7, status_observed_at=$8, status_valid_until=$9,
+			next_check_at=$10, data=$11::jsonb, observed_at=$12, updated_at=now()
+		WHERE id=$1`,
 		p.ID, p.Platform, p.NativeID, p.Name, p.Type, p.Status.Status, p.Status.Reason,
 		p.Status.ObservedAt, p.Status.ValidUntil, p.NextCheckAt, data, p.ObservedAt,
 	); err != nil {
-		return fmt.Errorf("postgres: upsert program: %w", err)
+		return fmt.Errorf("postgres: update program: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("postgres: commit program upsert: %w", err)

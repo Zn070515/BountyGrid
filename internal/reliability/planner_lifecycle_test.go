@@ -208,6 +208,94 @@ func TestResumeInterruptsStartedAttempt(t *testing.T) {
 	}
 }
 
+func TestSameProposalAcrossRunsGetsDistinctAttempts(t *testing.T) {
+	proposer := &fakeProposer{fn: func(ProposeInput) ([]ActionProposal, error) {
+		return []ActionProposal{testProposal(domain.ActionViewRules, 0.9)}, nil
+	}}
+	executor := &fakeExecutor{fn: func(ActionProposal) (ExecutionResult, error) {
+		return ExecutionResult{Evidence: []domain.EvidenceID{"ev-1"}}, nil
+	}}
+	s := loopSession(t)
+	s.Budget = Budget{MaxSteps: 10, MaxToolCalls: 10, MaxTokens: 100000}
+	newLoop := func() *Loop {
+		loop, err := NewLoop(LoopConfig{
+			Proposer: proposer, Executor: executor, Authorization: loopAuthorization(),
+			MaxSteps: 1, Now: fixedNow,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loop
+	}
+	if _, err := newLoop().Run(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	firstID := s.Attempts[0].ID
+	firstObservation := s.Attempts[0].ObservationID
+	if _, err := newLoop().Run(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(s.Attempts))
+	}
+	if s.Attempts[0].ID == s.Attempts[1].ID {
+		t.Fatalf("attempt id collided across runs: %s", firstID)
+	}
+	if s.Attempts[0].ObservationID != firstObservation {
+		t.Fatalf("second run overwrote the first attempt's observation: %q -> %q",
+			firstObservation, s.Attempts[0].ObservationID)
+	}
+	for i, a := range s.Attempts {
+		if a.Status != AttemptCompleted || a.ObservationID == "" {
+			t.Fatalf("attempt %d = %+v", i, a)
+		}
+	}
+}
+
+func TestAddAttemptRejectsDuplicateID(t *testing.T) {
+	s := loopSession(t)
+	a := Attempt{
+		ID: "attempt-dup", Step: 1, ToolName: "view_rules",
+		Action: domain.ActionViewRules, ArgsHash: "sha256:x",
+		Status: AttemptCompleted, StartedAt: testNow, FinishedAt: testNow,
+	}
+	if err := s.AddAttempt(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddAttempt(a); !errors.Is(err, ErrInvalidClaim) {
+		t.Fatalf("duplicate attempt err = %v, want ErrInvalidClaim", err)
+	}
+}
+
+func TestReplaceAttemptRefusesTerminalAttempt(t *testing.T) {
+	s := loopSession(t)
+	a := Attempt{
+		ID: "attempt-done", Step: 1, ToolName: "view_rules",
+		Action: domain.ActionViewRules, ArgsHash: "sha256:x",
+		Status: AttemptCompleted, StartedAt: testNow, FinishedAt: testNow,
+	}
+	if err := s.AddAttempt(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReplaceAttempt(a); !errors.Is(err, ErrInvalidClaim) {
+		t.Fatalf("replace terminal attempt err = %v, want ErrInvalidClaim", err)
+	}
+}
+
+func TestSessionValidateRejectsDuplicateAttemptIDs(t *testing.T) {
+	s := loopSession(t)
+	a := Attempt{
+		ID: "attempt-dup", Step: 1, ToolName: "view_rules",
+		Action: domain.ActionViewRules, ArgsHash: "sha256:x",
+		Status: AttemptCompleted, StartedAt: testNow, FinishedAt: testNow,
+	}
+	// Bypass AddAttempt to simulate a corrupt/legacy persisted session.
+	s.Attempts = []Attempt{a, a}
+	if err := s.Validate(); !errors.Is(err, ErrInvalidClaim) {
+		t.Fatalf("validate err = %v, want ErrInvalidClaim", err)
+	}
+}
+
 func TestReplaceAttemptCannotRewriteIdentity(t *testing.T) {
 	s := loopSession(t)
 	started := Attempt{

@@ -184,11 +184,16 @@ unreadable epoch is never treated as epoch 0. The CLI wires the durable
 registry into both the harness (grant stamping) and the `ProgramValidator`.
 
 Bumps are triggered automatically by `Repo.UpsertProgram`, in the same
-transaction as the program write and after locking the existing row. The epoch
-is bumped when the platform identity changes, the program leaves `RUNNING`
-(including to `UNKNOWN`), the Scope content revision changes, or the
-automation/constraints policy revision changes. A pure observation refresh with
-identical authority does not bump. For an immediate operator kill switch, run:
+transaction as the program write. The sequence is `INSERT ... ON CONFLICT DO
+NOTHING` → `SELECT ... FOR UPDATE` → authority comparison → epoch bump →
+`UPDATE`: the first statement blocks on the unique index when a concurrent
+transaction is creating the same program, so a first-time insert race cannot
+skip the comparison (a bare `SELECT ... FOR UPDATE` cannot lock a row that does
+not exist yet). The epoch is bumped when the platform identity changes, the
+program leaves `RUNNING` (including to `UNKNOWN`), the Scope content revision
+changes, or the automation/constraints policy revision changes. A pure
+observation refresh with identical authority does not bump. For an immediate
+operator kill switch, run:
 
 ```bash
 bountygrid revoke -program <program-id> -reason "why"

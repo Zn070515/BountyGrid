@@ -428,10 +428,6 @@ func (c *ContextCompiler) factsSection(s *ResearchSession) sectionDraft {
 func (c *ContextCompiler) failuresSection(s *ResearchSession) sectionDraft {
 	var lines []string
 	for _, h := range s.FailedHypotheses {
-		if len(lines) >= c.opts.MaxFailureItems {
-			lines = append(lines, fmt.Sprintf(failureOmittedMarker, len(s.FailedHypotheses)-len(lines)))
-			break
-		}
 		statement, _ := truncateWithMarker(compactText(scrubText(h.Statement)), c.opts.MaxHypothesisChars, contextTruncationMarker)
 		line := fmt.Sprintf("- %s %s: %s", h.ID, h.Status, statement)
 		if strings.TrimSpace(h.Refutation) != "" {
@@ -449,10 +445,6 @@ func (c *ContextCompiler) failuresSection(s *ResearchSession) sectionDraft {
 			continue
 		}
 		seen[key] = struct{}{}
-		if len(lines) >= c.opts.MaxFailureItems {
-			lines = append(lines, fmt.Sprintf(failureOmittedMarker, len(seen)-len(lines)))
-			break
-		}
 		lines = append(lines, fmt.Sprintf("- FAILED tool=%s error=%s args=%s",
 			a.Failure.ToolName, a.Failure.ErrorClass, shortHash(a.Failure.ArgsHash)))
 	}
@@ -460,14 +452,16 @@ func (c *ContextCompiler) failuresSection(s *ResearchSession) sectionDraft {
 		if a.Status != AttemptInterrupted {
 			continue
 		}
-		if len(lines) >= c.opts.MaxFailureItems {
-			lines = append(lines, fmt.Sprintf(failureOmittedMarker, 1))
-			break
-		}
 		// The outcome is unknown: do not let the model treat this as a safe
 		// retry of the same call.
 		lines = append(lines, fmt.Sprintf("- INTERRUPTED tool=%s args=%s outcome_unknown do_not_repeat",
 			a.ToolName, shortHash(a.ArgsHash)))
+	}
+	// Truncate once so the omission marker reports the real count and never
+	// stacks a second marker after the failure-signature section.
+	if limit := c.opts.MaxFailureItems; limit > 0 && len(lines) > limit {
+		omitted := len(lines) - limit
+		lines = append(lines[:limit], fmt.Sprintf(failureOmittedMarker, omitted))
 	}
 	if len(lines) == 0 {
 		lines = []string{"none"}

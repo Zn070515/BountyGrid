@@ -363,6 +363,32 @@ func TestUntrustedContentIsDataMarked(t *testing.T) {
 	}
 }
 
+func TestCompileReportsTheTrueOmittedAttemptCount(t *testing.T) {
+	s := contextSession(t)
+	s.FailedHypotheses = nil
+	s.Attempts = nil
+	for i := 0; i < 4; i++ {
+		s.Attempts = append(s.Attempts, Attempt{
+			ID: "attempt-interrupted-" + string(rune('a'+i)), Step: i + 1,
+			ToolName: "web_fetch", Action: domain.ActionReadScope,
+			ArgsHash: "sha256:crashed-" + string(rune('a'+i)),
+			Status:   AttemptInterrupted, StartedAt: testNow, FinishedAt: testNow,
+		})
+	}
+	compiler := NewContextCompiler(ContextCompilerOptions{MaxFailureItems: 2})
+	ctx, err := compiler.Compile(t.Context(), s, contextAuthorization(), contextEvidence(),
+		ContextBudget{MaxChars: 4000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ctx.Text, "[2 failed approach(es) omitted]") {
+		t.Fatalf("omitted count is wrong:\n%s", ctx.Text)
+	}
+	if got := strings.Count(ctx.Text, "failed approach(es) omitted"); got != 1 {
+		t.Fatalf("omission markers = %d, want exactly 1:\n%s", got, ctx.Text)
+	}
+}
+
 func TestCompileMarksInterruptedAttempts(t *testing.T) {
 	s := contextSession(t)
 	s.Attempts = append(s.Attempts, Attempt{

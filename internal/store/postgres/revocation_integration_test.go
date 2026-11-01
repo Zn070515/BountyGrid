@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -98,5 +99,76 @@ func TestUpsertProgramRevokesOnAuthorityChange(t *testing.T) {
 	}
 	if got := epoch(); got != 3 {
 		t.Fatalf("scope revision epoch = %d, want 3", got)
+	}
+}
+
+// TestFirstUpsertIsSerialized covers the race the row lock cannot: two
+// first-time upserts both seeing ErrNoRows. The uncommitted RUNNING insert is
+// invisible to the competing SELECT, so only the transaction-scoped advisory
+// lock forces it to wait; after the commit it must observe RUNNING and bump
+// the epoch for the PAUSED authority change.
+func TestFirstUpsertIsSerialized(t *testing.T) {
+	r, ctx := integrationRepo(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	id := domain.ProgramID(fmt.Sprintf("it-first-upsert-%d", now.UnixNano()))
+	t.Cleanup(func() {
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM programs WHERE id=$1`, id)
+		_, _ = r.Pool.Exec(context.Background(), `DELETE FROM revocation_epochs WHERE program_id=$1`, id)
+	})
+
+	running := revocationProgram(id)
+	running.ObservedAt, running.Status.ObservedAt = now, now
+	running.Status.ValidUntil = now.Add(time.Hour)
+	paused := running
+	paused.Status.Status = domain.StatusPaused
+	paused.Status.Reason = "paused during first insert"
+
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	data, err := json.Marshal(running)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO programs
+			(id, platform, native_id, name, type, status, status_reason,
+			 status_observed_at, status_valid_until, next_check_at, data, observed_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,now())`,
+		running.ID, running.Platform, running.NativeID, running.Name, running.Type,
+		running.Status.Status, running.Status.Reason, running.Status.ObservedAt,
+		running.Status.ValidUntil, running.NextCheckAt, string(data), running.ObservedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- r.UpsertProgram(context.Background(), paused) }()
+	select {
+	case err := <-done:
+		t.Fatalf("competing upsert finished before the first insert committed: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	epoch, err := r.Epoch(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch != 1 {
+		t.Fatalf("epoch = %d, want 1: the PAUSED update skipped revocation", epoch)
+	}
+	got, err := r.GetProgram(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Status != domain.StatusPaused {
+		t.Fatalf("status = %s, want PAUSED", got.Status.Status)
 	}
 }

@@ -805,6 +805,9 @@ func (s *ResearchSession) Validate() error {
 	if err := checkUniqueObservationIDs(s.RecentObservations); err != nil {
 		return err
 	}
+	if err := checkUniqueAttemptIDs(s.Attempts); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -934,6 +937,9 @@ func (s *ResearchSession) AddAttempt(a Attempt) error {
 	if a.Status == "" {
 		a.Status = AttemptCompleted
 	}
+	if s.hasAttemptID(a.ID) {
+		return fmt.Errorf("%w: duplicate attempt id %s", ErrInvalidClaim, a.ID)
+	}
 	if err := a.Validate(); err != nil {
 		return err
 	}
@@ -961,6 +967,9 @@ func (s *ResearchSession) ReplaceAttempt(a Attempt) error {
 		if cur.ID != a.ID {
 			continue
 		}
+		if cur.Status != AttemptStarted {
+			return fmt.Errorf("%w: attempt %s is %s, not in flight", ErrInvalidClaim, a.ID, cur.Status)
+		}
 		if cur.Step != a.Step || cur.ToolName != a.ToolName || cur.Action != a.Action || cur.ArgsHash != a.ArgsHash {
 			return fmt.Errorf("%w: attempt %s identity cannot change", ErrInvalidClaim, a.ID)
 		}
@@ -975,6 +984,18 @@ func (s *ResearchSession) ReplaceAttempt(a Attempt) error {
 		return nil
 	}
 	return fmt.Errorf("%w: attempt %s not found", ErrInvalidClaim, a.ID)
+}
+
+func (s *ResearchSession) hasAttemptID(id string) bool {
+	if s == nil {
+		return false
+	}
+	for _, a := range s.Attempts {
+		if a.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // HasInterruptedAttempt reports whether a previous run started the same
@@ -1158,6 +1179,17 @@ func checkUniqueObservationIDs(observations []Observation) error {
 			return fmt.Errorf("%w: duplicate observation id %s", ErrInvalidClaim, o.ID)
 		}
 		seen[o.ID] = struct{}{}
+	}
+	return nil
+}
+
+func checkUniqueAttemptIDs(attempts []Attempt) error {
+	seen := make(map[string]struct{}, len(attempts))
+	for _, a := range attempts {
+		if _, ok := seen[a.ID]; ok {
+			return fmt.Errorf("%w: duplicate attempt id %s", ErrInvalidClaim, a.ID)
+		}
+		seen[a.ID] = struct{}{}
 	}
 	return nil
 }
