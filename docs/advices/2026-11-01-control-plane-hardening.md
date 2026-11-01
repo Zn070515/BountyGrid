@@ -48,3 +48,18 @@
 - 不接真实 `ACTIVE_HTTP` / 扫描 / 爆破 / 提交 / 提现工具。
 - Model Router、Verification、Submission、Ledger 仍未进入实现。
 - 外部 Harness 进程的 OS/container 级 egress 隔离未实现；当前强制边界是 Go Harness 的 `Egress` + allowlist，进程内工具仍可绕过 Go API（这是 Go 进程隔离的固有限制，接外部进程时应在网络命名空间层再收口）。
+
+## 复核后补修（2026-11-01）
+
+对上述改动的 high review 发现 10 项，处理如下：
+
+1. **公益SRC derive 变 UNKNOWN**：新增 canonical `program.listed` fact；Butian 公益列表同时发 native `butian.pub.listed` 与 canonical fact（confidence 0.8），`DeriveProgramState` 在无显式状态/日期时由 `listed=true` 派生 RUNNING。显式 PAUSED/ENDED 与已过 end 仍然优先。
+2. **回执竞态伪造成功**：`CreateReceipt` 返回 `ErrReceiptExists` 时按状态处理：`COMPLETED/EXECUTED` 回放、`STARTED` 拒绝、`FAILED` 重新预占，不再对任意状态返回空输出 + ALLOW。
+3. **幂等键跨请求复用**：回执绑定 `ToolName/Action/AccountID/ProgramID/AssetID/ResourceID/ParametersHash`；任一不一致直接拒绝，且发生在 `Evaluate` 之前，不能绕过 Policy。
+4. **审批参数 hash 被 JSONB 改变**：`ActionDecision.RequestParameters` 保存调用方原始参数字节；`Authorize` 还原后才重评估。`validateApproval` 同时接受 raw SHA-256 和 canonical JSON SHA-256。
+5. **Authorize 复用陈旧运行时数据**：`AuthorizeWith` 接受新的 usage/budget/environment；usage/budget 不再从 Decision 回填，缺失即 fail-closed。`ExecutionEnvironment` 超过 5 分钟视为未知。
+6. **Scheduler 与 Policy 的 Eligibility 不一致**：Scheduler 调用 `policy.EvaluateEligibility(account, program, now)`，不再读冻结的 `Program.Eligibility.Decision`。
+7. **`JoinedProgramIDs` 无人填充**：`adapter.ProgramBatch.JoinedProgramIDs` 由 Xianzhi/Vulbox/Butian 列表页的显式报名信号填充；`sync -persist` 合并进 `<platform>/account`，保留已有账号字段。`-account` 同步与列表同步都做 union，账号页不会擦掉列表页观察到的报名 ID。
+8. **文档仍写 Decide 消费审批**：更新 `architecture/policy-engine.md` 伪代码与 README。
+9. **TestAccountRequired 空字段被当成 DENY**：空 `TestAccountID` 表示“未观测”，改为 `REQUIRE_MORE_EVIDENCE TEST_ACCOUNT_UNKNOWN`。
+10. **回执丢失 Evidence**：`ExecutionReceipt.Evidence` 持久化并在 replay 返回。

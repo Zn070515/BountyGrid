@@ -37,6 +37,11 @@ func checkExecutionEnvironment(dc DecisionContext, now time.Time) (domain.Decisi
 	}
 	c := dc.Program.Constraints
 	env := dc.Environment
+	// A stale measurement is not proof. Treat an old environment as absent so
+	// every runtime constraint fails closed instead of riding a cached sample.
+	if env != nil && !environmentFresh(env, now) {
+		env = nil
+	}
 
 	// Time windows are absolute and are checked against the decision time.
 	if len(c.AllowedTimeWindows) > 0 {
@@ -128,10 +133,10 @@ func checkExecutionEnvironment(dc DecisionContext, now time.Time) (domain.Decisi
 		"RESEARCHER_HEADER_UNKNOWN"); d != "" {
 		return d, reason
 	}
+	// There is no "explicitly no test account" field: an empty ID means the
+	// account was not observed, not that the program forbids one.
 	if d, reason := requireTriState(c.TestAccountRequired, "TEST_ACCOUNT",
-		env != nil && env.TestAccountID != "",
-		env != nil && env.TestAccountID == "",
-		"TEST_ACCOUNT_UNKNOWN"); d != "" {
+		env != nil && env.TestAccountID != "", false, "TEST_ACCOUNT_UNKNOWN"); d != "" {
 		return d, reason
 	}
 	if c.TestAccountReportingRequired != nil && *c.TestAccountReportingRequired {
@@ -143,6 +148,17 @@ func checkExecutionEnvironment(dc DecisionContext, now time.Time) (domain.Decisi
 		}
 	}
 	return "", ""
+}
+
+// environmentFresh reports whether a runtime observation is recent enough to
+// satisfy a constraint. A zero ObservedAt is unknown; a small clock skew into
+// the future is tolerated.
+func environmentFresh(env *domain.ExecutionEnvironment, now time.Time) bool {
+	if env == nil || env.ObservedAt.IsZero() {
+		return false
+	}
+	age := now.Sub(env.ObservedAt)
+	return age >= -time.Minute && age <= domain.ExecutionEnvironmentMaxAge
 }
 
 // requireTriState maps a constraint's tri-state to a policy answer:

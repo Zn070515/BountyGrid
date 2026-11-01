@@ -13,6 +13,11 @@ var (
 	ErrReceiptExists = errors.New("execution receipt already exists")
 )
 
+// ExecutionEnvironmentMaxAge bounds how old a runtime observation may be before
+// policy treats it as unknown. Constraints such as VPN/RPS cannot be satisfied
+// by a measurement captured hours earlier.
+const ExecutionEnvironmentMaxAge = 5 * time.Minute
+
 // ExecutionEnvironment is the observed runtime state used by Policy together
 // with Program.Constraints. A nil/zero field means "not observed"; policy must
 // fail closed (REQUIRE_MORE_EVIDENCE) rather than assume the constraint is met.
@@ -60,12 +65,19 @@ type ExecutionReceipt struct {
 	DecisionID     DecisionID
 	ToolName       string
 	Action         Action
+	AccountID      AccountID
 	ProgramID      ProgramID
+	AssetID        *AssetID
+	ResourceID     string
+	// ParametersHash is the canonical hash of the request parameters. A replay
+	// with a different request under the same key must be rejected.
+	ParametersHash string
 	// Actor is retained so a replayed execution can write the same audit
 	// attribution without the original request object.
 	Actor     ActorRef
 	Status    ReceiptStatus
 	Output    string
+	Evidence  []EvidenceID
 	Error     string
 	StartedAt time.Time
 	UpdatedAt time.Time

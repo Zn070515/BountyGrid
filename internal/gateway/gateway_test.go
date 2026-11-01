@@ -371,6 +371,106 @@ func TestEvaluateUsesAtomicDecisionAuditRecorder(t *testing.T) {
 	}
 }
 
+func TestAuthorizeRestoresRawParametersForApproval(t *testing.T) {
+	pretty := []byte("{\n  \"b\": 2,\n  \"a\": 1\n}")
+	compact := []byte(`{"a":1,"b":2}`)
+	sum := sha256.Sum256(pretty)
+	appr := &domain.HumanApproval{
+		ID: "h1", ApprovedBy: "human", ApprovedAt: testNow,
+		RequestID: "r1", Action: domain.ActionReportSubmit, ProgramID: "p1",
+		ResourceID: "report1", ParametersHash: hex.EncodeToString(sum[:]),
+		ExpiresAt: testNow.Add(time.Hour), SingleUse: true,
+	}
+	store := &fakeStore{
+		accounts:  map[domain.AccountID]domain.Account{"acc1": testAccount(true)},
+		programs:  map[domain.ProgramID]domain.Program{"p1": testProgram(domain.StatusRunning)},
+		decisions: map[domain.DecisionID]domain.ActionDecision{},
+	}
+	g := newGateway(store, &fakeAuditor{}, &fakeLedger{})
+	req := testRequest(domain.ActionReportSubmit)
+	req.Parameters = pretty
+	d, err := g.Evaluate(context.Background(), EvaluateInput{
+		Request: req, ResourceID: "report1", HumanApproval: appr, Now: testNow,
+	})
+	if err != nil || d.Decision != domain.DecisionAllow {
+		t.Fatalf("evaluate = %v %v", d.Decision, err)
+	}
+
+	// Simulate a JSONB round-trip: the nested request parameters are compacted,
+	// but RequestParameters preserves the caller's exact bytes.
+	stored := d
+	stored.Request.Parameters = compact
+	store.decisions[d.ID] = stored
+	if err := g.Authorize(context.Background(), d.ID); err != nil {
+		t.Fatalf("authorize after JSONB normalization: %v", err)
+	}
+}
+
+func TestAuthorizeRequiresFreshUsage(t *testing.T) {
+	p := testProgram(domain.StatusRunning)
+	p.Scope.Include = []domain.Asset{{ID: "a1", Value: "a1.example.com", InScope: true}}
+	p.Automation.ActiveHTTP = domain.CapAllowed
+	p.Constraints.PerInterfaceDailyLimits = []domain.DailyLimit{{Interface: "item_api", Amount: 10}}
+	store := &fakeStore{
+		accounts:  map[domain.AccountID]domain.Account{"acc1": testAccount(true)},
+		programs:  map[domain.ProgramID]domain.Program{"p1": p},
+		decisions: map[domain.DecisionID]domain.ActionDecision{},
+	}
+	g := newGateway(store, &fakeAuditor{}, nil)
+	aid := domain.AssetID("a1")
+	req := testRequest(domain.ActionActiveHTTP)
+	req.AssetID = &aid
+	d, err := g.Evaluate(context.Background(), EvaluateInput{
+		Request: req, UsageToday: map[string]int64{"item_api": 1}, Now: testNow,
+	})
+	if err != nil || d.Decision != domain.DecisionAllow {
+		t.Fatalf("evaluate = %v %v", d.Decision, err)
+	}
+	if err := g.Authorize(context.Background(), d.ID); err == nil {
+		t.Fatal("authorize without a fresh usage observation must fail closed")
+	}
+	if err := g.AuthorizeWith(context.Background(), d.ID, AuthorizeInput{
+		UsageToday: map[string]int64{"item_api": 2},
+	}); err != nil {
+		t.Fatalf("authorize with fresh usage: %v", err)
+	}
+}
+
+func TestAuthorizeStaleEnvironmentFailsClosed(t *testing.T) {
+	p := testProgram(domain.StatusRunning)
+	p.Scope.Include = []domain.Asset{{ID: "a1", Value: "a1.example.com", InScope: true}}
+	p.Automation.ActiveHTTP = domain.CapAllowed
+	p.Constraints.VPNRequired = domain.TriYes
+	store := &fakeStore{
+		accounts:  map[domain.AccountID]domain.Account{"acc1": testAccount(true)},
+		programs:  map[domain.ProgramID]domain.Program{"p1": p},
+		decisions: map[domain.DecisionID]domain.ActionDecision{},
+	}
+	g := newGateway(store, &fakeAuditor{}, nil)
+	aid := domain.AssetID("a1")
+	req := testRequest(domain.ActionActiveHTTP)
+	req.AssetID = &aid
+	observed := testNow.Add(-4 * time.Minute)
+	d, err := g.Evaluate(context.Background(), EvaluateInput{
+		Request: req, Now: testNow,
+		Environment: &domain.ExecutionEnvironment{ObservedAt: observed, VPNConnected: domain.TriYes},
+	})
+	if err != nil || d.Decision != domain.DecisionAllow {
+		t.Fatalf("evaluate = %v %v", d.Decision, err)
+	}
+
+	later := testNow.Add(2 * time.Minute)
+	g.SetClock(func() time.Time { return later })
+	if err := g.Authorize(context.Background(), d.ID); err == nil {
+		t.Fatal("a stored environment older than its max age must not authorize")
+	}
+	if err := g.AuthorizeWith(context.Background(), d.ID, AuthorizeInput{
+		Environment: &domain.ExecutionEnvironment{ObservedAt: later, VPNConnected: domain.TriYes},
+	}); err != nil {
+		t.Fatalf("authorize with fresh environment: %v", err)
+	}
+}
+
 func TestAuthorizeRejectsChangedScope(t *testing.T) {
 	p := testProgram(domain.StatusRunning)
 	p.Scope.Include = []domain.Asset{{ID: "a1", Value: "a1.example.com", InScope: true}}

@@ -71,6 +71,18 @@ type EvaluateInput struct {
 	Now           time.Time
 }
 
+// AuthorizeInput carries freshly observed runtime state for the pre-execution
+// revalidation. Usage and budget are deliberately not defaulted from the
+// decision: a stored counter can be stale, and a constraint with no fresh
+// observation must fail closed. Environment may be omitted; the stored one is
+// used only while it is still fresh.
+type AuthorizeInput struct {
+	UsageToday  map[string]int64
+	BudgetSpent *domain.Money
+	Environment *domain.ExecutionEnvironment
+	Now         time.Time
+}
+
 // Evaluate loads the account/program, resolves the requested asset from the
 // program's stored scope, evaluates policy, persists the decision, and appends
 // an audit event. A missing account/program/asset produces a persisted DENY; it
@@ -119,12 +131,26 @@ func (g *Gateway) Evaluate(ctx context.Context, in EvaluateInput) (domain.Action
 	return g.record(ctx, decision, in.Request, now)
 }
 
-// Authorize is the pre-execution check. The decision must still be an
+// Authorize is the pre-execution check without fresh runtime observations. It
+// is safe for decisions whose program has no runtime/usage constraints; a
+// constrained program fails closed until the caller supplies AuthorizeWith.
+func (g *Gateway) Authorize(ctx context.Context, id domain.DecisionID) error {
+	return g.AuthorizeWith(ctx, id, AuthorizeInput{})
+}
+
+// AuthorizeWith is the pre-execution check. The decision must still be an
 // unexpired ALLOW, and the policy is re-run against fresh Account/Program/Scope
 // so a change after the decision cannot ride an old ALLOW. A single-use
 // approval is consumed only here, atomically, after revalidation succeeds.
-func (g *Gateway) Authorize(ctx context.Context, id domain.DecisionID) error {
-	now := g.now().UTC()
+//
+// Usage and budget are taken only from ai. A stored counter is evidence of what
+// was true at decision time, not what is true now. Environment falls back to the
+// stored observation, which Policy treats as unknown once it is too old.
+func (g *Gateway) AuthorizeWith(ctx context.Context, id domain.DecisionID, ai AuthorizeInput) error {
+	now := ai.Now
+	if now.IsZero() {
+		now = g.now().UTC()
+	}
 	d, err := g.store.GetDecision(ctx, id)
 	if err != nil {
 		return fmt.Errorf("gateway: load decision %s: %w", id, err)
@@ -154,18 +180,28 @@ func (g *Gateway) Authorize(ctx context.Context, id domain.DecisionID) error {
 	if err != nil {
 		return fmt.Errorf("gateway: reload program for decision %s: %w", id, err)
 	}
-	asset := resolveAsset(prog, d.Request.AssetID)
+	req := d.Request
+	// Restore the caller's exact parameter bytes: JSONB normalization must not
+	// change the approval's parameters_hash.
+	if d.RequestParameters != "" {
+		req.Parameters = json.RawMessage(d.RequestParameters)
+	}
+	env := ai.Environment
+	if env == nil {
+		env = d.Environment
+	}
+	asset := resolveAsset(prog, req.AssetID)
 	fresh, err := g.engine.Decide(ctx, policy.DecisionContext{
-		Request:       d.Request,
+		Request:       req,
 		Account:       acct,
 		Program:       prog,
 		Asset:         asset,
-		UsageToday:    d.UsageToday,
-		BudgetSpent:   d.BudgetSpent,
+		UsageToday:    ai.UsageToday,
+		BudgetSpent:   ai.BudgetSpent,
 		ResourceID:    d.ResourceID,
 		Now:           now,
 		HumanApproval: d.HumanApproval,
-		Environment:   d.Environment,
+		Environment:   env,
 	})
 	if err != nil {
 		return fmt.Errorf("gateway: re-evaluate decision %s: %w", id, err)

@@ -174,10 +174,14 @@ func publicWelfareProgram(v pubVendor, evID domain.EvidenceID, at time.Time) (do
 	pid := domain.ProgramID("butian/pub/" + v.CompanyID)
 	// The list proves only that the vendor is listed. It does not state a
 	// program status, so RUNNING is a derived state from `listed=true`, not an
-	// ObservedFact pretending the platform said it.
+	// ObservedFact pretending the platform said it. Emit both the platform-
+	// native fact and the canonical predicate the state rule reads.
 	listed := cardFact(evID, pid, "butian.pub.listed", true, "", at)
+	listed.Confidence = 0.8
+	canonicalListed := cardFact(evID, pid, facts.PredProgramListed, true, "", at)
+	canonicalListed.Confidence = 0.8
 	fs := []domain.ObservedFact{
-		listed,
+		listed, canonicalListed,
 		cardFact(evID, pid, facts.PredScopeVisibility, string(domain.ScopeUnknown), "", at),
 		cardFact(evID, pid, "butian.pub.company_id", v.CompanyID, "", at),
 		cardFact(evID, pid, "butian.pub.company_name", v.CompanyName, "", at),
@@ -189,7 +193,8 @@ func publicWelfareProgram(v pubVendor, evID domain.EvidenceID, at time.Time) (do
 		Status: domain.ProgramState{
 			Status: domain.StatusRunning, Reason: "derived_from_public_welfare_listing",
 			ObservedAt: at, ValidUntil: at.Add(30 * time.Minute), Confidence: 0.8,
-			Inputs: []domain.FactID{listed.ID}, Evidence: []domain.EvidenceID{evID},
+			Inputs:   []domain.FactID{listed.ID, canonicalListed.ID},
+			Evidence: []domain.EvidenceID{evID},
 		},
 		Eligibility: domain.EligibilityState{
 			Decision: domain.Eligible, EvaluatedAt: at, PolicyVersion: extractor,

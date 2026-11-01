@@ -41,6 +41,7 @@ type syncOptions struct {
 type snapshotWriter interface {
 	PutEvidence(ctx context.Context, e domain.Evidence) error
 	PutFacts(ctx context.Context, fs []domain.ObservedFact) error
+	GetAccount(ctx context.Context, id domain.AccountID) (domain.Account, error)
 	UpsertAccount(ctx context.Context, a domain.Account) error
 	UpsertProgram(ctx context.Context, p domain.Program) error
 }
@@ -360,6 +361,38 @@ func persistPrograms(ctx context.Context, w snapshotWriter, b adapter.ProgramBat
 			return fmt.Errorf("sync: persist program %s: %w", p.ID, err)
 		}
 	}
+	if len(b.JoinedProgramIDs) > 0 {
+		platform := domain.Platform("")
+		if len(b.Programs) > 0 {
+			platform = b.Programs[0].Platform
+		}
+		if platform.Valid() {
+			if err := mergeJoinedPrograms(ctx, w, platform, b.JoinedProgramIDs); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// mergeJoinedPrograms feeds explicit list-page enrollment into the account so
+// policy can resolve PROGRAM_SIGNUP gates without re-reading the page. Existing
+// account fields are preserved; only JoinedProgramIDs and ObservedAt are
+// refreshed.
+func mergeJoinedPrograms(ctx context.Context, w snapshotWriter, platform domain.Platform, ids []domain.ProgramID) error {
+	accountID := domain.AccountID(string(platform) + "/account")
+	acct, err := w.GetAccount(ctx, accountID)
+	if err != nil {
+		if !errors.Is(err, postgres.ErrNotFound) {
+			return fmt.Errorf("sync: load account %s: %w", accountID, err)
+		}
+		acct = domain.Account{ID: accountID, Platform: platform}
+	}
+	acct.JoinedProgramIDs = unionProgramIDs(acct.JoinedProgramIDs, ids)
+	acct.ObservedAt = time.Now().UTC()
+	if err := w.UpsertAccount(ctx, acct); err != nil {
+		return fmt.Errorf("sync: persist joined programs for %s: %w", accountID, err)
+	}
 	return nil
 }
 
@@ -381,10 +414,34 @@ func persistAccount(ctx context.Context, w snapshotWriter, snap adapter.AccountS
 	if err := persistEvidenceFacts(ctx, w, snap.Evidence, snap.Facts); err != nil {
 		return err
 	}
-	if err := w.UpsertAccount(ctx, snap.Account); err != nil {
-		return fmt.Errorf("sync: persist account %s: %w", snap.Account.ID, err)
+	acct := snap.Account
+	// JoinedProgramIDs is accumulated from list pages; an account-page sync
+	// usually does not repeat it. Union with the stored list so account sync
+	// never erases what the program-list sync observed.
+	if existing, err := w.GetAccount(ctx, acct.ID); err == nil {
+		acct.JoinedProgramIDs = unionProgramIDs(existing.JoinedProgramIDs, acct.JoinedProgramIDs)
+	} else if !errors.Is(err, postgres.ErrNotFound) {
+		return fmt.Errorf("sync: load account %s: %w", acct.ID, err)
+	}
+	if err := w.UpsertAccount(ctx, acct); err != nil {
+		return fmt.Errorf("sync: persist account %s: %w", acct.ID, err)
 	}
 	return nil
+}
+
+func unionProgramIDs(a, b []domain.ProgramID) []domain.ProgramID {
+	seen := make(map[domain.ProgramID]struct{}, len(a)+len(b))
+	out := make([]domain.ProgramID, 0, len(a)+len(b))
+	for _, ids := range [][]domain.ProgramID{a, b} {
+		for _, id := range ids {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func persistEvidenceFacts(ctx context.Context, w snapshotWriter, evs []domain.Evidence, fs []domain.ObservedFact) error {

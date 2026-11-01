@@ -201,8 +201,8 @@ go run ./cmd/bountygrid derive -platform vulbox
 ### Action Gateway · `decide`
 
 - `bountygrid decide -request <json>`：从 PostgreSQL 加载 Account/Program → Policy Engine → 持久化 `ActionDecision` + `action.decision` 审计事件。缺失上下文直接产生并持久化 `DENY CONTEXT_NOT_FOUND`。
-- `bountygrid decide -authorize <decision-id>`：执行前二次校验 —— 必须 ALLOW、未过期、human-only 有审批；执行类动作还要求 Program `RUNNING` 且 `Status.ValidUntil > now`。Gateway 本身不执行任何平台动作。
-- `REPORT_SUBMIT` 接 PostgreSQL 一次性审批账本；单位测试覆盖第二次使用返回 `REQUIRE_HUMAN`。
+- `bountygrid decide -authorize <decision-id>`：执行前重新加载 Account/Program、重新解析 Asset 并重跑 Policy —— 必须 ALLOW、未过期、human-only 有审批；Scope/资格/自动化策略变化后旧 ALLOW 失败。带运行时约束的动作需要 `-context <json>` 提供新的 `usage_today`/`budget_spent`/`execution_environment`（后者必须带 `observed_at`，超过 5 分钟即视为未知），缺失时 fail-closed。Gateway 本身不执行任何平台动作。
+- `REPORT_SUBMIT` 接 PostgreSQL 一次性审批账本；`Policy.Decide` 只校验，`Gateway.Authorize` 在重评估通过后才原子消费，重复使用在 Authorize 阶段失败。
 - Decision ID 使用带分隔符的时间戳（不是 `UnixNano`）：19 位连续数字会被 secret scanner 误判为银行卡号，导致审计 payload 被拒绝。
 - 实测（2026-10-31）：
   - `VIEW_RULES` → `ALLOW`，`-authorize` 返回 `authorized:true`
@@ -323,6 +323,7 @@ go run ./cmd/bountygrid sync -platform butian -programs=false -grow
 - **append-only 历史**：ResearchTask/机会评分使用每轮唯一 ID；同一 Program 最多一个 `QUEUED` 任务，被新任务 supersede；Scheduler 从数据库读取 cooldown。
 - **Butian 语义层次**：公益SRC 只发 `butian.pub.listed`，RUNNING 是派生状态；专属SRC/GROW 的报名与实战认证 Gate 不再写死 `UNSATISFIED`，由 Policy 结合账号状态解析。
 - **文档对齐**：CLAUDE/README/implementation-order 的阶段状态改为“Phase 0 complete; Phase 1–5 partially implemented; active execution disabled”。
+- **复核补修**：公益SRC 由 canonical `program.listed` 派生 RUNNING；回执绑定请求身份并按状态处理竞态；`AuthorizeWith` 要求新的 usage/budget/environment（环境 5 分钟过期）；Scheduler 使用账号重算的 Eligibility；列表页显式报名信号写入 `Account.JoinedProgramIDs`；审批参数保留原始字节并接受 canonical hash；回执保留 Evidence。
 
 ## 文档入口 · Docs
 

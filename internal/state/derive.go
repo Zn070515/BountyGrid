@@ -11,8 +11,11 @@ import (
 // ProgramInput is the canonical, platform-neutral view used by state rules.
 // Adapters map platform-native facts into this shape.
 type ProgramInput struct {
-	Status            *domain.ProgramStatus
-	Paused            bool
+	Status *domain.ProgramStatus
+	Paused bool
+	// Listed is true when the platform lists the program as accepting reports
+	// but states no explicit status (e.g. Butian public-welfare vendors).
+	Listed            bool
 	Start             *time.Time
 	End               *time.Time
 	RegistrationStart *time.Time
@@ -66,9 +69,10 @@ func ProgramInputFromFacts(fs facts.FactSet) (ProgramInput, error) {
 		}
 	}
 	predicates := []string{
-		facts.PredProgramStatus, facts.PredProgramPaused, facts.PredProgramStart,
-		facts.PredProgramEnd, facts.PredActivityStart, facts.PredActivityEnd,
-		facts.PredRegistrationStart, facts.PredRegistrationEnd, facts.PredScopeVisibility,
+		facts.PredProgramStatus, facts.PredProgramPaused, facts.PredProgramListed,
+		facts.PredProgramStart, facts.PredProgramEnd, facts.PredActivityStart,
+		facts.PredActivityEnd, facts.PredRegistrationStart, facts.PredRegistrationEnd,
+		facts.PredScopeVisibility,
 	}
 	for _, p := range predicates {
 		record(p)
@@ -93,6 +97,9 @@ func ProgramInputFromFacts(fs facts.FactSet) (ProgramInput, error) {
 	}
 	if b, ok := fs.Bool(facts.PredProgramPaused); ok {
 		in.Paused = b
+	}
+	if b, ok := fs.Bool(facts.PredProgramListed); ok {
+		in.Listed = b
 	}
 	if t, ok := fs.Time(facts.PredProgramStart); ok {
 		in.Start = &t
@@ -159,6 +166,11 @@ func DeriveProgramState(in ProgramInput, now time.Time, ttl time.Duration) (doma
 	case in.Start != nil && now.Before(*in.Start):
 		status = domain.StatusUpcoming
 		reason = "before_start"
+	case in.Listed:
+		// The platform lists this program as accepting reports. This is weaker
+		// than an explicit status and is used only when no status/date does.
+		status = domain.StatusRunning
+		reason = "listed_as_open"
 	case in.Start != nil || in.End != nil:
 		status = domain.StatusRunning
 		reason = "within_window"

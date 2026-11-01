@@ -33,23 +33,24 @@ func (g *fakeGate) Evaluate(ctx context.Context, in gateway.EvaluateInput) (doma
 	d.ProgramID = in.Request.ProgramID
 	return d, nil
 }
-func (g *fakeGate) Authorize(ctx context.Context, id domain.DecisionID) error {
+func (g *fakeGate) AuthorizeWith(ctx context.Context, id domain.DecisionID, ai gateway.AuthorizeInput) error {
 	g.authorized++
 	return g.authErr
 }
 
 type fakeTool struct {
-	spec  ToolSpec
-	cost  domain.Money
-	calls int
-	err   error
+	spec     ToolSpec
+	cost     domain.Money
+	calls    int
+	err      error
+	evidence []domain.EvidenceID
 }
 
 func (t *fakeTool) Spec() ToolSpec     { return t.spec }
 func (t *fakeTool) Cost() domain.Money { return t.cost }
 func (t *fakeTool) Execute(ctx context.Context, tc ToolContext) (ToolResult, error) {
 	t.calls++
-	return ToolResult{Output: "ok"}, t.err
+	return ToolResult{Output: "ok", Evidence: t.evidence}, t.err
 }
 
 type fakeAuditor struct {
@@ -242,6 +243,118 @@ func TestHarnessUnsettledReceiptBlocksRepeat(t *testing.T) {
 	}
 	if tool.calls != 0 {
 		t.Fatal("tool ran for an unsettled receipt")
+	}
+}
+
+func TestHarnessRejectsKeyReusedForAnotherProgram(t *testing.T) {
+	tool := &fakeTool{spec: ToolSpec{Name: "writer", RequiredAction: domain.ActionViewRules, WritesFiles: true}}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	h := testHarness(tool, gate, &fakeAuditor{}, nil)
+	req := testRequest(domain.ActionViewRules)
+	req.IdempotencyKey = "idem-cross"
+	if _, _, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow}); err != nil {
+		t.Fatal(err)
+	}
+	other := req
+	other.ProgramID = "p2"
+	if _, _, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: other, Now: testNow}); err == nil {
+		t.Fatal("the same idempotency key must not replay another program's result")
+	}
+	if tool.calls != 1 {
+		t.Fatalf("cross-program replay executed the tool: calls=%d", tool.calls)
+	}
+	if gate.evaluated != 1 {
+		t.Fatalf("cross-program replay reached the gate: evaluated=%d", gate.evaluated)
+	}
+}
+
+func TestHarnessReplayPreservesEvidence(t *testing.T) {
+	ev := domain.EvidenceID("ev-replay")
+	tool := &fakeTool{
+		spec:     ToolSpec{Name: "writer", RequiredAction: domain.ActionViewRules, WritesFiles: true},
+		evidence: []domain.EvidenceID{ev},
+	}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	h := testHarness(tool, gate, &fakeAuditor{}, nil)
+	req := testRequest(domain.ActionViewRules)
+	req.IdempotencyKey = "idem-evidence"
+	if _, _, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow}); err != nil {
+		t.Fatal(err)
+	}
+	_, res, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Evidence) != 1 || res.Evidence[0] != ev {
+		t.Fatalf("replayed evidence = %v, want [%s]", res.Evidence, ev)
+	}
+}
+
+type raceReceiptStore struct {
+	base   *MemoryReceiptStore
+	inner  domain.ExecutionReceipt
+	seeded bool
+}
+
+func (s *raceReceiptStore) GetReceipt(ctx context.Context, key string) (domain.ExecutionReceipt, error) {
+	if !s.seeded {
+		return domain.ExecutionReceipt{}, domain.ErrReceiptNotFound
+	}
+	return s.base.GetReceipt(ctx, key)
+}
+
+func (s *raceReceiptStore) CreateReceipt(ctx context.Context, r domain.ExecutionReceipt) error {
+	_ = s.base.CreateReceipt(ctx, s.inner)
+	s.seeded = true
+	return domain.ErrReceiptExists
+}
+
+func (s *raceReceiptStore) UpdateReceipt(ctx context.Context, r domain.ExecutionReceipt) error {
+	return s.base.UpdateReceipt(ctx, r)
+}
+
+func raceStore(inner domain.ExecutionReceipt) *raceReceiptStore {
+	return &raceReceiptStore{base: NewMemoryReceiptStore(), inner: inner}
+}
+
+func TestHarnessReceiptRaceStartedRefusesExecution(t *testing.T) {
+	tool := &fakeTool{spec: ToolSpec{Name: "writer", RequiredAction: domain.ActionViewRules, WritesFiles: true}}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	h := testHarness(tool, gate, &fakeAuditor{}, nil)
+	h.SetReceiptStore(raceStore(domain.ExecutionReceipt{
+		ID: "rcpt/idem-race", IdempotencyKey: "idem-race", DecisionID: "d1",
+		ToolName: "writer", Action: domain.ActionViewRules, AccountID: "acc1", ProgramID: "p1",
+		ParametersHash: domain.CanonicalParametersHash(nil),
+		Status:         domain.ReceiptStarted, StartedAt: testNow, UpdatedAt: testNow,
+	}))
+	req := testRequest(domain.ActionViewRules)
+	req.IdempotencyKey = "idem-race"
+	if _, _, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow}); err == nil {
+		t.Fatal("a STARTED receipt discovered during the create race must not report success")
+	}
+	if tool.calls != 0 {
+		t.Fatalf("tool executed despite an unsettled receipt: calls=%d", tool.calls)
+	}
+}
+
+func TestHarnessReceiptRaceCompletedReplays(t *testing.T) {
+	tool := &fakeTool{spec: ToolSpec{Name: "writer", RequiredAction: domain.ActionViewRules, WritesFiles: true}}
+	gate := &fakeGate{decision: domain.ActionDecision{ID: "d1", Decision: domain.DecisionAllow}}
+	h := testHarness(tool, gate, &fakeAuditor{}, nil)
+	h.SetReceiptStore(raceStore(domain.ExecutionReceipt{
+		ID: "rcpt/idem-race2", IdempotencyKey: "idem-race2", DecisionID: "d1",
+		ToolName: "writer", Action: domain.ActionViewRules, AccountID: "acc1", ProgramID: "p1",
+		ParametersHash: domain.CanonicalParametersHash(nil), Output: "recorded",
+		Status: domain.ReceiptCompleted, StartedAt: testNow, UpdatedAt: testNow,
+	}))
+	req := testRequest(domain.ActionViewRules)
+	req.IdempotencyKey = "idem-race2"
+	_, res, err := h.Execute(context.Background(), "writer", gateway.EvaluateInput{Request: req, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Output != "recorded" || tool.calls != 0 {
+		t.Fatalf("completed race replay = %q calls=%d", res.Output, tool.calls)
 	}
 }
 

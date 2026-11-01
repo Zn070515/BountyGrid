@@ -71,4 +71,8 @@ type ActionDecision struct {
 	UsageToday  map[string]int64
 	BudgetSpent *Money
 	Environment *ExecutionEnvironment
+	// RequestParameters preserves the exact parameter bytes supplied by the
+	// caller. PostgreSQL JSONB normalizes JSON whitespace/key order, so the
+	// nested Request.Parameters cannot be used to re-validate an approval hash.
+	RequestParameters string
 }
