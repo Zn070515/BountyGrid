@@ -90,7 +90,7 @@ func approval(action domain.Action, resource string) *domain.HumanApproval {
 		Action:         action,
 		ProgramID:      "p1",
 		ResourceID:     resource,
-		ParametersHash: parametersHash(nil),
+		ParametersHash: domain.ParametersHash(nil),
 		ExpiresAt:      testNow.Add(time.Hour),
 		SingleUse:      true,
 	}

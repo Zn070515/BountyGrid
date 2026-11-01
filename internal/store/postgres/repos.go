@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/redact"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -649,14 +650,31 @@ func (r *Repo) PutFinding(ctx context.Context, f domain.Finding) error {
 }
 
 func (r *Repo) PutReportDraft(ctx context.Context, d domain.ReportDraft) error {
+	return putReportDraft(ctx, r.Pool, d)
+}
+
+func putReportDraft(ctx context.Context, ex queryExecer, d domain.ReportDraft) error {
 	if err := d.Validate(); err != nil {
 		return err
+	}
+	// The database must not store cookies, tokens, passwords, card/ID numbers
+	// or full phone/email values. Raw evidence stays local; report text must use
+	// placeholders.
+	for key, value := range d.Fields {
+		if findings := redact.Scan(value); len(findings) > 0 {
+			return fmt.Errorf("postgres: report draft field %s contains sensitive value (%s)", key, findings[0].Kind)
+		}
+	}
+	for key, value := range d.AIDisclosure {
+		if findings := redact.Scan(value); len(findings) > 0 {
+			return fmt.Errorf("postgres: report draft disclosure %s contains sensitive value (%s)", key, findings[0].Kind)
+		}
 	}
 	data, err := mustJSON(d)
 	if err != nil {
 		return err
 	}
-	_, err = r.Pool.Exec(ctx, `
+	_, err = ex.Exec(ctx, `
 		INSERT INTO report_drafts (id, finding_id, program_id, status, created_at, data)
 		VALUES ($1,$2,$3,$4,$5,$6::jsonb)
 		ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, data=EXCLUDED.data`,
@@ -681,6 +699,10 @@ func (r *Repo) GetReportDraft(ctx context.Context, id string) (domain.ReportDraf
 }
 
 func (r *Repo) PutSubmission(ctx context.Context, s domain.Submission) error {
+	return putSubmission(ctx, r.Pool, s)
+}
+
+func putSubmission(ctx context.Context, ex queryExecer, s domain.Submission) error {
 	if err := s.Validate(); err != nil {
 		return err
 	}
@@ -688,7 +710,7 @@ func (r *Repo) PutSubmission(ctx context.Context, s domain.Submission) error {
 	if err != nil {
 		return err
 	}
-	_, err = r.Pool.Exec(ctx, `
+	_, err = ex.Exec(ctx, `
 		INSERT INTO submissions
 			(id, report_id, program_id, submitted_at, platform_url, receipt, status, approval_id, data)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
@@ -696,6 +718,33 @@ func (r *Repo) PutSubmission(ctx context.Context, s domain.Submission) error {
 		s.ID, s.ReportID, s.ProgramID, s.SubmittedAt, s.PlatformURL, s.Receipt,
 		s.Status, s.ApprovalID, data)
 	return err
+}
+
+// RecordSubmission writes the submission and the report status transition in
+// one transaction. The unique report_id index rejects a second real submission
+// for the same report, so a stale DRAFT status cannot authorize a duplicate.
+func (r *Repo) RecordSubmission(ctx context.Context, s domain.Submission, d domain.ReportDraft) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: begin submission: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := putSubmission(ctx, tx, s); err != nil {
+		return err
+	}
+	if err := putReportDraft(ctx, tx, d); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: commit submission: %w", err)
+	}
+	return nil
 }
 
 func (r *Repo) PutLedgerEntry(ctx context.Context, e domain.LedgerEntry) error {

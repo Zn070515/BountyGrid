@@ -212,7 +212,7 @@
 - 三平台字段映射；必填检查；AI 披露。
 - 退出条件：缺字段返回 REQUIRE_MORE_EVIDENCE；补天 GROW AI 字段完整。
 
-**当前实现（2026-11-01）**：`internal/report.Build` 只接受 `VERIFIED` Verification；通用必填字段 + Xianzhi `account_name` / Butian `category`；AI 披露要求 `human_verification`，Butian GROW 还要求模型名/版本/工具名；附件按平台校验扩展名。`bountygrid report -file [-persist]` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`。仍差：ReportDraft→READY_FOR_REVIEW 的人工状态推进、附件大小/上传、Submission。
+**当前实现（2026-11-01）**：`internal/report.Build` 只接受 `VERIFIED` Verification；通用必填字段 + Xianzhi `account_name` / Butian `vendor/category/asset_scope/weight/activity/task_id/industry/region/contact`；AI 披露要求 `human_verification`，Butian GROW 还要求模型名/版本/工具名；附件按平台校验扩展名；report 文本含 cookie/token/密码/证件/银行卡/完整手机号/邮箱会被拒绝。`bountygrid report -file [-persist]` 从 PostgreSQL 加载 Program/Finding/Verification，写 `report_drafts`；Submission 见 7.1/7.2。仍差：ReportDraft→READY_FOR_REVIEW 的人工状态推进、附件大小/上传。
 
 ## 7. Submission（Vulbox 首个）
 
@@ -221,14 +221,14 @@
 - 审批界面/令牌/过期/范围。
 - 退出条件：无审批不能提交；审批过期不能提交。
 
-**当前实现（2026-11-01）**：`internal/submit` 校验 `HumanApproval` 的 action/request_id/program/asset/resource/parameters_hash/expiry/single_use；request_id 固定为 `submit/<report>/<approval>`，参数为 `{"report_id":...,"report_content_hash":...}`，审批后修改草稿会使 hash 不匹配。`bountygrid submit -print-binding` 输出审批必须绑定的 request_id/parameters_hash。`ReportDraft.Status` 增加 `DRAFT/READY_FOR_REVIEW/APPROVED/SUBMITTED/...` 枚举；提交成功后置 `SUBMITTED`。
+**当前实现（2026-11-01）**：`internal/submit` 校验 `HumanApproval` 的 action/request_id/program/asset/resource/parameters_hash/expiry/single_use；request_id 固定为 `submit/<report>/<approval>`，参数为 `{"report_id":...,"report_content_hash":...}`，审批后修改草稿会使 hash 不匹配。提交前重新解析当前 Scope 资产（必须 INCLUDED）；同一 report 只允许一次真实提交（`submissions.report_id` 部分唯一索引 + `GetSubmissionByReport` 前置检查 + `RecordSubmission` 事务）。`bountygrid submit -print-binding` 输出审批必须绑定的 request_id/parameters_hash。`ReportDraft.Status` 增加 `DRAFT/READY_FOR_REVIEW/APPROVED/SUBMITTED/...` 枚举；提交成功后置 `SUBMITTED`。
 
 ### 7.2 Vulbox Submit
 
 - 联想/嘉立创真实表单字段；草稿箱；提交后状态。
 - 退出条件：只读演练（不真正提交）通过；人工确认后可提交一次测试。
 
-**当前实现（2026-11-01）**：`submit.Service` 在 Gateway `ALLOW` + `AuthorizeWith` 消费审批后才调用 `Submitter`。本仓库只有 `DryRunSubmitter`（本地 receipt，状态 `DRY_RUN`，无网络/平台动作）；`submissions` 持久化，`approval_id` 唯一索引防止同一审批重复提交。真实平台 SubmitAdapter 未实现。
+**当前实现（2026-11-01）**：`submit.Service` 在 Gateway `ALLOW` + `AuthorizeWith` 消费审批后才调用 `Submitter`。本仓库只有 `DryRunSubmitter`（本地 receipt，状态 `DRY_RUN`，无网络/平台动作）；dry-run 不改变 ReportDraft 状态，也不占用真实提交的唯一名额，因此后续仍可用新审批真实提交。`submissions` 持久化，`approval_id` 唯一索引防止同一审批重复提交，`report_id` 部分唯一索引（排除 `DRY_RUN`）防止同一报告真实提交两次。真实平台 SubmitAdapter 未实现。
 
 ### 7.3 Xianzhi/Butian Submit
 

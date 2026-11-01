@@ -29,8 +29,8 @@ type Store interface {
 	GetProgram(ctx context.Context, id domain.ProgramID) (domain.Program, error)
 	GetFinding(ctx context.Context, id domain.FindingID) (domain.Finding, error)
 	GetVerification(ctx context.Context, id string) (domain.Verification, error)
-	PutSubmission(ctx context.Context, s domain.Submission) error
-	PutReportDraft(ctx context.Context, d domain.ReportDraft) error
+	GetSubmissionByReport(ctx context.Context, reportID string) (domain.Submission, bool, error)
+	RecordSubmission(ctx context.Context, s domain.Submission, d domain.ReportDraft) error
 }
 
 type Gate interface {
@@ -46,6 +46,7 @@ type Result struct {
 	PlatformURL string
 	Receipt     string
 	Status      string
+	DryRun      bool
 }
 
 type Request struct {
@@ -53,7 +54,6 @@ type Request struct {
 	Program  domain.Program
 	Decision domain.ActionDecision
 	Approval *domain.HumanApproval
-	DryRun   bool
 }
 
 type Submitter interface {
@@ -67,7 +67,7 @@ type DryRunSubmitter struct{}
 func (DryRunSubmitter) Submit(ctx context.Context, req Request) (Result, error) {
 	return Result{
 		Receipt: fmt.Sprintf("dry-run/%s/%s", req.Report.ID, req.Decision.ID),
-		Status:  "DRY_RUN",
+		Status:  "DRY_RUN", DryRun: true,
 	}, nil
 }
 
@@ -133,6 +133,13 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 		draft.Status != domain.ReportStatusApproved {
 		return domain.Submission{}, fmt.Errorf("%w: report status %s", ErrInvalidInput, draft.Status)
 	}
+	// The status row may be stale after a failed update; the submission table is
+	// authoritative. Dry-run rows are excluded so they never block a real one.
+	if existing, ok, err := s.store.GetSubmissionByReport(ctx, draft.ID); err != nil {
+		return domain.Submission{}, fmt.Errorf("submit: check existing submission: %w", err)
+	} else if ok {
+		return domain.Submission{}, fmt.Errorf("%w: %s", ErrAlreadySubmitted, existing.ID)
+	}
 
 	program, err := s.store.GetProgram(ctx, draft.ProgramID)
 	if err != nil {
@@ -145,6 +152,9 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 	verification, err := s.store.GetVerification(ctx, draft.VerificationID)
 	if err != nil {
 		return domain.Submission{}, fmt.Errorf("submit: load verification for %s: %w", draft.ID, err)
+	}
+	if err := checkScope(program, finding); err != nil {
+		return domain.Submission{}, err
 	}
 	res, err := report.Recheck(draft, finding, program, verification)
 	if err != nil {
@@ -194,7 +204,7 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 
 	result, err := s.submitter.Submit(ctx, Request{
 		Report: draft, Program: program, Decision: decision,
-		Approval: in.Approval, DryRun: true,
+		Approval: in.Approval,
 	})
 	if err != nil {
 		perr := fmt.Errorf("%w: %v", ErrPlatformSubmit, err)
@@ -218,20 +228,17 @@ func (s *Service) Submit(ctx context.Context, in Input) (domain.Submission, erro
 		ApprovalID: in.Approval.ID, ContentHash: contentHash,
 		Evidence: append([]domain.EvidenceID{}, verification.Evidence...),
 	}
-	if err := s.store.PutSubmission(ctx, sub); err != nil {
-		perr := fmt.Errorf("submit: persist submission: %w", err)
+	// A dry run must not consume the report's real-submission slot or flip the
+	// draft to SUBMITTED; it leaves a DRY_RUN receipt for audit only.
+	if !result.DryRun {
+		draft.Status = domain.ReportStatusSubmitted
+	}
+	if err := s.store.RecordSubmission(ctx, sub, draft); err != nil {
+		perr := fmt.Errorf("submit: platform submit may have succeeded but recording failed; do not retry without reconciliation: %w", err)
 		if aerr := s.appendAudit(ctx, draft, decision, in.Approval, "SUBMISSION_RECORD_FAILED", now); aerr != nil {
 			return domain.Submission{}, errors.Join(perr, aerr)
 		}
 		return domain.Submission{}, perr
-	}
-	draft.Status = domain.ReportStatusSubmitted
-	if err := s.store.PutReportDraft(ctx, draft); err != nil {
-		perr := fmt.Errorf("submit: submission recorded but report status update failed: %w", err)
-		if aerr := s.appendAudit(ctx, draft, decision, in.Approval, "REPORT_STATUS_FAILED", now); aerr != nil {
-			return sub, errors.Join(perr, aerr)
-		}
-		return sub, perr
 	}
 	if err := s.appendAudit(ctx, draft, decision, in.Approval, "RECORDED", now); err != nil {
 		return sub, err
@@ -266,6 +273,27 @@ func checkApproval(a *domain.HumanApproval, requestID string, program domain.Pro
 		return fmt.Errorf("%w: approval parameters_hash does not match report binding", ErrInvalidInput)
 	}
 	return nil
+}
+
+// checkScope re-checks the finding's asset against the program's current
+// Scope. REPORT_SUBMIT is not NeedsScope in Policy, so the submission service
+// must enforce lifecycle §5.2 itself.
+func checkScope(program domain.Program, finding domain.Finding) error {
+	if finding.AssetID == nil || *finding.AssetID == "" {
+		return fmt.Errorf("%w: finding has no asset", ErrInvalidInput)
+	}
+	asset, _, ok := program.Scope.ResolveAsset(*finding.AssetID)
+	if !ok {
+		return fmt.Errorf("%w: asset is no longer in the program scope", ErrInvalidInput)
+	}
+	switch program.Scope.CheckAsset(asset) {
+	case domain.ScopeMatchIncluded:
+		return nil
+	case domain.ScopeMatchConditional:
+		return fmt.Errorf("%w: asset is conditional; human re-verification required", ErrInvalidInput)
+	default:
+		return fmt.Errorf("%w: asset is out of scope", ErrInvalidInput)
+	}
 }
 
 func sameAsset(a, b *domain.AssetID) bool {

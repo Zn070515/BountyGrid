@@ -417,6 +417,36 @@ func TestRepoRoundTrip(t *testing.T) {
 	if err := r.PutSubmission(ctx, dup); err == nil {
 		t.Fatal("second submission with the same approval_id must be rejected")
 	}
+	// A dry-run receipt may coexist with a real submission for the same report,
+	// but a second real submission may not.
+	dryRun := sub
+	dryRun.ID = subID + "-dry"
+	dryRun.ApprovalID = "it-approval-dry-" + suffix
+	dryRun.Status = "DRY_RUN"
+	if err := r.PutSubmission(ctx, dryRun); err != nil {
+		t.Fatalf("dry-run receipt: %v", err)
+	}
+	secondReal := sub
+	secondReal.ID = subID + "-real2"
+	secondReal.ApprovalID = "it-approval-2-" + suffix
+	if err := r.PutSubmission(ctx, secondReal); err == nil {
+		t.Fatal("second real submission for the same report must be rejected")
+	}
+	// RecordSubmission updates the submission and the draft status atomically.
+	report2 := report
+	report2.ID = reportID + "-2"
+	report2.Status = domain.ReportStatusSubmitted
+	sub2 := sub
+	sub2.ID = subID + "-record"
+	sub2.ReportID = report2.ID
+	sub2.ApprovalID = "it-approval-record-" + suffix
+	if err := r.RecordSubmission(ctx, sub2, report2); err != nil {
+		t.Fatal(err)
+	}
+	gotReport2, err := r.GetReportDraft(ctx, report2.ID)
+	if err != nil || gotReport2.Status != domain.ReportStatusSubmitted {
+		t.Fatalf("recorded report status = %+v %v", gotReport2, err)
+	}
 	entry := domain.LedgerEntry{
 		ID: "it-ledger-" + suffix, Platform: domain.PlatformButian, ProgramID: progID,
 		Kind: domain.LedgerPaid, Amount: domain.Money{Amount: 100, Currency: "CNY"},

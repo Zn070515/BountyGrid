@@ -12,12 +12,14 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/redact"
 )
 
 var (
 	ErrNotVerified       = errors.New("report: finding is not verified")
 	ErrInvalidInput      = errors.New("report: invalid input")
 	ErrInvalidAttachment = errors.New("report: invalid attachment")
+	ErrSensitive         = errors.New("report: draft contains a sensitive value")
 )
 
 // Fields are the platform-neutral draft fields. Empty values are reported in
@@ -36,12 +38,14 @@ type Fields struct {
 	TaskID      string `json:"task_id,omitempty"`
 	AccountName string `json:"account_name,omitempty"`
 
-	Vendor   string `json:"vendor,omitempty"`
-	Category string `json:"category,omitempty"`
-	Activity string `json:"activity,omitempty"`
-	Industry string `json:"industry,omitempty"`
-	Region   string `json:"region,omitempty"`
-	Contact  string `json:"contact,omitempty"`
+	Vendor     string `json:"vendor,omitempty"`
+	Category   string `json:"category,omitempty"`
+	AssetScope string `json:"asset_scope,omitempty"`
+	Weight     string `json:"weight,omitempty"`
+	Activity   string `json:"activity,omitempty"`
+	Industry   string `json:"industry,omitempty"`
+	Region     string `json:"region,omitempty"`
+	Contact    string `json:"contact,omitempty"`
 }
 
 type AIUse struct {
@@ -81,7 +85,9 @@ func requiredFields(platform domain.Platform) []string {
 	case domain.PlatformXianzhi:
 		out = append(out, "task_id", "account_name")
 	case domain.PlatformButian:
-		out = append(out, "vendor", "category")
+		// platform-audit/butian/notes.md §6 lists these as form fields.
+		out = append(out, "vendor", "category", "asset_scope", "weight",
+			"activity", "task_id", "industry", "region", "contact")
 	}
 	return out
 }
@@ -108,12 +114,6 @@ func Build(in Input) (Result, error) {
 	if err := in.Verification.Validate(); err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	// An AI-assisted report must point at a verification that actually recorded
-	// the human trace; the AIUse block alone is not proof.
-	if in.AI.Assisted && (!in.Verification.AIAssisted || !in.Verification.HumanVerified ||
-		in.Verification.HumanVerificationRef == "") {
-		return Result{}, fmt.Errorf("%w: AI-assisted report requires a persisted human-verification trace", ErrInvalidInput)
-	}
 	if len(in.Verification.Evidence) == 0 {
 		return Result{}, fmt.Errorf("%w: verification has no evidence", ErrInvalidInput)
 	}
@@ -127,7 +127,10 @@ func Build(in Input) (Result, error) {
 
 	fields := buildFields(in)
 	disclosure := buildDisclosure(in)
-	missing := missingFields(in.Program.Platform, fields, disclosure, in.AI, in.Program, len(in.Verification.Evidence))
+	if err := checkSensitive(fields, disclosure); err != nil {
+		return Result{}, err
+	}
+	missing := missingFields(in.Program.Platform, fields, disclosure, in.Program, in.Verification.AIAssisted)
 
 	draft := domain.ReportDraft{
 		ID:             fmt.Sprintf("draft/%s/%s", findingKey(in.Finding.ID), now.UTC().Format("20060102T150405.000000000")),
@@ -174,34 +177,33 @@ func ContentHash(d domain.ReportDraft) (string, error) {
 // Verification before submission. The draft maps are converted back to the
 // structured fields so the same completeness rules apply.
 func Recheck(draft domain.ReportDraft, finding domain.Finding, program domain.Program, verification domain.Verification) (Result, error) {
-	fields := Fields{
-		Title: draft.Fields["title"], AssetURL: draft.Fields["asset_url"],
-		VulnType: draft.Fields["vuln_type"], Severity: draft.Fields["severity"],
-		Summary: draft.Fields["summary"], Steps: draft.Fields["steps"],
-		PoC: draft.Fields["poc"], Impact: draft.Fields["impact"],
-		Remediation: draft.Fields["remediation"], TaskID: draft.Fields["task_id"],
-		AccountName: draft.Fields["account_name"], Vendor: draft.Fields["vendor"],
-		Category: draft.Fields["category"], Activity: draft.Fields["activity"],
-		Industry: draft.Fields["industry"], Region: draft.Fields["region"],
-		Contact: draft.Fields["contact"],
+	if draft.FindingID != finding.ID || draft.ProgramID != program.ID ||
+		draft.VerificationID != verification.ID {
+		return Result{}, fmt.Errorf("%w: stored draft entity mismatch", ErrInvalidInput)
 	}
-	ai := AIUse{
-		Assisted:          draft.AIDisclosure["ai_assisted"] == "true",
-		ModelName:         draft.AIDisclosure["model_name"],
-		ModelVersion:      draft.AIDisclosure["model_version"],
-		ToolName:          draft.AIDisclosure["tool_name"],
-		HumanVerification: draft.AIDisclosure["human_verification"],
+	if err := draft.Validate(); err != nil {
+		return Result{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	if v := draft.AIDisclosure["ai_generated_sections"]; v != "" {
-		ai.GeneratedSections = strings.Split(v, ", ")
+	if verification.Verdict != domain.VerdictVerified {
+		return Result{}, fmt.Errorf("%w: verification is %s", ErrNotVerified, verification.Verdict)
 	}
-	if v := draft.AIDisclosure["human_edited_sections"]; v != "" {
-		ai.HumanEditedSections = strings.Split(v, ", ")
+	if len(verification.Evidence) == 0 {
+		return Result{Draft: draft, Missing: []string{"evidence"}}, nil
 	}
-	return Build(Input{
-		Finding: finding, Program: program, Verification: verification,
-		Fields: fields, AI: ai, Attachments: draft.Attachments, Now: draft.CreatedAt,
-	})
+	if err := verification.Validate(); err != nil {
+		return Result{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if err := validateAttachments(program.Platform, draft.Attachments); err != nil {
+		return Result{}, err
+	}
+	if err := checkSensitive(draft.Fields, draft.AIDisclosure); err != nil {
+		return Result{}, err
+	}
+	// Do not re-derive defaults from Finding/Program: the submitted content must
+	// be exactly what was stored and approved, so an incomplete stored draft is
+	// not made "ready" by a later program/finding update.
+	missing := missingFields(program.Platform, draft.Fields, draft.AIDisclosure, program, verification.AIAssisted)
+	return Result{Draft: draft, Missing: missing, Ready: len(missing) == 0}, nil
 }
 
 func buildFields(in Input) map[string]string {
@@ -227,7 +229,8 @@ func buildFields(in Input) map[string]string {
 		"severity": f.Severity, "summary": f.Summary, "steps": f.Steps,
 		"poc": f.PoC, "impact": f.Impact, "remediation": f.Remediation,
 		"task_id": f.TaskID, "account_name": f.AccountName,
-		"vendor": f.Vendor, "category": f.Category, "activity": f.Activity,
+		"vendor": f.Vendor, "category": f.Category, "asset_scope": f.AssetScope,
+		"weight": f.Weight, "activity": f.Activity,
 		"industry": f.Industry, "region": f.Region, "contact": f.Contact,
 	} {
 		if v = strings.TrimSpace(v); v != "" {
@@ -261,17 +264,20 @@ func buildDisclosure(in Input) map[string]string {
 	return out
 }
 
-func missingFields(platform domain.Platform, fields, disclosure map[string]string, ai AIUse, program domain.Program, evidence int) []string {
+func missingFields(platform domain.Platform, fields, disclosure map[string]string, program domain.Program, verificationAIAssisted bool) []string {
 	var missing []string
 	for _, key := range requiredFields(platform) {
 		if strings.TrimSpace(fields[key]) == "" {
 			missing = append(missing, key)
 		}
 	}
-	if evidence == 0 {
-		missing = append(missing, "evidence")
+	aiAssisted := disclosure["ai_assisted"] == "true"
+	// AI used anywhere in discovery must be disclosed in the report, even if
+	// the report text itself was written by a human.
+	if verificationAIAssisted && !aiAssisted {
+		missing = append(missing, "ai_disclosure")
 	}
-	if ai.Assisted {
+	if aiAssisted {
 		if strings.TrimSpace(disclosure["human_verification"]) == "" {
 			missing = append(missing, "ai_human_verification")
 		}
@@ -284,6 +290,21 @@ func missingFields(platform domain.Platform, fields, disclosure map[string]strin
 		}
 	}
 	return missing
+}
+
+// checkSensitive refuses report text that contains cookies, tokens, passwords,
+// full phone/email values or card/ID numbers. Raw evidence stays local; the DB
+// must not store secrets, and a report should use placeholders instead.
+func checkSensitive(fields, disclosure map[string]string) error {
+	for key, value := range fields {
+		if findings := redact.Scan(value); len(findings) > 0 {
+			return fmt.Errorf("%w: %s (%s)", ErrSensitive, key, findings[0].Kind)
+		}
+	}
+	if findings := redact.Scan(disclosure["human_verification"]); len(findings) > 0 {
+		return fmt.Errorf("%w: human_verification (%s)", ErrSensitive, findings[0].Kind)
+	}
+	return nil
 }
 
 func validateAttachments(platform domain.Platform, attachments []string) error {

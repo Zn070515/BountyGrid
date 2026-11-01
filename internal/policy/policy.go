@@ -2,8 +2,6 @@ package policy
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -341,7 +339,7 @@ func validateApproval(a *domain.HumanApproval, req domain.ActionRequest, resourc
 	// Accept both the raw and canonical hashes: approvals created before the
 	// canonical hash existed keep working, while a request that round-tripped
 	// through JSONB can still match.
-	if a.ParametersHash != parametersHash(req.Parameters) &&
+	if a.ParametersHash != domain.ParametersHash(req.Parameters) &&
 		a.ParametersHash != domain.CanonicalParametersHash(req.Parameters) {
 		return fmt.Errorf("approval parameters mismatch")
 	}
@@ -355,11 +353,6 @@ func validateApproval(a *domain.HumanApproval, req domain.ActionRequest, resourc
 		return fmt.Errorf("human-only approval must be single-use")
 	}
 	return nil
-}
-
-func parametersHash(p []byte) string {
-	sum := sha256.Sum256(p)
-	return hex.EncodeToString(sum[:])
 }
 
 func requiresFreshState(a domain.Action) bool {

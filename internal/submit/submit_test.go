@@ -47,14 +47,30 @@ func (s *fakeStore) GetVerification(ctx context.Context, id string) (domain.Veri
 	}
 	return s.verification, nil
 }
-func (s *fakeStore) PutSubmission(ctx context.Context, sub domain.Submission) error {
+func (s *fakeStore) GetSubmissionByReport(ctx context.Context, reportID string) (domain.Submission, bool, error) {
+	for _, existing := range s.submissions {
+		if existing.ReportID == reportID && existing.Status != "DRY_RUN" {
+			return existing, true, nil
+		}
+	}
+	return domain.Submission{}, false, nil
+}
+
+func (s *fakeStore) RecordSubmission(ctx context.Context, sub domain.Submission, d domain.ReportDraft) error {
 	if err := sub.Validate(); err != nil {
 		return err
 	}
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	if sub.Status != "DRY_RUN" {
+		for _, existing := range s.submissions {
+			if existing.ReportID == sub.ReportID && existing.Status != "DRY_RUN" {
+				return errors.New("report already submitted")
+			}
+		}
+	}
 	s.submissions = append(s.submissions, sub)
-	return nil
-}
-func (s *fakeStore) PutReportDraft(ctx context.Context, d domain.ReportDraft) error {
 	s.draft = d
 	return nil
 }
@@ -98,9 +114,13 @@ func (s *fakeSubmitter) Submit(ctx context.Context, req Request) (Result, error)
 func programFixture() domain.Program {
 	return domain.Program{
 		ID: "p1", Platform: domain.PlatformVulbox, NativeID: "444", Name: "Acme",
-		Type:       domain.TypeEnterpriseSRC,
-		Status:     domain.ProgramState{Status: domain.StatusRunning, ObservedAt: testNow, ValidUntil: testNow.Add(time.Hour), Confidence: 1},
-		Scope:      domain.Scope{Visibility: domain.ScopePublic, Access: domain.ScopeAccessGranted, ContentsKnown: true, ObservedAt: testNow},
+		Type:   domain.TypeEnterpriseSRC,
+		Status: domain.ProgramState{Status: domain.StatusRunning, ObservedAt: testNow, ValidUntil: testNow.Add(time.Hour), Confidence: 1},
+		Scope: domain.Scope{
+			Visibility: domain.ScopePublic, Access: domain.ScopeAccessGranted, ContentsKnown: true,
+			Include:    []domain.Asset{{ID: "a1", ProgramID: "p1", Value: "a1.example.com", InScope: true}},
+			ObservedAt: testNow,
+		},
 		Reward:     domain.RewardPolicy{TaxBasis: domain.TaxUnknown},
 		ObservedAt: testNow,
 	}
@@ -146,6 +166,10 @@ func draftFixture(t *testing.T, complete bool) domain.ReportDraft {
 }
 
 func approvalFixture(t *testing.T, draft domain.ReportDraft) *domain.HumanApproval {
+	return approvalFixtureID(t, draft, "ap1")
+}
+
+func approvalFixtureID(t *testing.T, draft domain.ReportDraft, id string) *domain.HumanApproval {
 	t.Helper()
 	contentHash, err := report.ContentHash(draft)
 	if err != nil {
@@ -158,8 +182,8 @@ func approvalFixture(t *testing.T, draft domain.ReportDraft) *domain.HumanApprov
 		t.Fatal(err)
 	}
 	return &domain.HumanApproval{
-		ID: "ap1", ApprovedBy: "human", ApprovedAt: testNow,
-		RequestID: "submit/" + draft.ID + "/ap1", Action: domain.ActionReportSubmit,
+		ID: id, ApprovedBy: "human", ApprovedAt: testNow,
+		RequestID: "submit/" + draft.ID + "/" + id, Action: domain.ActionReportSubmit,
 		ProgramID: draft.ProgramID, AssetID: findingFixture().AssetID,
 		ResourceID: draft.ID, ParametersHash: domain.CanonicalParametersHash(params),
 		ExpiresAt: testNow.Add(time.Hour), SingleUse: true,
@@ -190,7 +214,7 @@ func TestSubmitDryRun(t *testing.T) {
 		verification: verificationFixture(),
 	}
 	gate := &fakeGate{decision: allowDecision()}
-	sub := &fakeSubmitter{result: Result{Receipt: "dry-run/r", Status: "DRY_RUN"}}
+	sub := &fakeSubmitter{result: Result{Receipt: "dry-run/r", Status: "DRY_RUN", DryRun: true}}
 	aud := audit.NewMemoryStore()
 	s := newService(t, store, gate, sub, aud)
 
@@ -206,10 +230,11 @@ func TestSubmitDryRun(t *testing.T) {
 	if gate.evaluated != 1 || gate.authorized != 1 || sub.calls != 1 {
 		t.Fatalf("gate/submitter calls = %d/%d/%d", gate.evaluated, gate.authorized, sub.calls)
 	}
-	if store.draft.Status != domain.ReportStatusSubmitted {
-		t.Fatalf("draft status = %s", store.draft.Status)
+	if store.draft.Status != domain.ReportStatusDraft {
+		t.Fatalf("dry run changed draft status = %s", store.draft.Status)
 	}
-	if len(store.submissions) != 1 || store.submissions[0].ApprovalID != "ap1" {
+	if len(store.submissions) != 1 || store.submissions[0].ApprovalID != "ap1" ||
+		store.submissions[0].Status != "DRY_RUN" {
 		t.Fatalf("submissions = %+v", store.submissions)
 	}
 	events, _ := aud.List(context.Background(), audit.Filter{Type: "submission.RECORDED"})
@@ -318,6 +343,79 @@ func TestSubmitPlatformFailureRecordsNoSubmission(t *testing.T) {
 	events, _ := aud.List(context.Background(), audit.Filter{Type: "submission.SUBMIT_ERROR"})
 	if len(events) != 1 {
 		t.Fatalf("failure audit = %+v", events)
+	}
+}
+
+func TestDryRunDoesNotBlockRealSubmission(t *testing.T) {
+	draft := draftFixture(t, true)
+	store := &fakeStore{draft: draft, program: programFixture(), finding: findingFixture(), verification: verificationFixture()}
+	gate := &fakeGate{decision: allowDecision()}
+	sub := &fakeSubmitter{result: Result{Receipt: "dry-run/r", Status: "DRY_RUN", DryRun: true}}
+	s := newService(t, store, gate, sub, nil)
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixtureID(t, draft, "ap1"), Now: testNow}); err != nil {
+		t.Fatal(err)
+	}
+	if store.draft.Status != domain.ReportStatusDraft {
+		t.Fatalf("dry run status = %s", store.draft.Status)
+	}
+
+	sub.result = Result{Receipt: "real-receipt", Status: "SUBMITTED"}
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixtureID(t, draft, "ap2"), Now: testNow}); err != nil {
+		t.Fatalf("real submission after dry run: %v", err)
+	}
+	if store.draft.Status != domain.ReportStatusSubmitted {
+		t.Fatalf("real status = %s", store.draft.Status)
+	}
+	if len(store.submissions) != 2 {
+		t.Fatalf("submissions = %+v", store.submissions)
+	}
+}
+
+func TestSubmitRechecksScope(t *testing.T) {
+	draft := draftFixture(t, true)
+	program := programFixture()
+	program.Scope.Include = nil
+	store := &fakeStore{draft: draft, program: program, finding: findingFixture(), verification: verificationFixture()}
+	gate := &fakeGate{decision: allowDecision()}
+	sub := &fakeSubmitter{result: Result{Receipt: "r", Status: "SUBMITTED"}}
+	s := newService(t, store, gate, sub, nil)
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixture(t, draft), Now: testNow}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+	if gate.evaluated != 0 || sub.calls != 0 {
+		t.Fatal("out-of-scope asset reached the gate/submitter")
+	}
+}
+
+func TestSubmitRejectsIncompleteStoredDraft(t *testing.T) {
+	draft := draftFixture(t, true)
+	delete(draft.Fields, "title")
+	store := &fakeStore{draft: draft, program: programFixture(), finding: findingFixture(), verification: verificationFixture()}
+	gate := &fakeGate{decision: allowDecision()}
+	sub := &fakeSubmitter{result: Result{Receipt: "r", Status: "SUBMITTED"}}
+	s := newService(t, store, gate, sub, nil)
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixture(t, draft), Now: testNow}); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("err = %v, want ErrNotReady", err)
+	}
+	if gate.evaluated != 0 || sub.calls != 0 {
+		t.Fatal("incomplete stored draft reached the gate/submitter")
+	}
+}
+
+func TestSubmitRejectsSecondRealSubmission(t *testing.T) {
+	draft := draftFixture(t, true)
+	store := &fakeStore{draft: draft, program: programFixture(), finding: findingFixture(), verification: verificationFixture()}
+	gate := &fakeGate{decision: allowDecision()}
+	sub := &fakeSubmitter{result: Result{Receipt: "real", Status: "SUBMITTED"}}
+	s := newService(t, store, gate, sub, nil)
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixtureID(t, draft, "ap1"), Now: testNow}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a lost status update; the report_id uniqueness must still reject
+	// a second real submission.
+	store.draft.Status = domain.ReportStatusDraft
+	if _, err := s.Submit(context.Background(), Input{ReportID: draft.ID, AccountID: "acc", Approval: approvalFixtureID(t, draft, "ap2"), Now: testNow}); err == nil {
+		t.Fatal("second real submission for the same report must be rejected")
 	}
 }
 

@@ -127,6 +127,12 @@ func TestButianGrowRequiresAIModelAndTool(t *testing.T) {
 	in := validInput()
 	in.Program = reportProgram(domain.PlatformButian, domain.TypeCampusProgram)
 	in.Fields.Category = "Web"
+	in.Fields.AssetScope = "域名"
+	in.Fields.Weight = "1"
+	in.Fields.Activity = "GROW"
+	in.Fields.Industry = "汽车"
+	in.Fields.Region = "北京"
+	in.Fields.Contact = "platform account"
 	in.AI = AIUse{Assisted: true, HumanVerification: "manually reproduced"}
 	in.Verification.AIAssisted = true
 	in.Verification.HumanVerified = true
@@ -185,6 +191,71 @@ func TestAttachmentRules(t *testing.T) {
 	in.Attachments = []string{"evidence.pdf"}
 	if _, err := Build(in); !errors.Is(err, ErrInvalidAttachment) {
 		t.Fatalf("butian attachment err = %v", err)
+	}
+}
+
+func TestManualFindingWithAIAssistedReportIsAllowed(t *testing.T) {
+	in := validInput()
+	in.AI = AIUse{Assisted: true, HumanVerification: "human reproduced the PoC"}
+	res, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Ready {
+		t.Fatalf("manual finding + AI-written report should be ready: %v", res.Missing)
+	}
+	if res.Draft.AIDisclosure["human_verification"] == "" {
+		t.Fatal("AI disclosure missing human verification")
+	}
+}
+
+func TestAIAssistedVerificationRequiresDisclosure(t *testing.T) {
+	in := validInput()
+	in.Verification.AIAssisted = true
+	in.Verification.HumanVerified = true
+	in.Verification.HumanVerificationRef = "human reviewed"
+	res, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ready || !contains(res.Missing, "ai_disclosure") {
+		t.Fatalf("AI-assisted verification without disclosure = %v", res.Missing)
+	}
+}
+
+func TestSensitiveReportTextIsRejected(t *testing.T) {
+	in := validInput()
+	in.Fields.PoC = "GET /search\nCookie: session=abcdef123456"
+	if _, err := Build(in); !errors.Is(err, ErrSensitive) {
+		t.Fatalf("err = %v, want ErrSensitive", err)
+	}
+}
+
+func TestRecheckDoesNotFillDefaults(t *testing.T) {
+	built, err := Build(validInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := built.Draft
+	delete(draft.Fields, "title")
+	res, err := Recheck(draft, reportFinding(), reportProgram(domain.PlatformVulbox, domain.TypeEnterpriseSRC), reportVerification())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ready || !contains(res.Missing, "title") {
+		t.Fatalf("stored draft missing title = %v", res.Missing)
+	}
+}
+
+func TestRecheckRejectsEntityMismatch(t *testing.T) {
+	built, err := Build(validInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := built.Draft
+	draft.VerificationID = "other"
+	if _, err := Recheck(draft, reportFinding(), reportProgram(domain.PlatformVulbox, domain.TypeEnterpriseSRC), reportVerification()); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
 	}
 }
 
