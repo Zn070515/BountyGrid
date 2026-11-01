@@ -1,0 +1,600 @@
+package harness
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+type staticNetworkPolicy struct {
+	decision PolicyDecision
+	reason   string
+
+	mu       sync.Mutex
+	requests []Request
+}
+
+func (p *staticNetworkPolicy) Decide(ctx context.Context, req Request) (PolicyDecision, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests = append(p.requests, req)
+	return p.decision, p.reason
+}
+
+func (p *staticNetworkPolicy) recorded() []Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Request(nil), p.requests...)
+}
+
+type recordingNetworkAudit struct {
+	mu     sync.Mutex
+	events []NetworkDecisionAudit
+	err    error
+}
+
+func (a *recordingNetworkAudit) RecordNetworkDecision(ctx context.Context, e NetworkDecisionAudit) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.err != nil {
+		return a.err
+	}
+	a.events = append(a.events, e)
+	return nil
+}
+
+func (a *recordingNetworkAudit) recorded() []NetworkDecisionAudit {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]NetworkDecisionAudit(nil), a.events...)
+}
+
+func newTestProxy(t *testing.T, cfg ProxyConfig) (*Proxy, *httptest.Server) {
+	t.Helper()
+	p := NewProxy(cfg)
+	srv := httptest.NewServer(p.Handler())
+	t.Cleanup(srv.Close)
+	return p, srv
+}
+
+func testProxyClient(t *testing.T, proxyServer *httptest.Server) *http.Client {
+	t.Helper()
+	u, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:       http.ProxyURL(u),
+			DialContext: publicDialContext(true),
+		},
+		Timeout: 5 * time.Second,
+	}
+}
+
+func startEchoServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func dialConnect(t *testing.T, proxyAddr, target string) (net.Conn, *bufio.Reader, *http.Response) {
+	t.Helper()
+	return dialConnectWithPayload(t, proxyAddr, target, "")
+}
+
+func dialConnectWithPayload(t *testing.T, proxyAddr, target, payload string) (net.Conn, *bufio.Reader, *http.Response) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n%s", target, target, payload); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	return conn, br, resp
+}
+
+func countingUpstream(t *testing.T, calls *atomic.Int64) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte("hello"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestProxyHTTPAllowForwardsAndAudits(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+
+	policy := &staticNetworkPolicy{decision: Allow}
+	audit := &recordingNetworkAudit{}
+	_, proxySrv := newTestProxy(t, ProxyConfig{Policy: policy, Audit: audit, AllowLoopback: true})
+	client := testProxyClient(t, proxySrv)
+
+	resp, err := client.Get(upstream.URL + "/hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "hello" {
+		t.Fatalf("upstream response = %d %q", resp.StatusCode, body)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+
+	events := audit.recorded()
+	if len(events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(events))
+	}
+	ev := events[0]
+	if ev.Decision != Allow || ev.Protocol != ProtocolHTTP {
+		t.Fatalf("audit = %+v", ev)
+	}
+	if ev.Host != "127.0.0.1" || ev.Port == 0 || ev.Method != http.MethodGet || ev.Path != "/hello" {
+		t.Fatalf("audit target = %+v", ev)
+	}
+	if ev.Client == "" || ev.Timestamp.IsZero() {
+		t.Fatalf("audit client/timestamp missing: %+v", ev)
+	}
+
+	requests := policy.recorded()
+	if len(requests) != 1 {
+		t.Fatalf("policy requests = %d, want 1", len(requests))
+	}
+	if requests[0].Protocol != ProtocolHTTP || requests[0].Method != http.MethodGet || requests[0].Path != "/hello" {
+		t.Fatalf("policy request = %+v", requests[0])
+	}
+}
+
+func TestProxyHTTPDenyNeverReachesUpstream(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+
+	policy := &staticNetworkPolicy{decision: Deny, reason: "blocked by test policy"}
+	audit := &recordingNetworkAudit{}
+	_, proxySrv := newTestProxy(t, ProxyConfig{Policy: policy, Audit: audit, AllowLoopback: true})
+	client := testProxyClient(t, proxySrv)
+
+	resp, err := client.Get(upstream.URL + "/denied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "blocked by test policy") {
+		t.Fatalf("response body = %q, want the policy reason", body)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls.Load())
+	}
+	events := audit.recorded()
+	if len(events) != 1 || events[0].Decision != Deny || events[0].Reason != "blocked by test policy" {
+		t.Fatalf("audit = %+v", events)
+	}
+}
+
+func TestProxyAskFailsClosed(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+
+	policy := &staticNetworkPolicy{decision: Ask, reason: "needs human approval"}
+	audit := &recordingNetworkAudit{}
+	_, proxySrv := newTestProxy(t, ProxyConfig{Policy: policy, Audit: audit, AllowLoopback: true})
+	client := testProxyClient(t, proxySrv)
+
+	resp, err := client.Get(upstream.URL + "/ask")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls.Load())
+	}
+	events := audit.recorded()
+	if len(events) != 1 || events[0].Decision != Ask {
+		t.Fatalf("audit = %+v", events)
+	}
+}
+
+func TestProxyNilPolicyFailsClosed(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+	_, proxySrv := newTestProxy(t, ProxyConfig{AllowLoopback: true})
+	client := testProxyClient(t, proxySrv)
+
+	resp, err := client.Get(upstream.URL + "/no-policy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls.Load())
+	}
+}
+
+func TestProxyStripsHopByHopHeaders(t *testing.T) {
+	var calls atomic.Int64
+	var gotXHop string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		gotXHop = r.Header.Get("X-Hop")
+		w.Header().Set("Connection", "X-Bad")
+		w.Header().Set("X-Bad", "secret")
+		w.Header().Set("X-Good", "kept")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy:        &staticNetworkPolicy{decision: Allow},
+		Audit:         &recordingNetworkAudit{},
+		AllowLoopback: true,
+	})
+	client := testProxyClient(t, proxySrv)
+
+	req, err := http.NewRequest(http.MethodGet, upstream.URL+"/headers", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Connection", "X-Hop")
+	req.Header.Set("X-Hop", "secret")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+	if gotXHop != "" {
+		t.Fatalf("hop-by-hop request header reached upstream: %q", gotXHop)
+	}
+	if got := resp.Header.Get("X-Bad"); got != "" {
+		t.Fatalf("hop-by-hop response header leaked: %q", got)
+	}
+	if got := resp.Header.Get("X-Good"); got != "kept" {
+		t.Fatalf("end-to-end response header lost: %q", got)
+	}
+}
+
+func TestProxyBodyLimit(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		_, _ = w.Write(body)
+	}))
+	defer upstream.Close()
+
+	newProxy := func() *http.Client {
+		_, proxySrv := newTestProxy(t, ProxyConfig{
+			Policy:        &staticNetworkPolicy{decision: Allow},
+			Audit:         &recordingNetworkAudit{},
+			AllowLoopback: true,
+			MaxBodyBytes:  8,
+		})
+		return testProxyClient(t, proxySrv)
+	}
+
+	t.Run("request too large", func(t *testing.T) {
+		client := newProxy()
+		resp, err := client.Post(upstream.URL+"/post", "text/plain", strings.NewReader("123456789"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", resp.StatusCode)
+		}
+		if calls.Load() != 0 {
+			t.Fatalf("upstream calls = %d, want 0", calls.Load())
+		}
+	})
+
+	t.Run("request exactly at limit", func(t *testing.T) {
+		client := newProxy()
+		resp, err := client.Post(upstream.URL+"/post", "text/plain", strings.NewReader("12345678"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if calls.Load() != 1 {
+			t.Fatalf("upstream calls = %d, want 1", calls.Load())
+		}
+	})
+
+	t.Run("response too large", func(t *testing.T) {
+		big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			_, _ = w.Write([]byte("123456789"))
+		}))
+		defer big.Close()
+		client := newProxy()
+		resp, err := client.Get(big.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502", resp.StatusCode)
+		}
+	})
+}
+
+func TestProxyAuditFailureBlocksForwarding(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+	audit := &recordingNetworkAudit{err: errors.New("audit unavailable")}
+
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy:        &staticNetworkPolicy{decision: Allow},
+		Audit:         audit,
+		AllowLoopback: true,
+	})
+	client := testProxyClient(t, proxySrv)
+
+	resp, err := client.Get(upstream.URL + "/audit-down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls.Load())
+	}
+}
+
+func TestProxyConnectAllowTunnels(t *testing.T) {
+	echoAddr := startEchoServer(t)
+	policy := &staticNetworkPolicy{decision: Allow}
+	audit := &recordingNetworkAudit{}
+	_, proxySrv := newTestProxy(t, ProxyConfig{Policy: policy, Audit: audit, AllowLoopback: true})
+
+	conn, br, resp := dialConnect(t, proxySrv.Listener.Addr().String(), echoAddr)
+	defer func() { _ = conn.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("CONNECT status = %d body=%q", resp.StatusCode, body)
+	}
+	_ = resp.Body.Close()
+
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(br, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != "ping" {
+		t.Fatalf("tunnel echoed %q, want ping", buf)
+	}
+
+	events := audit.recorded()
+	if len(events) != 1 || events[0].Decision != Allow || events[0].Protocol != ProtocolHTTPSConnect {
+		t.Fatalf("audit = %+v", events)
+	}
+	if events[0].Host != "127.0.0.1" || events[0].Port == 0 || events[0].Method != "" || events[0].Path != "" {
+		t.Fatalf("CONNECT audit = %+v", events[0])
+	}
+}
+
+func TestProxyConnectForwardsPipelinedBytes(t *testing.T) {
+	echoAddr := startEchoServer(t)
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy:        &staticNetworkPolicy{decision: Allow},
+		AllowLoopback: true,
+	})
+
+	// Send the first tunnel bytes in the same write as the CONNECT request; the
+	// server may buffer them past the headers, and the proxy must not drop them.
+	conn, br, resp := dialConnectWithPayload(t, proxySrv.Listener.Addr().String(), echoAddr, "ping")
+	defer func() { _ = conn.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("CONNECT status = %d body=%q", resp.StatusCode, body)
+	}
+	_ = resp.Body.Close()
+
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(br, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != "ping" {
+		t.Fatalf("pipelined tunnel echoed %q, want ping", buf)
+	}
+}
+
+func TestProxyConnectDeny(t *testing.T) {
+	policy := &staticNetworkPolicy{decision: Deny, reason: "host is not approved"}
+	audit := &recordingNetworkAudit{}
+	_, proxySrv := newTestProxy(t, ProxyConfig{Policy: policy, Audit: audit, AllowLoopback: true})
+
+	conn, _, resp := dialConnect(t, proxySrv.Listener.Addr().String(), "example.com:443")
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CONNECT status = %d, want 403", resp.StatusCode)
+	}
+	events := audit.recorded()
+	if len(events) != 1 || events[0].Decision != Deny || events[0].Reason != "host is not approved" {
+		t.Fatalf("audit = %+v", events)
+	}
+	if events[0].Protocol != ProtocolHTTPSConnect || events[0].Host != "example.com" || events[0].Port != 443 {
+		t.Fatalf("CONNECT audit = %+v", events[0])
+	}
+}
+
+func TestProxyConnectLoopbackRequiresExplicitAllowance(t *testing.T) {
+	echoAddr := startEchoServer(t)
+	audit := &recordingNetworkAudit{}
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy:        &staticNetworkPolicy{decision: Allow},
+		Audit:         audit,
+		AllowLoopback: false,
+	})
+
+	conn, _, resp := dialConnect(t, proxySrv.Listener.Addr().String(), echoAddr)
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("CONNECT status = %d, want 502", resp.StatusCode)
+	}
+	// The policy decision was still recorded before the dial attempt failed.
+	events := audit.recorded()
+	if len(events) != 1 || events[0].Decision != Allow {
+		t.Fatalf("audit = %+v", events)
+	}
+}
+
+// TestEgressUsesApprovedProxy proves that Egress routes through the explicit
+// proxy even when the proxy itself is loopback and AllowLoopback is false. A
+// direct connection to the loopback upstream would be rejected, so success can
+// only come from the proxy path.
+func TestEgressUsesApprovedProxy(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+	audit := &recordingNetworkAudit{}
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy:        &staticNetworkPolicy{decision: Allow},
+		Audit:         audit,
+		AllowLoopback: true,
+	})
+
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+
+	e := NewEgress(&Sandbox{
+		AllowedHosts:  []string{"127.0.0.1"},
+		ApprovedProxy: proxySrv.URL,
+	})
+	body, status, err := e.GetBytes(context.Background(), upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK || string(body) != "hello" {
+		t.Fatalf("response = %d %q", status, body)
+	}
+	events := audit.recorded()
+	if len(events) != 1 || events[0].Decision != Allow {
+		t.Fatalf("proxy audit = %+v", events)
+	}
+}
+
+func TestEgressDenyThroughApprovedProxy(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+	audit := &recordingNetworkAudit{}
+	_, proxySrv := newTestProxy(t, ProxyConfig{
+		Policy:        &staticNetworkPolicy{decision: Deny, reason: "egress denied"},
+		Audit:         audit,
+		AllowLoopback: true,
+	})
+
+	e := NewEgress(&Sandbox{
+		AllowedHosts:  []string{"127.0.0.1"},
+		ApprovedProxy: proxySrv.URL,
+	})
+	resp, err := e.Get(context.Background(), upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls.Load())
+	}
+	events := audit.recorded()
+	if len(events) != 1 || events[0].Decision != Deny {
+		t.Fatalf("proxy audit = %+v", events)
+	}
+}
+
+func TestEgressIgnoresEnvironmentProxy(t *testing.T) {
+	var calls atomic.Int64
+	upstream := countingUpstream(t, &calls)
+
+	envAudit := &recordingNetworkAudit{}
+	_, envProxy := newTestProxy(t, ProxyConfig{
+		Policy:        &staticNetworkPolicy{decision: Deny, reason: "environment proxy must not be used"},
+		Audit:         envAudit,
+		AllowLoopback: true,
+	})
+	t.Setenv("HTTP_PROXY", envProxy.URL)
+	t.Setenv("HTTPS_PROXY", envProxy.URL)
+	t.Setenv("NO_PROXY", "")
+
+	e := NewEgress(&Sandbox{AllowedHosts: []string{"127.0.0.1"}, AllowLoopback: true})
+	body, status, err := e.GetBytes(context.Background(), upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK || string(body) != "hello" {
+		t.Fatalf("response = %d %q", status, body)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+	if events := envAudit.recorded(); len(events) != 0 {
+		t.Fatalf("environment proxy was consulted: %+v", events)
+	}
+}

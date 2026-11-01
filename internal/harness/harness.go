@@ -20,6 +20,7 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/audit"
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/gateway"
+	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 	"github.com/Zn070515/BountyGrid/internal/timeutil"
 )
 
@@ -183,11 +184,74 @@ type ExecutionGrant struct {
 }
 
 type requestGate struct {
+	mu    sync.Mutex
+	last  time.Time
+	sem   chan struct{}
+	daily *dailyCounter
+}
+
+// dailyCounter is the per-program daily request budget. Every ExecutionGrant
+// for the same program shares one counter, so separate tool executions cannot
+// each reset the platform's PerInterfaceDailyLimits.
+type dailyCounter struct {
 	mu   sync.Mutex
-	last time.Time
 	day  string
 	used int64
-	sem  chan struct{}
+}
+
+func (c *dailyCounter) count(now time.Time, limit int64) error {
+	day := businessDay(now)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.day != day {
+		c.day = day
+		c.used = 0
+	}
+	if limit > 0 && c.used >= limit {
+		return fmt.Errorf("%w: daily request limit %d reached", ErrGrantDenied, limit)
+	}
+	c.used++
+	return nil
+}
+
+// dailyBudget holds the shared daily counters. RPS and concurrency remain
+// execution-local; only the daily ceiling spans grants.
+type dailyBudget struct {
+	mu       sync.Mutex
+	counters map[string]*dailyCounter
+}
+
+func newDailyBudget() *dailyBudget {
+	return &dailyBudget{counters: make(map[string]*dailyCounter)}
+}
+
+func (b *dailyBudget) counter(key string) *dailyCounter {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := b.counters[key]
+	if c == nil {
+		c = &dailyCounter{}
+		b.counters[key] = c
+	}
+	return c
+}
+
+// dailyGrantKey groups grants that must share one daily budget. ProgramID is
+// the stable identity; asset/asset-target are fallbacks for callers that build
+// a grant without one. HTTP and ACTIVE_HTTP limits both collapse into the
+// grant's single request budget.
+func dailyGrantKey(g ExecutionGrant) string {
+	scope := strings.TrimSpace(string(g.ProgramID))
+	if scope == "" && g.AssetID != nil {
+		scope = "asset:" + string(*g.AssetID)
+	}
+	if scope == "" {
+		scope = strings.TrimSpace(g.AssetTarget)
+	}
+	if scope == "" {
+		return ""
+	}
+	return scope + "|http"
 }
 
 type Egress struct {
@@ -196,6 +260,7 @@ type Egress struct {
 	maxBytes int64
 	grant    *ExecutionGrant
 	gate     *requestGate
+	daily    *dailyBudget
 }
 
 // DefaultEgressMaxBytes bounds a single response body. Tools must not be able
@@ -206,13 +271,14 @@ func NewEgress(s *Sandbox) *Egress {
 	if s == nil {
 		s = &Sandbox{}
 	}
-	e := &Egress{sandbox: s, maxBytes: DefaultEgressMaxBytes}
+	e := &Egress{sandbox: s, maxBytes: DefaultEgressMaxBytes, daily: newDailyBudget()}
+	approved, proxyErr := parseApprovedProxy(s.ApprovedProxy)
 	transport := &http.Transport{
 		// Proxy is nil unless an operator configured an approved proxy. An
 		// environment variable must not silently reroute execution traffic.
 		Proxy:                 nil,
 		ForceAttemptHTTP2:     true,
-		DialContext:           publicDialContext(s.AllowLoopback),
+		DialContext:           proxyDialContext(approved, s.AllowLoopback),
 		MaxIdleConns:          20,
 		MaxIdleConnsPerHost:   4,
 		IdleConnTimeout:       30 * time.Second,
@@ -220,10 +286,16 @@ func NewEgress(s *Sandbox) *Egress {
 		ResponseHeaderTimeout: 20 * time.Second,
 		ExpectContinueTimeout: 2 * time.Second,
 	}
-	if proxy := strings.TrimSpace(s.ApprovedProxy); proxy != "" {
-		if u, err := url.Parse(proxy); err == nil && u.Scheme != "" && u.Host != "" {
-			transport.Proxy = http.ProxyURL(u)
-		}
+	switch {
+	case proxyErr != nil:
+		// A configured but unusable proxy fails closed instead of silently
+		// falling back to a direct connection.
+		transport.Proxy = func(*http.Request) (*url.URL, error) { return nil, proxyErr }
+	case approved != nil:
+		// The proxy dials the target; its NetworkPolicy enforces per-request
+		// access. proxyDialContext still pins the proxy address and keeps the
+		// public-address filter for direct (non-proxied) connections.
+		transport.Proxy = http.ProxyURL(approved)
 	}
 	e.client = &http.Client{
 		Transport: transport,
@@ -238,14 +310,36 @@ func NewEgress(s *Sandbox) *Egress {
 	return e
 }
 
+// parseApprovedProxy validates the operator-configured proxy. A nil URL with a
+// nil error means no proxy is configured.
+func parseApprovedProxy(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, errors.New("egress: approved proxy is not a valid url")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if (scheme != "http" && scheme != "https") || u.Hostname() == "" {
+		return nil, errors.New("egress: approved proxy must be an http(s) url with a host")
+	}
+	return u, nil
+}
+
 // WithGrant returns a per-execution client bound to the approved decision. The
-// shared transport is reused, but method/target/path/rate/concurrency/daily
-// checks and the request gate are execution-local.
+// shared transport is reused. Method/target/path checks, RPS and concurrency
+// are execution-local; the daily counter is shared per program so a second
+// execution cannot reset the platform's daily ceiling.
 func (e *Egress) WithGrant(g ExecutionGrant) *Egress {
 	out := *e
 	grant := g
 	out.grant = &grant
-	gate := &requestGate{day: businessDay(time.Now())}
+	gate := &requestGate{daily: &dailyCounter{}}
+	if key := dailyGrantKey(g); key != "" && e.daily != nil {
+		gate.daily = e.daily.counter(key)
+	}
 	if g.MaxConcurrency != nil && *g.MaxConcurrency > 0 {
 		gate.sem = make(chan struct{}, *g.MaxConcurrency)
 	}
@@ -352,7 +446,7 @@ func (g *ExecutionGrant) allowsTarget(u *url.URL) error {
 	// a URL target additionally pins scheme and path prefix.
 	host := strings.ToLower(u.Hostname())
 	if !strings.Contains(target, "/") && !strings.Contains(target, ":") {
-		if !hostMatches(target, host) {
+		if !rules.HostMatches(target, host) {
 			return fmt.Errorf("%w: host %s is not the approved asset %s", ErrGrantDenied, host, target)
 		}
 		return nil
@@ -366,7 +460,7 @@ func (g *ExecutionGrant) allowsTarget(u *url.URL) error {
 	if parsed.Scheme != "" && !strings.EqualFold(parsed.Scheme, u.Scheme) {
 		return fmt.Errorf("%w: scheme %s is not approved", ErrGrantDenied, u.Scheme)
 	}
-	if !hostMatches(parsed.Hostname(), host) {
+	if !rules.HostMatches(parsed.Hostname(), host) {
 		return fmt.Errorf("%w: host %s is not the approved asset %s", ErrGrantDenied, host, parsed.Hostname())
 	}
 	if parsed.Port() != "" && parsed.Port() != u.Port() {
@@ -387,23 +481,6 @@ func (g *ExecutionGrant) allowsTarget(u *url.URL) error {
 		}
 	}
 	return nil
-}
-
-// hostMatches implements exact host and *.suffix subdomain-only matching.
-func hostMatches(pattern, host string) bool {
-	pattern = strings.ToLower(strings.TrimSpace(pattern))
-	host = strings.ToLower(strings.TrimSpace(host))
-	if pattern == "" || host == "" {
-		return false
-	}
-	if pattern == host {
-		return true
-	}
-	if strings.HasPrefix(pattern, "*.") {
-		suffix := pattern[1:]
-		return len(host) > len(suffix) && strings.HasSuffix(host, suffix)
-	}
-	return false
 }
 
 func (e *Egress) acquire(ctx context.Context) (func(), error) {
@@ -458,18 +535,10 @@ func (g *requestGate) wait(ctx context.Context, rps *float64) error {
 }
 
 func (g *requestGate) count(now time.Time, limit int64) error {
-	day := businessDay(now)
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.day != day {
-		g.day = day
-		g.used = 0
+	if g.daily == nil {
+		return nil
 	}
-	if limit > 0 && g.used >= limit {
-		return fmt.Errorf("%w: daily request limit %d reached", ErrGrantDenied, limit)
-	}
-	g.used++
-	return nil
+	return g.daily.count(now, limit)
 }
 
 func businessDay(t time.Time) string {

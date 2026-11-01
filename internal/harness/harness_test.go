@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -544,12 +546,89 @@ func TestExecutionGrantEnforcesMethodAndTarget(t *testing.T) {
 }
 
 func TestExecutionGrantDailyLimit(t *testing.T) {
-	g := &requestGate{day: businessDay(testNow)}
+	g := &requestGate{daily: &dailyCounter{}}
 	if err := g.count(testNow, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.count(testNow, 1); !errors.Is(err, ErrGrantDenied) {
 		t.Fatalf("second request err = %v, want daily limit", err)
+	}
+}
+
+func TestDailyLimitSharedAcrossGrants(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	e := NewEgress(&Sandbox{AllowedHosts: []string{"127.0.0.1"}, AllowLoopback: true})
+	grant := ExecutionGrant{
+		ProgramID:      "p1",
+		AllowedMethods: map[string]struct{}{http.MethodGet: {}},
+		DailyLimit:     1,
+	}
+	get := func(eg *Egress) error {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/x", nil)
+		if err != nil {
+			return err
+		}
+		resp, err := eg.Do(context.Background(), req)
+		if err != nil {
+			return err
+		}
+		return resp.Body.Close()
+	}
+
+	// Two separate executions for the same program share one daily budget.
+	if err := get(e.WithGrant(grant)); err != nil {
+		t.Fatalf("first grant: %v", err)
+	}
+	if err := get(e.WithGrant(grant)); !errors.Is(err, ErrGrantDenied) {
+		t.Fatalf("second grant err = %v, want ErrGrantDenied", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+
+	// A different program keeps its own budget.
+	other := grant
+	other.ProgramID = "p2"
+	if err := get(e.WithGrant(other)); err != nil {
+		t.Fatalf("other program grant: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestExecutionGrantAssetTargetHostPatterns(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+		host    string
+		want    bool
+	}{
+		{"exact host", "example.com", "example.com", true},
+		{"exact rejects subdomain", "example.com", "www.example.com", false},
+		{"single wildcard matches subdomain", "*.example.com", "www.example.com", true},
+		{"single wildcard rejects apex", "*.example.com", "example.com", false},
+		{"double wildcard matches apex", "**.example.com", "example.com", true},
+		{"double wildcard matches subdomain", "**.example.com", "www.example.com", true},
+		{"double wildcard rejects other domain", "**.example.com", "example.org", false},
+		{"trailing dot pattern", "example.com.", "example.com", true},
+		{"trailing dot host", "example.com", "example.com.", true},
+		{"case insensitive", "EXAMPLE.COM", "example.com", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := ExecutionGrant{AssetTarget: tc.pattern}
+			err := g.allowsTarget(&url.URL{Scheme: "https", Host: tc.host, Path: "/"})
+			if got := err == nil; got != tc.want {
+				t.Fatalf("allowsTarget(%q, %q) = %v, want %v", tc.pattern, tc.host, got, tc.want)
+			}
+		})
 	}
 }
 

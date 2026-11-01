@@ -530,6 +530,12 @@ func parseAsset(raw string) (string, string, error) {
 	return host, p, nil
 }
 
+// HostMatches reports whether host matches a host pattern. Supported forms are
+// an exact host, "*.suffix" (subdomains only, never the apex), and
+// "**.suffix" (the apex and subdomains). Matching is case-insensitive and
+// ignores one trailing dot on either side.
+func HostMatches(pattern, host string) bool { return hostMatches(pattern, host) }
+
 func hostMatches(pattern, host string) bool {
 	pattern = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(pattern), "."))
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
