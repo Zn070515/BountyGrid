@@ -213,6 +213,33 @@ SENSITIVE_DATA_READ（默认；仅项目明确“证明型/限额”例外）
 
 限额与预算不是注释：`DecisionContext.UsageToday` 按 `PerInterfaceDailyLimits.Interface` 计数，`BudgetSpent` 对 `BudgetCap` 比较；达到上限直接 `DENY`（`DAILY_LIMIT_EXCEEDED` / `BUDGET_EXCEEDED`），不能靠人工审批绕过。
 
+### 6.4 声明式规则覆盖（`internal/policy/rules`）
+
+规则是数据，不是权限本身。每条规则按 action/program/host/method/path 选择请求，携带 `allow|require_human|forbidden` 与 `justification`，并可在加载时用 `match`/`not_match` 样例自测：
+
+```json
+{
+  "id": "vulbox-444-read-only",
+  "actions": ["ACTIVE_HTTP"],
+  "programs": ["vulbox/444"],
+  "hosts": ["*.example.com"],
+  "methods": ["GET", "HEAD"],
+  "decision": "allow",
+  "justification": "read-only scope",
+  "match": [{"action": "ACTIVE_HTTP", "program": "vulbox/444", "asset": "https://api.example.com/v1", "method": "GET"}],
+  "not_match": [{"action": "ACTIVE_HTTP", "program": "vulbox/444", "asset": "https://example.com/v1", "method": "GET"}]
+}
+```
+
+- 选择器内是 OR，不同字段之间是 AND；空选择器表示 any。
+- `*.example.com` 只匹配子域，`**.example.com` 才匹配 apex；全局 `*`、带 scheme/port/path 的 host 在加载时拒绝。
+- URL 在匹配前规范化：host 小写/去尾点/去端口/去 IPv6 括号，path 百分号解码 + 强制前导 `/` + `path.Clean`。
+- 多规则命中取最严：`forbidden > require_human > allow`。`allow` 只能放宽 `overridableByAutomation` 的动作，不能覆盖硬 `DENY`、`AUTOMATION_UNKNOWN/FORBIDDEN`、Scope/资产/资格/新鲜度/运行时约束。
+- 决策记录 `RuleIDs` 与 `RuleSetFingerprint`；`Authorize` 在同一事务/重评估路径上拒绝指纹变化后的旧授权。
+- `bountygrid policy check -rules <file> -action ...` 加载并自测规则、输出命中规则；`decide`/`harness`/`submit` 可用可选 `-rules`。
+
+规则层与 `ExecutionGrant` 的关系：规则决定“是否需要人工审批”，`ExecutionGrant` 决定“这个请求到底能打到哪个 host/method/path、以什么 RPS/并发/日限额”。两者都不能被对方替代。
+
 ## 7. 决策算法
 
 ```go
@@ -314,6 +341,25 @@ func (e *Engine) Decide(ctx context.Context, req domain.ActionRequest) (domain.A
             }
         case domain.CapAllowed:
             if overridableByAutomation(req.Action) {
+                base = domain.DecisionAllow
+            }
+        }
+    }
+
+    // 7b. 声明式规则覆盖：最严决策胜出；allow 只能放宽可覆盖动作
+    if e.rules != nil {
+        rr, err := e.rules.Evaluate(rules.Request{
+            Action: req.Action, Program: req.ProgramID,
+            Asset: dc.AssetValue(), Method: req.Method,
+        })
+        if err != nil { return deny(req, "RULE_REQUEST_INVALID"), nil }
+        switch rr.Decision {
+        case rules.DecisionForbidden:
+            return denyWithRules(req, rr), nil
+        case rules.DecisionRequireHuman:
+            if base != domain.DecisionDeny { base = domain.DecisionRequireHuman }
+        case rules.DecisionAllow:
+            if base != domain.DecisionDeny && overridableByAutomation(req.Action) {
                 base = domain.DecisionAllow
             }
         }
@@ -422,6 +468,7 @@ single_use（human-only 动作必须 true）
 
 ## 12. Control-plane hardening（2026-11-01）
 
+- **声明式规则覆盖**：`internal/policy/rules` 在矩阵/automation 之后、人工批准之前求值；多规则最严合并，`allow` 只放宽 `overridableByAutomation` 的动作，不能覆盖硬 `DENY`、`AUTOMATION_UNKNOWN/FORBIDDEN`、Scope/资产/资格/新鲜度/运行时约束。规则文件加载时验证 `match`/`not_match`；决策记录 `RuleIDs`/`RuleSetFingerprint`，`Authorize` 拒绝规则集变更后的旧授权。`bountygrid policy check` 可离线验证规则文件。
 - **Authoritative Asset**：调用方只能提交 `AssetID`。Action Gateway 从 `Program.Scope.ResolveAsset` 取 canonical Asset；未存储的 ID → `DENY ASSET_UNKNOWN`，不再接受调用方提供的 Asset 对象。
 - **Authorize 重新评估**：`ActionDecision` 持久化 `Request/ResourceID/UsageToday/BudgetSpent/Environment`。`Authorize` 重新加载 Account/Program、重新解析 Asset、重跑 Policy；任一门槛变化 → 执行前失败。旧格式（无 Request）Decision 只保留窄校验。
 - **审批消费时点**：`Policy.Decide` 校验但不消费 single-use approval；`Gateway.Authorize` 在重新评估通过后调用 `ApprovalLedger.Consume`。审批过期/已消费 → 不执行。

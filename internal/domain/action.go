@@ -81,6 +81,13 @@ type ActionDecision struct {
 	ScopeRevision string
 	// PolicyRevision is a digest of the automation/constraints snapshot.
 	PolicyRevision string
+	// RuleIDs lists the declarative policy rules that matched this request. It is
+	// audit provenance, not an authority: the effective decision is still the
+	// strictest merged decision after all domain gates.
+	RuleIDs []string
+	// RuleSetFingerprint identifies the exact rule set used for the decision. A
+	// later Authorize with a different rule set must not ride this approval.
+	RuleSetFingerprint string
 	// RequestParameters preserves the exact parameter bytes supplied by the
 	// caller. PostgreSQL JSONB normalizes JSON whitespace/key order, so the
 	// nested Request.Parameters cannot be used to re-validate an approval hash.

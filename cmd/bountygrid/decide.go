@@ -19,6 +19,7 @@ type decideOptions struct {
 	RequestFile string
 	Authorize   string
 	ContextFile string
+	RulesFile   string
 }
 
 type decideInput struct {
@@ -38,6 +39,7 @@ func parseDecideOptions(args []string) (decideOptions, error) {
 	fs.StringVar(&o.RequestFile, "request", "", "JSON file with request (AssetID only), approval, usage and execution_environment")
 	fs.StringVar(&o.Authorize, "authorize", "", "re-check an ALLOW decision id before execution")
 	fs.StringVar(&o.ContextFile, "context", "", "with -authorize: JSON file with fresh usage_today/budget_spent/execution_environment")
+	fs.StringVar(&o.RulesFile, "rules", "", "optional JSON rule-set overlay")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -68,7 +70,11 @@ func runDecide(ctx context.Context, args []string) error {
 	}
 	defer pool.Close()
 	repo := postgres.NewRepo(pool)
-	engine := policy.NewEngine()
+	rs, err := loadOptionalRules(opts.RulesFile)
+	if err != nil {
+		return err
+	}
+	engine := policy.NewEngineWithRules(rs)
 	g := gateway.New(repo, engine, postgres.NewAuditStore(pool), postgres.NewPostgresApprovalLedger(pool))
 
 	if opts.Authorize != "" {

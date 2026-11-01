@@ -12,6 +12,7 @@ import (
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/gateway"
+	"github.com/Zn070515/BountyGrid/internal/policy"
 	"github.com/Zn070515/BountyGrid/internal/report"
 	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 	"github.com/Zn070515/BountyGrid/internal/submit"
@@ -24,6 +25,7 @@ type submitOptions struct {
 	ApprovalID      string
 	PrintBinding    bool
 	AttachmentsRoot string
+	RulesFile       string
 }
 
 // approvalFile is the JSON shape for a human approval. domain.HumanApproval has
@@ -70,6 +72,7 @@ func parseSubmitOptions(args []string) (submitOptions, error) {
 	fs.StringVar(&o.ApprovalID, "approval-id", "", "approval id for -print-binding")
 	fs.BoolVar(&o.PrintBinding, "print-binding", false, "print the request_id/parameters_hash an approval must bind")
 	fs.StringVar(&o.AttachmentsRoot, "attachments-root", "", "root for re-verifying approved attachment hashes")
+	fs.StringVar(&o.RulesFile, "rules", "", "optional JSON rule-set overlay")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -117,7 +120,11 @@ func runSubmit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	gate := gateway.New(repo, nil, postgres.NewAuditStore(pool), postgres.NewPostgresApprovalLedger(pool))
+	rs, err := loadOptionalRules(opts.RulesFile)
+	if err != nil {
+		return err
+	}
+	gate := gateway.New(repo, policy.NewEngineWithRules(rs), postgres.NewAuditStore(pool), postgres.NewPostgresApprovalLedger(pool))
 	svc, err := submit.New(submit.Options{
 		Store: repo, Gate: gate, Submitter: submit.DryRunSubmitter{},
 		Auditor:         postgres.NewAuditStore(pool),

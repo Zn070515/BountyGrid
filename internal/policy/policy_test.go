@@ -3,10 +3,12 @@ package policy
 import (
 	"context"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/policy/rules"
 )
 
 var testNow = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
@@ -976,4 +978,129 @@ func TestFreshAuthorizationInputsProceed(t *testing.T) {
 	if d.AssetTarget != "a1.example.com" || d.ScopeRevision == "" {
 		t.Fatalf("decision missing asset target/scope revision: %+v", d)
 	}
+}
+
+func executionRuleContext(action domain.Action, automation domain.CapabilityStatus) DecisionContext {
+	r := req(action)
+	asset := domain.AssetID("a1")
+	r.AssetID = &asset
+	r.Method = "GET"
+	prog := testProgram(domain.StatusRunning, domain.ScopePublic)
+	prog.Scope.Include = []domain.Asset{{
+		ID: asset, ProgramID: "p1", Value: "api.example.com", InScope: true,
+	}}
+	prog.Automation.ActiveHTTP = automation
+	return DecisionContext{
+		Request: r, Account: testAccount(true), Program: prog,
+		Asset: &domain.Asset{
+			ID: asset, ProgramID: "p1", Value: "https://api.example.com/v1/items", InScope: true,
+		},
+		Now: testNow,
+	}
+}
+
+func ruleSet(t *testing.T, decision, justification string) *rules.RuleSet {
+	t.Helper()
+	rs, err := rules.Parse([]byte(`{"rules":[{
+		"id":"test-rule",
+		"actions":["ACTIVE_HTTP"],
+		"hosts":["api.example.com"],
+		"methods":["GET"],
+		"decision":"` + decision + `",
+		"justification":"` + justification + `",
+		"match":[{"action":"ACTIVE_HTTP","asset":"https://api.example.com/v1/items","method":"GET"}]
+	}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rs
+}
+
+func TestRulesCanLoosenConditionalAutomation(t *testing.T) {
+	e := NewEngineWithRules(ruleSet(t, "allow", "rule explicitly permits read"))
+	d, err := e.Decide(context.Background(), executionRuleContext(domain.ActionActiveHTTP, domain.CapConditional))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionAllow {
+		t.Fatalf("decision = %s %v", d.Decision, d.Reasons)
+	}
+	if len(d.RuleIDs) != 1 || d.RuleIDs[0] != "test-rule" {
+		t.Fatalf("rule ids = %v", d.RuleIDs)
+	}
+	if !containsString(d.Reasons, "RULE_ALLOW:test-rule") {
+		t.Fatalf("reasons = %v", d.Reasons)
+	}
+	if d.RuleSetFingerprint == "" || d.RuleSetFingerprint != ruleSet(t, "allow", "rule explicitly permits read").Fingerprint() {
+		t.Fatalf("rule set fingerprint = %q", d.RuleSetFingerprint)
+	}
+}
+
+func TestRulesRequireHumanOverridesAutomationAllow(t *testing.T) {
+	e := NewEngineWithRules(ruleSet(t, "require_human", "manual approval needed"))
+	d, err := e.Decide(context.Background(), executionRuleContext(domain.ActionActiveHTTP, domain.CapAllowed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireHuman {
+		t.Fatalf("decision = %s %v", d.Decision, d.Reasons)
+	}
+	if !containsString(d.Reasons, "RULE_REQUIRE_HUMAN:test-rule") {
+		t.Fatalf("reasons = %v", d.Reasons)
+	}
+}
+
+func TestRulesForbiddenWins(t *testing.T) {
+	e := NewEngineWithRules(ruleSet(t, "forbidden", "admin surface is out of scope"))
+	d, err := e.Decide(context.Background(), executionRuleContext(domain.ActionActiveHTTP, domain.CapAllowed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny {
+		t.Fatalf("decision = %s %v", d.Decision, d.Reasons)
+	}
+	if !containsString(d.Reasons, "RULE_FORBIDDEN:test-rule") {
+		t.Fatalf("reasons = %v", d.Reasons)
+	}
+}
+
+func TestRulesCannotOverrideHardDeny(t *testing.T) {
+	rs, err := rules.Parse([]byte(`{"rules":[{
+		"id":"allow-dos",
+		"actions":["DOS"],
+		"decision":"allow",
+		"justification":"should not loosen a hard deny",
+		"match":[{"action":"DOS","asset":"https://api.example.com/v1/items","method":"GET"}]
+	}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc := executionRuleContext(domain.ActionDoS, domain.CapAllowed)
+	dc.Program.Automation.DoS = domain.CapAllowed
+	d, err := NewEngineWithRules(rs).Decide(context.Background(), dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionDeny {
+		t.Fatalf("hard deny was loosened: %s %v", d.Decision, d.Reasons)
+	}
+}
+
+func TestNilRulesLeavePolicyUnchanged(t *testing.T) {
+	d, err := NewEngineWithRules(nil).Decide(context.Background(), executionRuleContext(domain.ActionActiveHTTP, domain.CapConditional))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != domain.DecisionRequireHuman || len(d.RuleIDs) != 0 {
+		t.Fatalf("decision = %s %v ids=%v", d.Decision, d.Reasons, d.RuleIDs)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if strings.Contains(v, want) {
+			return true
+		}
+	}
+	return false
 }

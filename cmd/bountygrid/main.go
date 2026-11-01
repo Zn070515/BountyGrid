@@ -96,6 +96,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "model:", err)
 			os.Exit(1)
 		}
+	case "policy":
+		if err := runPolicy(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "policy:", err)
+			os.Exit(1)
+		}
 	case "verify":
 		verifyCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 		defer cancel()
@@ -133,7 +138,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|decide|schedule|competition|harness|model|verify|report|submit|ledger|version>")
+	fmt.Fprintln(os.Stderr, "usage: bountygrid <migrate|rollback|ping|sync|derive|decide|schedule|competition|harness|model|policy|verify|report|submit|ledger|version>")
 }
 
 func dsn() (string, error) {
