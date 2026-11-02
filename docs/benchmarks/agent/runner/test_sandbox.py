@@ -125,5 +125,74 @@ class ProbeScriptTests(unittest.TestCase):
         self.assertIsNone(results)
 
 
+from unittest import mock
+
+from sandbox.docker import (
+    DOCKER_ERROR_PREFIXES,
+    DockerSandbox,
+    ExecResult,
+    docker_available,
+    is_docker_error,
+    sweep_stale,
+)
+
+
+class DockerArgsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self.tmp.name)
+        (self.work / ".git").mkdir()
+        self.sandbox = DockerSandbox(self.work, "img:1", "abc123", host_uid="1000:1000")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_agent_args_lock_down_the_container(self):
+        args = self.sandbox.agent_args()
+        joined = " ".join(args)
+        for needle in ("--network none", "--read-only", "--tmpfs /tmp:rw,size=256m",
+                       "--cap-drop=ALL", "--security-opt no-new-privileges",
+                       "--pids-limit 256", "--memory 2g", "--cpus 2",
+                       "--init", "--ipc=private", "--user 1000:1000",
+                       f"{self.work}:/work:rw",
+                       f"{self.work / '.git'}:/work/.git:ro"):
+            self.assertIn(needle, joined)
+        self.assertNotIn("docker.sock", joined)
+        self.assertNotIn("seccomp=unconfined", joined)
+
+    def test_acceptance_args_mount_the_probe_read_only(self):
+        args = self.sandbox.acceptance_args("python -m unittest", 60,
+                                            probe=HERE / "sandbox" / "probe.py",
+                                            probe_input=None)
+        joined = " ".join(args)
+        self.assertIn("probe.py:/probe/probe.py:ro", joined)
+        self.assertIn("PYTHONPATH=/work", joined)
+        self.assertIn("timeout -s KILL 60 sh -c", joined)
+
+    def test_acceptance_args_without_probe(self):
+        args = self.sandbox.acceptance_args("python -m unittest", 60,
+                                            probe=None, probe_input=None)
+        self.assertNotIn("probe.py", " ".join(args))
+        self.assertNotIn("-i", args)
+
+    def test_exec_wraps_with_timeout(self):
+        args = self.sandbox.exec_args(["python", "-m", "pytest"], 30)
+        self.assertEqual(args[-7:],
+                         ["timeout", "-s", "KILL", "30", "python", "-m", "pytest"])
+        self.assertIn("exec", args)
+
+    def test_docker_errors_are_classified(self):
+        self.assertTrue(is_docker_error(
+            ExecResult(125, "", "Error response from daemon: No such container")))
+        self.assertTrue(is_docker_error(
+            ExecResult(126, "", "OCI runtime exec failed: exec failed")))
+        self.assertFalse(is_docker_error(
+            ExecResult(1, "", "AssertionError: -1 != 5")))
+
+    def test_docker_available_is_false_when_the_binary_is_missing(self):
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError):
+            self.assertFalse(docker_available())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
