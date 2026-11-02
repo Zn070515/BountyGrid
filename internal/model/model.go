@@ -150,6 +150,25 @@ const (
 	CapabilityStructuredOutput Capability = "STRUCTURED_OUTPUT"
 )
 
+// ThinkingMode selects the provider's reasoning mode. The zero value leaves the
+// provider default; "on"/"off" are explicit operator or task-profile choices.
+type ThinkingMode string
+
+const (
+	ThinkingAuto ThinkingMode = ""
+	ThinkingOn   ThinkingMode = "on"
+	ThinkingOff  ThinkingMode = "off"
+)
+
+func (t ThinkingMode) Valid() bool {
+	switch t {
+	case ThinkingAuto, ThinkingOn, ThinkingOff:
+		return true
+	default:
+		return false
+	}
+}
+
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -210,6 +229,12 @@ type ModelRequest struct {
 	Input      []Message    `json:"input"`
 	MaxTokens  int          `json:"max_tokens"`
 	Budget     domain.Money `json:"budget"`
+	// Thinking and Temperature are model-facing request controls. A provider
+	// that does not support them ignores them; ThinkingAuto leaves the server
+	// default unchanged.
+	Thinking       ThinkingMode `json:"thinking,omitempty"`
+	ThinkingBudget int          `json:"thinking_budget,omitempty"`
+	Temperature    *float64     `json:"temperature,omitempty"`
 	// ModelEgress is a caller hint for CLI/test plans. The Router never treats
 	// it as authority; PolicyResolver supplies the effective policy. The zero
 	// value and UNKNOWN behave as LOCAL_ONLY.
@@ -258,6 +283,15 @@ func (r ModelRequest) Validate() error {
 	if r.Budget.Amount > 0 && strings.TrimSpace(r.Budget.Currency) == "" {
 		return fmt.Errorf("%w: budget currency is empty", ErrInvalidRequest)
 	}
+	if !r.Thinking.Valid() {
+		return fmt.Errorf("%w: invalid thinking mode %q", ErrInvalidRequest, r.Thinking)
+	}
+	if r.ThinkingBudget < 0 {
+		return fmt.Errorf("%w: thinking budget is negative", ErrInvalidRequest)
+	}
+	if r.Temperature != nil && *r.Temperature < 0 {
+		return fmt.Errorf("%w: temperature is negative", ErrInvalidRequest)
+	}
 	for _, m := range r.Input {
 		if strings.TrimSpace(m.Role) == "" {
 			return fmt.Errorf("%w: message role is empty", ErrInvalidRequest)
@@ -267,11 +301,16 @@ func (r ModelRequest) Validate() error {
 }
 
 type ModelResponse struct {
-	Content    string        `json:"content"`
-	Usage      Usage         `json:"usage"`
-	Model      string        `json:"model"`
-	Provider   string        `json:"provider"`
-	Latency    time.Duration `json:"latency"`
+	Content  string        `json:"content"`
+	Usage    Usage         `json:"usage"`
+	Model    string        `json:"model"`
+	Provider string        `json:"provider"`
+	Latency  time.Duration `json:"latency"`
+	// StopReason is the provider's native stop reason ("stop", "length",
+	// "end_turn", "max_tokens", "refusal", ...). Truncated is true when the
+	// provider stopped at the output ceiling.
+	StopReason string        `json:"stop_reason,omitempty"`
+	Truncated  bool          `json:"truncated,omitempty"`
 	Confidence float64       `json:"confidence"`
 	Cost       domain.Money  `json:"cost"`
 }

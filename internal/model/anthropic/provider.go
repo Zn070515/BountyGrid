@@ -17,10 +17,9 @@ import (
 )
 
 const (
-	defaultName       = "local-anthropic"
-	userAgent         = "bountygrid-model/1"
-	anthropicVersion  = "2023-06-01"
-	maxModelNameBytes = 256
+	defaultName      = "local-anthropic"
+	userAgent        = "bountygrid-model/1"
+	anthropicVersion = "2023-06-01"
 )
 
 // Config is the provider's static configuration. Zero Timeout and
@@ -52,45 +51,23 @@ var _ model.Provider = (*Provider)(nil)
 // loopback because this provider declares TrustInProcess and is allowed to see
 // SENSITIVE data.
 func New(cfg Config) (*Provider, error) {
-	name := strings.TrimSpace(cfg.Name)
-	if name == "" {
-		name = defaultName
-	}
-	modelName := strings.TrimSpace(cfg.Model)
-	if modelName == "" {
-		return nil, fmt.Errorf("anthropic: model is required")
-	}
-	if len(modelName) > maxModelNameBytes {
-		return nil, fmt.Errorf("anthropic: model name is longer than %d bytes", maxModelNameBytes)
-	}
-	if cfg.InputPricePerMTok < 0 || cfg.OutputPricePerMTok < 0 {
-		return nil, fmt.Errorf("anthropic: prices must not be negative")
-	}
-	if cfg.MaxContextTokens < 0 || cfg.MaxOutputTokens < 0 {
-		return nil, fmt.Errorf("anthropic: token limits must not be negative")
-	}
-	client, err := loopback.New(loopback.Config{
-		Endpoint:         cfg.Endpoint,
-		APIKey:           cfg.APIKey,
-		Timeout:          cfg.Timeout,
-		MaxResponseBytes: cfg.MaxResponseBytes,
-	})
+	info, client, err := loopback.NewProvider(loopback.ProviderConfig{
+		Name:               cfg.Name,
+		Model:              cfg.Model,
+		Endpoint:           cfg.Endpoint,
+		APIKey:             cfg.APIKey,
+		Timeout:            cfg.Timeout,
+		MaxResponseBytes:   cfg.MaxResponseBytes,
+		MaxContextTokens:   cfg.MaxContextTokens,
+		MaxOutputTokens:    cfg.MaxOutputTokens,
+		Strength:           cfg.Strength,
+		InputPricePerMTok:  cfg.InputPricePerMTok,
+		OutputPricePerMTok: cfg.OutputPricePerMTok,
+	}, defaultName)
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{
-		info: model.ProviderInfo{
-			Name: name, Model: modelName, Local: true,
-			MaxContextTokens:   cfg.MaxContextTokens,
-			MaxOutputTokens:    cfg.MaxOutputTokens,
-			InputPricePerMTok:  cfg.InputPricePerMTok,
-			OutputPricePerMTok: cfg.OutputPricePerMTok,
-			Endpoint:           client.Base(),
-			Trust:              model.TrustInProcess,
-			Strength:           cfg.Strength,
-		},
-		client: client,
-	}, nil
+	return &Provider{info: info, client: client}, nil
 }
 
 // Info returns the validated provider snapshot.
@@ -101,16 +78,24 @@ type anthropicMessage struct {
 	Content string `json:"content"`
 }
 
+type thinkingConfig struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens"`
+}
+
 type messagesRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system,omitempty"`
-	Messages  []anthropicMessage `json:"messages"`
+	Model       string             `json:"model"`
+	MaxTokens   int                `json:"max_tokens"`
+	System      string             `json:"system,omitempty"`
+	Messages    []anthropicMessage `json:"messages"`
+	Temperature *float64           `json:"temperature,omitempty"`
+	Thinking    *thinkingConfig    `json:"thinking,omitempty"`
 }
 
 type messagesResponse struct {
-	Model   string `json:"model"`
-	Content []struct {
+	Model      string `json:"model"`
+	StopReason string `json:"stop_reason"`
+	Content    []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
@@ -137,11 +122,17 @@ func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.
 	if messages[0].Role != "user" {
 		return model.ModelResponse{}, fmt.Errorf("%w: anthropic requires the first message to use the user role", domain.ErrNotSent)
 	}
+	thinking, err := anthropicThinking(req)
+	if err != nil {
+		return model.ModelResponse{}, err
+	}
 	body, err := json.Marshal(messagesRequest{
-		Model:     p.info.Model,
-		MaxTokens: req.MaxTokens,
-		System:    system,
-		Messages:  messages,
+		Model:       p.info.Model,
+		MaxTokens:   req.MaxTokens,
+		System:      system,
+		Messages:    messages,
+		Temperature: req.Temperature,
+		Thinking:    thinking,
 	})
 	if err != nil {
 		return model.ModelResponse{}, fmt.Errorf("%w: marshal request: %v", domain.ErrNotSent, err)
@@ -191,11 +182,27 @@ func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.
 		return model.ModelResponse{}, fmt.Errorf("anthropic: response has no text content")
 	}
 	return model.ModelResponse{
-		Content:  text.String(),
-		Usage:    model.Usage{InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens},
-		Model:    p.info.Model,
-		Provider: p.info.Name,
+		Content:    text.String(),
+		Usage:      model.Usage{InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens},
+		Model:      p.info.Model,
+		Provider:   p.info.Name,
+		StopReason: out.StopReason,
+		Truncated:  out.StopReason == "max_tokens",
 	}, nil
+}
+
+func anthropicThinking(req model.ModelRequest) (*thinkingConfig, error) {
+	if req.Thinking != model.ThinkingOn {
+		return nil, nil
+	}
+	budget := req.ThinkingBudget
+	if budget < 1024 {
+		budget = 1024
+	}
+	if req.MaxTokens <= budget {
+		return nil, fmt.Errorf("%w: max_tokens must exceed the thinking budget", domain.ErrNotSent)
+	}
+	return &thinkingConfig{Type: "enabled", BudgetTokens: budget}, nil
 }
 
 func toAnthropicMessages(in []model.Message) (string, []anthropicMessage, error) {

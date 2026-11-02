@@ -97,6 +97,25 @@ func TestExecuteModelCallStableCallID(t *testing.T) {
 	}
 }
 
+func TestExecuteModelCallReportsTruncation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}`)
+	}))
+	defer srv.Close()
+
+	out, err := executeModelCall(context.Background(), modelOptions{
+		Call: true, Endpoint: srv.URL, ProviderModel: "m", Prompt: "hi",
+		Purpose: "ANALYZE", DataClass: "INTERNAL",
+		MaxTokens: 8, Budget: 100, Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.StopReason != "length" || !out.Truncated {
+		t.Fatalf("stop=%q truncated=%v", out.StopReason, out.Truncated)
+	}
+}
+
 func TestExecuteModelCallAnthropicFormat(t *testing.T) {
 	var gotPath, gotVersion string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

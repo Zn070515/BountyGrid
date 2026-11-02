@@ -95,7 +95,7 @@ func TestCompleteSuccess(t *testing.T) {
 			t.Errorf("decode request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`)
 	}))
 	defer srv.Close()
 
@@ -130,6 +130,60 @@ func TestCompleteSuccess(t *testing.T) {
 	}
 	if resp.Provider != defaultName || resp.Model != "test-model" {
 		t.Fatalf("provider/model = %q/%q", resp.Provider, resp.Model)
+	}
+	if resp.StopReason != "stop" || resp.Truncated {
+		t.Fatalf("stop=%q truncated=%v", resp.StopReason, resp.Truncated)
+	}
+}
+
+func TestCompleteLengthIsTruncated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StopReason != "length" || !resp.Truncated {
+		t.Fatalf("stop=%q truncated=%v", resp.StopReason, resp.Truncated)
+	}
+}
+
+func TestCompleteSendsThinkingAndTemperature(t *testing.T) {
+	var got struct {
+		Temperature        *float64       `json:"temperature"`
+		ChatTemplateKwargs map[string]any `json:"chat_template_kwargs"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	temperature := 0.2
+	if _, err := p.Complete(context.Background(), model.ModelRequest{
+		Input:       []model.Message{{Role: "user", Content: "hi"}},
+		MaxTokens:   8,
+		Thinking:    model.ThinkingOff,
+		Temperature: &temperature,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Temperature == nil || *got.Temperature != 0.2 {
+		t.Fatalf("temperature = %v", got.Temperature)
+	}
+	if got.ChatTemplateKwargs["enable_thinking"] != false {
+		t.Fatalf("chat_template_kwargs = %+v", got.ChatTemplateKwargs)
 	}
 }
 

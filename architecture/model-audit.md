@@ -208,3 +208,14 @@ history（`ON CONFLICT DO NOTHING`），再删除 `FAILED_BEFORE_SEND` 的逻辑
 `BOUNTYGRID_MODEL_ENDPOINT`/`BOUNTYGRID_MODEL_NAME`）、`-prompt`/`-prompt-file`、可选
 `-program -persist`。持久化时写入 `model_calls`、`model_call_attempts` 和 `model.call`
 审计事件；不持久化时使用内存存储。
+
+请求控制：`ModelRequest.Thinking`（auto/on/off）、`ThinkingBudget` 和 `Temperature`
+由 Provider 映射到各自协议——OpenAI 用 `chat_template_kwargs.enable_thinking` 与
+`temperature`，Anthropic 用 `thinking` 与 `temperature`。`ModelResponse.StopReason` /
+`Truncated` 保存 provider 原生停止原因；OpenAI 的 `length` 与 Anthropic 的
+`max_tokens` 标记为截断，Anthropic 的 `refusal` 原样保留。CLI 对应
+`-thinking auto|on|off`、`-thinking-budget N`、`-temperature T`，输出包含
+`stop_reason`/`truncated`。
+
+`loopback.NewProvider` 统一了两个 Provider 的名称、模型名、价格与 token 上限校验，
+消息格式包只保留请求/响应映射，避免两种格式的校验漂移。

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
@@ -17,9 +16,8 @@ import (
 )
 
 const (
-	defaultName       = "local-openai"
-	userAgent         = "bountygrid-model/1"
-	maxModelNameBytes = 256
+	defaultName = "local-openai"
+	userAgent   = "bountygrid-model/1"
 )
 
 // Config is the provider's static configuration. Zero Timeout and
@@ -51,55 +49,35 @@ var _ model.Provider = (*Provider)(nil)
 // loopback because this provider declares TrustInProcess and is allowed to see
 // SENSITIVE data.
 func New(cfg Config) (*Provider, error) {
-	name := strings.TrimSpace(cfg.Name)
-	if name == "" {
-		name = defaultName
-	}
-	modelName := strings.TrimSpace(cfg.Model)
-	if modelName == "" {
-		return nil, fmt.Errorf("openai: model is required")
-	}
-	if len(modelName) > maxModelNameBytes {
-		return nil, fmt.Errorf("openai: model name is longer than %d bytes", maxModelNameBytes)
-	}
-	if cfg.InputPricePerMTok < 0 || cfg.OutputPricePerMTok < 0 {
-		return nil, fmt.Errorf("openai: prices must not be negative")
-	}
-	if cfg.MaxContextTokens < 0 || cfg.MaxOutputTokens < 0 {
-		return nil, fmt.Errorf("openai: token limits must not be negative")
-	}
-	client, err := loopback.New(loopback.Config{
-		Endpoint:         cfg.Endpoint,
-		APIKey:           cfg.APIKey,
-		Timeout:          cfg.Timeout,
-		MaxResponseBytes: cfg.MaxResponseBytes,
-	})
+	info, client, err := loopback.NewProvider(loopback.ProviderConfig{
+		Name:               cfg.Name,
+		Model:              cfg.Model,
+		Endpoint:           cfg.Endpoint,
+		APIKey:             cfg.APIKey,
+		Timeout:            cfg.Timeout,
+		MaxResponseBytes:   cfg.MaxResponseBytes,
+		MaxContextTokens:   cfg.MaxContextTokens,
+		MaxOutputTokens:    cfg.MaxOutputTokens,
+		Strength:           cfg.Strength,
+		InputPricePerMTok:  cfg.InputPricePerMTok,
+		OutputPricePerMTok: cfg.OutputPricePerMTok,
+	}, defaultName)
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{
-		info: model.ProviderInfo{
-			Name: name, Model: modelName, Local: true,
-			MaxContextTokens:   cfg.MaxContextTokens,
-			MaxOutputTokens:    cfg.MaxOutputTokens,
-			InputPricePerMTok:  cfg.InputPricePerMTok,
-			OutputPricePerMTok: cfg.OutputPricePerMTok,
-			Endpoint:           client.Base(),
-			Trust:              model.TrustInProcess,
-			Strength:           cfg.Strength,
-		},
-		client: client,
-	}, nil
+	return &Provider{info: info, client: client}, nil
 }
 
 // Info returns the validated provider snapshot.
 func (p *Provider) Info() model.ProviderInfo { return p.info }
 
 type chatRequest struct {
-	Model     string        `json:"model"`
-	Messages  []chatMessage `json:"messages"`
-	MaxTokens int           `json:"max_tokens"`
-	Stream    bool          `json:"stream"`
+	Model              string         `json:"model"`
+	Messages           []chatMessage  `json:"messages"`
+	MaxTokens          int            `json:"max_tokens"`
+	Stream             bool           `json:"stream"`
+	Temperature        *float64       `json:"temperature,omitempty"`
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 type chatMessage struct {
@@ -109,7 +87,8 @@ type chatMessage struct {
 
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -121,10 +100,12 @@ type chatResponse struct {
 // becomes a decision or a platform action.
 func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.ModelResponse, error) {
 	body, err := json.Marshal(chatRequest{
-		Model:     p.info.Model,
-		Messages:  toMessages(req.Input),
-		MaxTokens: req.MaxTokens,
-		Stream:    false,
+		Model:              p.info.Model,
+		Messages:           toMessages(req.Input),
+		MaxTokens:          req.MaxTokens,
+		Stream:             false,
+		Temperature:        req.Temperature,
+		ChatTemplateKwargs: thinkingKwargs(req.Thinking),
 	})
 	if err != nil {
 		return model.ModelResponse{}, fmt.Errorf("%w: marshal request: %v", domain.ErrNotSent, err)
@@ -161,12 +142,26 @@ func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.
 	if len(out.Choices) == 0 {
 		return model.ModelResponse{}, fmt.Errorf("openai: response has no choices")
 	}
+	choice := out.Choices[0]
 	return model.ModelResponse{
-		Content:  out.Choices[0].Message.Content,
-		Usage:    model.Usage{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens},
-		Model:    p.info.Model,
-		Provider: p.info.Name,
+		Content:    choice.Message.Content,
+		Usage:      model.Usage{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens},
+		Model:      p.info.Model,
+		Provider:   p.info.Name,
+		StopReason: choice.FinishReason,
+		Truncated:  choice.FinishReason == "length",
 	}, nil
+}
+
+func thinkingKwargs(mode model.ThinkingMode) map[string]any {
+	switch mode {
+	case model.ThinkingOn:
+		return map[string]any{"enable_thinking": true}
+	case model.ThinkingOff:
+		return map[string]any{"enable_thinking": false}
+	default:
+		return nil
+	}
 }
 
 func toMessages(in []model.Message) []chatMessage {

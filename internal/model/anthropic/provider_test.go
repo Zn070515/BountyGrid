@@ -71,7 +71,7 @@ func TestCompleteSuccess(t *testing.T) {
 			t.Errorf("decode request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"model":"m","content":[{"type":"text","text":"hello"},{"type":"thinking","text":"ignored"},{"type":"text","text":" world"}],"usage":{"input_tokens":7,"output_tokens":3}}`)
+		_, _ = io.WriteString(w, `{"model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"hello"},{"type":"thinking","text":"ignored"},{"type":"text","text":" world"}],"usage":{"input_tokens":7,"output_tokens":3}}`)
 	}))
 	defer srv.Close()
 
@@ -112,6 +112,88 @@ func TestCompleteSuccess(t *testing.T) {
 	}
 	if resp.Provider != defaultName || resp.Model != "m" {
 		t.Fatalf("provider/model = %q/%q", resp.Provider, resp.Model)
+	}
+	if resp.StopReason != "end_turn" || resp.Truncated {
+		t.Fatalf("stop=%q truncated=%v", resp.StopReason, resp.Truncated)
+	}
+}
+
+func TestCompleteMaxTokensIsTruncated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"stop_reason":"max_tokens","content":[{"type":"text","text":"partial"}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StopReason != "max_tokens" || !resp.Truncated {
+		t.Fatalf("stop=%q truncated=%v", resp.StopReason, resp.Truncated)
+	}
+}
+
+func TestCompleteSendsThinkingAndTemperature(t *testing.T) {
+	var got struct {
+		Temperature *float64 `json:"temperature"`
+		Thinking    *struct {
+			Type         string `json:"type"`
+			BudgetTokens int    `json:"budget_tokens"`
+		} `json:"thinking"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = io.WriteString(w, `{"stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	temperature := 0.3
+	if _, err := p.Complete(context.Background(), model.ModelRequest{
+		Input:          []model.Message{{Role: "user", Content: "hi"}},
+		MaxTokens:      4096,
+		Thinking:       model.ThinkingOn,
+		ThinkingBudget: 2048,
+		Temperature:    &temperature,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Temperature == nil || *got.Temperature != 0.3 {
+		t.Fatalf("temperature = %v", got.Temperature)
+	}
+	if got.Thinking == nil || got.Thinking.Type != "enabled" || got.Thinking.BudgetTokens != 2048 {
+		t.Fatalf("thinking = %+v", got.Thinking)
+	}
+}
+
+func TestCompleteRejectsThinkingBudgetBeforeSend(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, `{"content":[{"type":"text","text":"ok"}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input:     []model.Message{{Role: "user", Content: "hi"}},
+		MaxTokens: 1024,
+		Thinking:  model.ThinkingOn,
+	})
+	if !errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("err = %v, want ErrNotSent", err)
+	}
+	if called {
+		t.Fatal("an invalid thinking budget must be rejected before sending")
 	}
 }
 

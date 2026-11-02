@@ -22,13 +22,15 @@ import (
 const maxPromptFileBytes = 1 << 20
 
 type modelCallOutput struct {
-	CallID    string       `json:"call_id"`
-	Provider  string       `json:"provider"`
-	Model     string       `json:"model"`
-	Content   string       `json:"content"`
-	Usage     model.Usage  `json:"usage"`
-	Cost      domain.Money `json:"cost"`
-	LatencyMS int64        `json:"latency_ms"`
+	CallID     string       `json:"call_id"`
+	Provider   string       `json:"provider"`
+	Model      string       `json:"model"`
+	Content    string       `json:"content"`
+	Usage      model.Usage  `json:"usage"`
+	Cost       domain.Money `json:"cost"`
+	LatencyMS  int64        `json:"latency_ms"`
+	StopReason string       `json:"stop_reason,omitempty"`
+	Truncated  bool         `json:"truncated,omitempty"`
 }
 
 func runModelCall(ctx context.Context, opts modelOptions) error {
@@ -94,16 +96,32 @@ func executeModelCall(ctx context.Context, opts modelOptions) (modelCallOutput, 
 		resolver.Store = repo
 	}
 
+	thinking := model.ThinkingAuto
+	switch strings.ToLower(strings.TrimSpace(opts.Thinking)) {
+	case "on":
+		thinking = model.ThinkingOn
+	case "off":
+		thinking = model.ThinkingOff
+	}
+	var temperature *float64
+	if opts.Temperature >= 0 {
+		value := opts.Temperature
+		temperature = &value
+	}
+
 	req := model.ModelRequest{
-		TaskID:    domain.TaskID(strings.TrimSpace(opts.Task)),
-		ProgramID: domain.ProgramID(strings.TrimSpace(opts.Program)),
-		StepID:    strings.TrimSpace(opts.Step),
-		Purpose:   model.Purpose(strings.ToUpper(strings.TrimSpace(opts.Purpose))),
-		DataClass: model.DataClass(strings.ToUpper(strings.TrimSpace(opts.DataClass))),
-		Input:     []model.Message{{Role: "user", Content: prompt}},
-		MaxTokens: opts.MaxTokens,
-		Budget:    domain.Money{Amount: opts.Budget, Currency: "CNY"},
-		CallID:    strings.TrimSpace(opts.CallID),
+		TaskID:         domain.TaskID(strings.TrimSpace(opts.Task)),
+		ProgramID:      domain.ProgramID(strings.TrimSpace(opts.Program)),
+		StepID:         strings.TrimSpace(opts.Step),
+		Purpose:        model.Purpose(strings.ToUpper(strings.TrimSpace(opts.Purpose))),
+		DataClass:      model.DataClass(strings.ToUpper(strings.TrimSpace(opts.DataClass))),
+		Input:          []model.Message{{Role: "user", Content: prompt}},
+		MaxTokens:      opts.MaxTokens,
+		Budget:         domain.Money{Amount: opts.Budget, Currency: "CNY"},
+		CallID:         strings.TrimSpace(opts.CallID),
+		Thinking:       thinking,
+		ThinkingBudget: opts.ThinkingBudget,
+		Temperature:    temperature,
 	}
 	if req.CallID == "" {
 		if req.TaskID != "" && req.StepID != "" {
@@ -127,13 +145,15 @@ func executeModelCall(ctx context.Context, opts modelOptions) (modelCallOutput, 
 		return modelCallOutput{}, err
 	}
 	return modelCallOutput{
-		CallID:    req.CallID,
-		Provider:  resp.Provider,
-		Model:     resp.Model,
-		Content:   resp.Content,
-		Usage:     resp.Usage,
-		Cost:      resp.Cost,
-		LatencyMS: resp.Latency.Milliseconds(),
+		CallID:     req.CallID,
+		Provider:   resp.Provider,
+		Model:      resp.Model,
+		Content:    resp.Content,
+		Usage:      resp.Usage,
+		Cost:       resp.Cost,
+		LatencyMS:  resp.Latency.Milliseconds(),
+		StopReason: resp.StopReason,
+		Truncated:  resp.Truncated,
 	}, nil
 }
 

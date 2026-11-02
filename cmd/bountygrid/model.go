@@ -35,8 +35,11 @@ type modelOptions struct {
 	Program       string
 	Step          string
 	Timeout       time.Duration
-	CallID        string
-	Persist       bool
+	CallID         string
+	Persist        bool
+	Thinking       string
+	ThinkingBudget int
+	Temperature    float64
 }
 
 type modelPlan struct {
@@ -87,6 +90,9 @@ func parseModelOptions(args []string) (modelOptions, error) {
 	fs.DurationVar(&o.Timeout, "timeout", 120*time.Second, "per-call timeout")
 	fs.StringVar(&o.CallID, "call-id", "", "explicit idempotency key")
 	fs.BoolVar(&o.Persist, "persist", false, "persist model calls and attempts in PostgreSQL")
+	fs.StringVar(&o.Thinking, "thinking", "", "thinking mode: auto|on|off")
+	fs.IntVar(&o.ThinkingBudget, "thinking-budget", 0, "reasoning token budget when thinking is on")
+	fs.Float64Var(&o.Temperature, "temperature", -1, "sampling temperature; -1 leaves the server default")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -203,6 +209,7 @@ func validateCallOptions(fs *flag.FlagSet, o modelOptions) error {
 	callOnly := []string{
 		"endpoint", "provider-model", "provider-name", "provider-format", "api-key-env",
 		"prompt", "prompt-file", "program", "step", "timeout", "call-id", "persist",
+		"thinking", "thinking-budget", "temperature",
 	}
 	if !o.Call {
 		for _, name := range callOnly {
@@ -237,6 +244,17 @@ func validateCallOptions(fs *flag.FlagSet, o modelOptions) error {
 	case "", "openai", "anthropic":
 	default:
 		return fmt.Errorf("model: invalid provider format %q", o.ProviderFormat)
+	}
+	switch strings.ToLower(strings.TrimSpace(o.Thinking)) {
+	case "", "auto", "on", "off":
+	default:
+		return fmt.Errorf("model: invalid thinking mode %q", o.Thinking)
+	}
+	if o.ThinkingBudget < 0 {
+		return fmt.Errorf("model: -thinking-budget must not be negative")
+	}
+	if o.Temperature < -1 {
+		return fmt.Errorf("model: -temperature must be -1 (default) or non-negative")
 	}
 	if strings.TrimSpace(o.Program) != "" && !o.Persist {
 		return fmt.Errorf("model: -program requires -persist")

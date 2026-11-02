@@ -108,6 +108,8 @@ type ModelCallAttempt struct {
 	Usage         Usage
 	PromptHash    string
 	ResponseHash  string
+	StopReason    string
+	Truncated     bool
 	StartedAt     time.Time
 	EndedAt       time.Time
 	Error         string
@@ -708,6 +710,7 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 			Provider: info.Name, Model: info.Model, Status: CallCompleted,
 			EstimatedCost: estimate, ActualCost: cost, Usage: resp.Usage,
 			PromptHash: PromptHash(req), ResponseHash: ResponseHash(resp.Content),
+			StopReason: resp.StopReason, Truncated: resp.Truncated,
 			StartedAt: started, EndedAt: ended,
 		}
 		if req.Budget.Amount > 0 && spent > req.Budget.Amount {
@@ -848,6 +851,8 @@ func (r *Router) recordAttempt(ctx context.Context, req ModelRequest, attempt Mo
 		ActualCost    domain.Money `json:"actual_cost"`
 		PromptHash    string       `json:"prompt_hash"`
 		ResponseHash  string       `json:"response_hash"`
+		StopReason    string       `json:"stop_reason,omitempty"`
+		Truncated     bool         `json:"truncated,omitempty"`
 		Usage         Usage        `json:"usage"`
 		DurationMS    int64        `json:"duration_ms"`
 		Error         string       `json:"error,omitempty"`
@@ -857,7 +862,8 @@ func (r *Router) recordAttempt(ctx context.Context, req ModelRequest, attempt Mo
 		Purpose: string(req.Purpose), DataClass: string(req.EffectiveDataClass()),
 		Provider: attempt.Provider, Model: attempt.Model, Status: string(attempt.Status),
 		EstimatedCost: attempt.EstimatedCost, ActualCost: attempt.ActualCost,
-		PromptHash: attempt.PromptHash, ResponseHash: attempt.ResponseHash, Usage: attempt.Usage,
+		PromptHash: attempt.PromptHash, ResponseHash: attempt.ResponseHash,
+		StopReason: attempt.StopReason, Truncated: attempt.Truncated, Usage: attempt.Usage,
 		DurationMS: attempt.EndedAt.Sub(attempt.StartedAt).Milliseconds(), Error: attempt.Error,
 	})
 	if err != nil {

@@ -19,13 +19,72 @@ import (
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
+	"github.com/Zn070515/BountyGrid/internal/model"
 )
 
 const (
 	DefaultTimeout          = 120 * time.Second
 	DefaultMaxResponseBytes = int64(8 << 20)
 	errorSnippetBytes       = 256
+	maxModelNameBytes       = 256
 )
+
+// ProviderConfig is the common static configuration of a loopback provider.
+type ProviderConfig struct {
+	Name               string
+	Model              string
+	Endpoint           string
+	APIKey             string
+	Timeout            time.Duration
+	MaxResponseBytes   int64
+	MaxContextTokens   int
+	MaxOutputTokens    int
+	Strength           int
+	InputPricePerMTok  int64
+	OutputPricePerMTok int64
+}
+
+// NewProvider validates the common provider fields, builds the loopback client
+// and returns the validated ProviderInfo. Message-format packages add only
+// their request/response mapping on top.
+func NewProvider(cfg ProviderConfig, defaultName string) (model.ProviderInfo, *Client, error) {
+	name := strings.TrimSpace(cfg.Name)
+	if name == "" {
+		name = defaultName
+	}
+	modelName := strings.TrimSpace(cfg.Model)
+	if modelName == "" {
+		return model.ProviderInfo{}, nil, fmt.Errorf("loopback: model is required")
+	}
+	if len(modelName) > maxModelNameBytes {
+		return model.ProviderInfo{}, nil, fmt.Errorf("loopback: model name is longer than %d bytes", maxModelNameBytes)
+	}
+	if cfg.InputPricePerMTok < 0 || cfg.OutputPricePerMTok < 0 {
+		return model.ProviderInfo{}, nil, fmt.Errorf("loopback: prices must not be negative")
+	}
+	if cfg.MaxContextTokens < 0 || cfg.MaxOutputTokens < 0 {
+		return model.ProviderInfo{}, nil, fmt.Errorf("loopback: token limits must not be negative")
+	}
+	client, err := New(Config{
+		Endpoint:         cfg.Endpoint,
+		APIKey:           cfg.APIKey,
+		Timeout:          cfg.Timeout,
+		MaxResponseBytes: cfg.MaxResponseBytes,
+	})
+	if err != nil {
+		return model.ProviderInfo{}, nil, err
+	}
+	return model.ProviderInfo{
+		Name: name, Model: modelName, Local: true,
+		MaxContextTokens:   cfg.MaxContextTokens,
+		MaxOutputTokens:    cfg.MaxOutputTokens,
+		InputPricePerMTok:  cfg.InputPricePerMTok,
+		OutputPricePerMTok: cfg.OutputPricePerMTok,
+		Endpoint:           client.Base(),
+		Trust:              model.TrustInProcess,
+		Strength:           cfg.Strength,
+	}, client, nil
+}
 
 // Config is the transport configuration of a loopback provider.
 type Config struct {

@@ -193,6 +193,28 @@ func TestParseModelOptionsProviderFormat(t *testing.T) {
 	}
 }
 
+func TestParseModelOptionsThinkingAndTemperature(t *testing.T) {
+	opts, err := parseModelOptions([]string{
+		"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m",
+		"-prompt", "hi", "-thinking", "off", "-thinking-budget", "1024", "-temperature", "0.2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Thinking != "off" || opts.ThinkingBudget != 1024 || opts.Temperature != 0.2 {
+		t.Fatalf("opts = %+v", opts)
+	}
+	for _, args := range [][]string{
+		{"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m", "-prompt", "hi", "-thinking", "maybe"},
+		{"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m", "-prompt", "hi", "-thinking-budget", "-1"},
+		{"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m", "-prompt", "hi", "-temperature", "-2"},
+	} {
+		if _, err := parseModelOptions(args); err == nil {
+			t.Fatalf("%v should fail", args)
+		}
+	}
+}
+
 func TestParseModelOptionsAPIKeyEnvUnset(t *testing.T) {
 	t.Setenv("BOUNTYGRID_TEST_KEY", "")
 	if _, err := parseModelOptions([]string{
