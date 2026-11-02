@@ -171,6 +171,28 @@ func TestParseModelOptionsCallRejectsInvalidPurpose(t *testing.T) {
 	}
 }
 
+func TestParseModelOptionsProviderFormat(t *testing.T) {
+	opts, err := parseModelOptions([]string{
+		"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m",
+		"-prompt", "hi", "-provider-format", "anthropic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.ProviderFormat != "anthropic" {
+		t.Fatalf("provider format = %q", opts.ProviderFormat)
+	}
+	if _, err := parseModelOptions([]string{
+		"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m",
+		"-prompt", "hi", "-provider-format", "gemini",
+	}); err == nil {
+		t.Fatal("an unknown provider format should fail")
+	}
+	if _, err := parseModelOptions([]string{"-provider-format", "anthropic"}); err == nil {
+		t.Fatal("-provider-format without -call should fail")
+	}
+}
+
 func TestParseModelOptionsAPIKeyEnvUnset(t *testing.T) {
 	t.Setenv("BOUNTYGRID_TEST_KEY", "")
 	if _, err := parseModelOptions([]string{

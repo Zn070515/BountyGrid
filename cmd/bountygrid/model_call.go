@@ -14,6 +14,7 @@ import (
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/model"
+	"github.com/Zn070515/BountyGrid/internal/model/anthropic"
 	"github.com/Zn070515/BountyGrid/internal/model/openai"
 	"github.com/Zn070515/BountyGrid/internal/store/postgres"
 )
@@ -57,13 +58,11 @@ func executeModelCall(ctx context.Context, opts modelOptions) (modelCallOutput, 
 			return modelCallOutput{}, fmt.Errorf("model: -api-key-env %s is unset or empty", opts.APIKeyEnv)
 		}
 	}
-	provider, err := openai.New(openai.Config{
-		Name:     opts.ProviderName,
-		Model:    opts.ProviderModel,
-		Endpoint: opts.Endpoint,
-		APIKey:   credential,
-		Timeout:  opts.Timeout,
-	})
+	format := strings.ToLower(strings.TrimSpace(opts.ProviderFormat))
+	if format == "" {
+		format = "openai"
+	}
+	provider, err := newLocalProvider(format, opts, credential)
 	if err != nil {
 		return modelCallOutput{}, err
 	}
@@ -136,6 +135,29 @@ func executeModelCall(ctx context.Context, opts modelOptions) (modelCallOutput, 
 		Cost:      resp.Cost,
 		LatencyMS: resp.Latency.Milliseconds(),
 	}, nil
+}
+
+func newLocalProvider(format string, opts modelOptions, credential string) (model.Provider, error) {
+	switch format {
+	case "openai":
+		return openai.New(openai.Config{
+			Name:     opts.ProviderName,
+			Model:    opts.ProviderModel,
+			Endpoint: opts.Endpoint,
+			APIKey:   credential,
+			Timeout:  opts.Timeout,
+		})
+	case "anthropic":
+		return anthropic.New(anthropic.Config{
+			Name:     opts.ProviderName,
+			Model:    opts.ProviderModel,
+			Endpoint: opts.Endpoint,
+			APIKey:   credential,
+			Timeout:  opts.Timeout,
+		})
+	default:
+		return nil, fmt.Errorf("model: unsupported provider format %q", format)
+	}
 }
 
 func readPromptFile(path string) (string, error) {

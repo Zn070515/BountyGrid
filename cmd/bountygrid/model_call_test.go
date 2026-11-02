@@ -97,6 +97,37 @@ func TestExecuteModelCallStableCallID(t *testing.T) {
 	}
 }
 
+func TestExecuteModelCallAnthropicFormat(t *testing.T) {
+	var gotPath, gotVersion string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotVersion = r.Header.Get("anthropic-version")
+		_, _ = io.WriteString(w, `{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":3,"output_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	out, err := executeModelCall(context.Background(), modelOptions{
+		Call: true, Endpoint: srv.URL, ProviderModel: "m", ProviderFormat: "anthropic",
+		Prompt: "hi", Purpose: "ANALYZE", DataClass: "INTERNAL",
+		MaxTokens: 32, Budget: 100, Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotVersion != "2023-06-01" {
+		t.Fatalf("anthropic-version = %q", gotVersion)
+	}
+	if out.Content != "ok" || out.Provider != "local-anthropic" {
+		t.Fatalf("out = %+v", out)
+	}
+	if out.Usage.InputTokens != 3 || out.Usage.OutputTokens != 2 {
+		t.Fatalf("usage = %+v", out.Usage)
+	}
+}
+
 func TestReadPromptFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "prompt.txt")

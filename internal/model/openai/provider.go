@@ -1,43 +1,29 @@
-// Package openai implements a model.Provider for a loopback, OpenAI-compatible
-// chat-completions server. It never leaves the machine: the endpoint must be a
-// loopback address, redirects are not followed, and environment proxies are
-// ignored.
+// Package openai implements a model.Provider for a loopback,
+// OpenAI-compatible chat-completions server.
 package openai
 
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
-	"net/netip"
-	"net/url"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/model"
+	"github.com/Zn070515/BountyGrid/internal/model/loopback"
 )
 
-var _ model.Provider = (*Provider)(nil)
-
 const (
-	defaultName             = "local-openai"
-	defaultTimeout          = 120 * time.Second
-	defaultMaxResponseBytes = int64(8 << 20)
-	userAgent               = "bountygrid-model/1"
-	errorSnippetBytes       = 256
-	maxModelNameBytes       = 256
+	defaultName       = "local-openai"
+	userAgent         = "bountygrid-model/1"
+	maxModelNameBytes = 256
 )
 
 // Config is the provider's static configuration. Zero Timeout and
-// MaxResponseBytes use the package defaults; negative values are rejected.
+// MaxResponseBytes use the loopback defaults; negative values are rejected.
 type Config struct {
 	Name               string
 	Model              string
@@ -55,13 +41,11 @@ type Config struct {
 // Provider is a stateless OpenAI-compatible client. It is safe for concurrent
 // use.
 type Provider struct {
-	info    model.ProviderInfo
-	base    string
-	apiKey  string
-	timeout time.Duration
-	maxBody int64
-	client  *http.Client
+	info   model.ProviderInfo
+	client *loopback.Client
 }
+
+var _ model.Provider = (*Provider)(nil)
 
 // New validates the configuration and builds a provider. The endpoint must be
 // loopback because this provider declares TrustInProcess and is allowed to see
@@ -78,29 +62,20 @@ func New(cfg Config) (*Provider, error) {
 	if len(modelName) > maxModelNameBytes {
 		return nil, fmt.Errorf("openai: model name is longer than %d bytes", maxModelNameBytes)
 	}
-	base, err := normalizeBase(cfg.Endpoint)
-	if err != nil {
-		return nil, err
-	}
-	timeout := cfg.Timeout
-	if timeout == 0 {
-		timeout = defaultTimeout
-	}
-	if timeout < 0 {
-		return nil, fmt.Errorf("openai: timeout must not be negative")
-	}
-	maxBody := cfg.MaxResponseBytes
-	if maxBody == 0 {
-		maxBody = defaultMaxResponseBytes
-	}
-	if maxBody < 0 {
-		return nil, fmt.Errorf("openai: max response bytes must not be negative")
-	}
 	if cfg.InputPricePerMTok < 0 || cfg.OutputPricePerMTok < 0 {
 		return nil, fmt.Errorf("openai: prices must not be negative")
 	}
 	if cfg.MaxContextTokens < 0 || cfg.MaxOutputTokens < 0 {
 		return nil, fmt.Errorf("openai: token limits must not be negative")
+	}
+	client, err := loopback.New(loopback.Config{
+		Endpoint:         cfg.Endpoint,
+		APIKey:           cfg.APIKey,
+		Timeout:          cfg.Timeout,
+		MaxResponseBytes: cfg.MaxResponseBytes,
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &Provider{
 		info: model.ProviderInfo{
@@ -109,63 +84,16 @@ func New(cfg Config) (*Provider, error) {
 			MaxOutputTokens:    cfg.MaxOutputTokens,
 			InputPricePerMTok:  cfg.InputPricePerMTok,
 			OutputPricePerMTok: cfg.OutputPricePerMTok,
-			Endpoint:           base,
+			Endpoint:           client.Base,
 			Trust:              model.TrustInProcess,
 			Strength:           cfg.Strength,
 		},
-		base:    base,
-		apiKey:  strings.TrimSpace(cfg.APIKey),
-		timeout: timeout,
-		maxBody: maxBody,
-		client: &http.Client{
-			Timeout:   timeout,
-			Transport: &http.Transport{Proxy: nil},
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return errors.New("openai: redirects are not followed")
-			},
-		},
+		client: client,
 	}, nil
 }
 
 // Info returns the validated provider snapshot.
 func (p *Provider) Info() model.ProviderInfo { return p.info }
-
-// normalizeBase validates the endpoint and returns the chat-completions base:
-// scheme://host[:port]/v1 with no trailing slash.
-func normalizeBase(raw string) (string, error) {
-	endpoint := strings.TrimSpace(raw)
-	if endpoint == "" {
-		return "", fmt.Errorf("openai: endpoint is required")
-	}
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("openai: invalid endpoint %q", raw)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("openai: endpoint %q must use http or https", raw)
-	}
-	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-		return "", fmt.Errorf("openai: endpoint %q must not carry user info, query or fragment", raw)
-	}
-	if !isLoopbackHost(u.Hostname()) {
-		return "", fmt.Errorf("openai: endpoint %q is not loopback", raw)
-	}
-	u.Path = strings.TrimRight(u.Path, "/")
-	base := u.String()
-	if !strings.HasSuffix(u.Path, "/v1") {
-		base += "/v1"
-	}
-	return base, nil
-}
-
-func isLoopbackHost(host string) bool {
-	h := strings.Trim(host, "[]")
-	if strings.EqualFold(h, "localhost") {
-		return true
-	}
-	ip, err := netip.ParseAddr(h)
-	return err == nil && ip.Unmap().IsLoopback()
-}
 
 type chatRequest struct {
 	Model     string        `json:"model"`
@@ -201,33 +129,30 @@ func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.
 	if err != nil {
 		return model.ModelResponse{}, fmt.Errorf("%w: marshal request: %v", domain.ErrNotSent, err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.base+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.client.Base+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return model.ModelResponse{}, fmt.Errorf("%w: build request: %v", domain.ErrNotSent, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", userAgent)
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	if p.client.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.client.APIKey)
 	}
 
-	resp, err := p.client.Do(httpReq)
+	resp, err := p.client.HTTP.Do(httpReq)
 	if err != nil {
-		return model.ModelResponse{}, classifyDoError(err)
+		return model.ModelResponse{}, loopback.ClassifyDoError(err)
 	}
 	defer resp.Body.Close()
 
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, p.maxBody+1))
+	payload, err := loopback.ReadLimited(resp.Body, p.client.MaxBody)
 	if err != nil {
-		return model.ModelResponse{}, fmt.Errorf("openai: read response: %w", err)
-	}
-	if int64(len(payload)) > p.maxBody {
-		return model.ModelResponse{}, fmt.Errorf("openai: response exceeds %d bytes", p.maxBody)
+		return model.ModelResponse{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		return model.ModelResponse{}, fmt.Errorf("openai: %s returned HTTP %d: %s",
-			p.info.Name, resp.StatusCode, snippet(payload))
+			p.info.Name, resp.StatusCode, loopback.Snippet(payload))
 	}
 	var out chatResponse
 	if err := json.Unmarshal(payload, &out); err != nil {
@@ -250,34 +175,4 @@ func toMessages(in []model.Message) []chatMessage {
 		out = append(out, chatMessage{Role: m.Role, Content: m.Content})
 	}
 	return out
-}
-
-func classifyDoError(err error) error {
-	var opErr *net.OpError
-	if errors.As(err, &opErr) && opErr.Op == "dial" {
-		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
-	}
-	var certErr *tls.CertificateVerificationError
-	if errors.As(err, &certErr) {
-		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
-	}
-	var recErr tls.RecordHeaderError
-	if errors.As(err, &recErr) {
-		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
-	}
-	var unknown x509.UnknownAuthorityError
-	if errors.As(err, &unknown) {
-		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
-	}
-	if errors.Is(err, syscall.ECONNREFUSED) {
-		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
-	}
-	return err
-}
-
-func snippet(b []byte) string {
-	if len(b) <= errorSnippetBytes {
-		return string(b)
-	}
-	return string(b[:errorSnippetBytes]) + "...(truncated)"
 }

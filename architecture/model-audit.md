@@ -182,7 +182,9 @@ history（`ON CONFLICT DO NOTHING`），再删除 `FAILED_BEFORE_SEND` 的逻辑
   尝试账本的字段已为真实 adapter 预留。
 - 模型审计不产生 `ActionDecision`，也不能触发平台动作。
 
-## 8. 本地 OpenAI 兼容 Provider
+## 8. 本地 OpenAI / Anthropic 兼容 Provider
+
+`internal/model/loopback` 统一了两种 Provider 的传输规则：loopback 端点、禁用重定向与环境代理、响应上限，以及 `domain.ErrNotSent` 分类。`internal/model/openai` 实现 OpenAI `/v1/chat/completions`；`internal/model/anthropic` 实现 Anthropic `/v1/messages`（system 消息映射到顶层 `system`，文本块拼接，`x-api-key` + `anthropic-version`）。两者都声明 `Trust=IN_PROCESS`。
 
 `internal/model/openai` 实现一个只走 loopback 的 `model.Provider`：
 
@@ -201,7 +203,8 @@ history（`ON CONFLICT DO NOTHING`），再删除 `FAILED_BEFORE_SEND` 的逻辑
 时 fail closed 到 `LOCAL_ONLY`。`Redacted`/`Escalation` 是 operator attestation，永远不读
 请求里的 hint。
 
-`bountygrid model -call` 使用该 Provider：`-endpoint`/`-provider-model`（或
+`bountygrid model -call` 使用这些 Provider：`-provider-format openai|anthropic`（或
+`BOUNTYGRID_MODEL_FORMAT`，默认 `openai`）、`-endpoint`/`-provider-model`（或
 `BOUNTYGRID_MODEL_ENDPOINT`/`BOUNTYGRID_MODEL_NAME`）、`-prompt`/`-prompt-file`、可选
 `-program -persist`。持久化时写入 `model_calls`、`model_call_attempts` 和 `model.call`
 审计事件；不持久化时使用内存存储。

@@ -24,11 +24,12 @@ type modelOptions struct {
 	Redacted    bool
 	Escalation  string
 
-	Call          bool
-	Endpoint      string
-	ProviderModel string
-	ProviderName  string
-	APIKeyEnv     string
+	Call           bool
+	Endpoint       string
+	ProviderModel  string
+	ProviderName   string
+	ProviderFormat string
+	APIKeyEnv      string
 	Prompt        string
 	PromptFile    string
 	Program       string
@@ -76,7 +77,8 @@ func parseModelOptions(args []string) (modelOptions, error) {
 	fs.BoolVar(&o.Call, "call", false, "perform one real model call instead of printing a plan")
 	fs.StringVar(&o.Endpoint, "endpoint", os.Getenv("BOUNTYGRID_MODEL_ENDPOINT"), "loopback OpenAI-compatible base URL")
 	fs.StringVar(&o.ProviderModel, "provider-model", os.Getenv("BOUNTYGRID_MODEL_NAME"), "provider model name")
-	fs.StringVar(&o.ProviderName, "provider-name", "local-openai", "registered provider name")
+	fs.StringVar(&o.ProviderName, "provider-name", "", "registered provider name")
+	fs.StringVar(&o.ProviderFormat, "provider-format", os.Getenv("BOUNTYGRID_MODEL_FORMAT"), "message format: openai|anthropic")
 	fs.StringVar(&o.APIKeyEnv, "api-key-env", "", "environment variable holding the bearer token")
 	fs.StringVar(&o.Prompt, "prompt", "", "user prompt for -call")
 	fs.StringVar(&o.PromptFile, "prompt-file", "", "UTF-8 file with the user prompt for -call")
@@ -199,7 +201,7 @@ func demoProviders() []model.Provider {
 
 func validateCallOptions(fs *flag.FlagSet, o modelOptions) error {
 	callOnly := []string{
-		"endpoint", "provider-model", "provider-name", "api-key-env",
+		"endpoint", "provider-model", "provider-name", "provider-format", "api-key-env",
 		"prompt", "prompt-file", "program", "step", "timeout", "call-id", "persist",
 	}
 	if !o.Call {
@@ -230,6 +232,11 @@ func validateCallOptions(fs *flag.FlagSet, o modelOptions) error {
 	}
 	if strings.TrimSpace(o.ProviderModel) == "" {
 		return fmt.Errorf("model: -call requires -provider-model or BOUNTYGRID_MODEL_NAME")
+	}
+	switch strings.ToLower(strings.TrimSpace(o.ProviderFormat)) {
+	case "", "openai", "anthropic":
+	default:
+		return fmt.Errorf("model: invalid provider format %q", o.ProviderFormat)
 	}
 	if strings.TrimSpace(o.Program) != "" && !o.Persist {
 		return fmt.Errorf("model: -program requires -persist")

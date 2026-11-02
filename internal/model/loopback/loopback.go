@@ -1,0 +1,165 @@
+// Package loopback contains the transport rules shared by local model
+// providers: the endpoint must be loopback, redirects and environment proxies
+// are disabled, responses are bounded, and pre-send failures are classified as
+// domain.ErrNotSent.
+package loopback
+
+import (
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/Zn070515/BountyGrid/internal/domain"
+)
+
+const (
+	DefaultTimeout          = 120 * time.Second
+	DefaultMaxResponseBytes = int64(8 << 20)
+	errorSnippetBytes       = 256
+)
+
+// Config is the transport configuration of a loopback provider.
+type Config struct {
+	Endpoint         string
+	APIKey           string
+	Timeout          time.Duration
+	MaxResponseBytes int64
+}
+
+// Client is a validated loopback HTTP client. Providers add their own message
+// mapping on top of it.
+type Client struct {
+	Base    string
+	APIKey  string
+	MaxBody int64
+	HTTP    *http.Client
+}
+
+// New validates the transport configuration. Zero timeout and max response
+// bytes use the package defaults; negative values are rejected.
+func New(cfg Config) (*Client, error) {
+	base, err := NormalizeBase(cfg.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = DefaultTimeout
+	}
+	if timeout < 0 {
+		return nil, fmt.Errorf("loopback: timeout must not be negative")
+	}
+	maxBody := cfg.MaxResponseBytes
+	if maxBody == 0 {
+		maxBody = DefaultMaxResponseBytes
+	}
+	if maxBody < 0 {
+		return nil, fmt.Errorf("loopback: max response bytes must not be negative")
+	}
+	return &Client{
+		Base:    base,
+		APIKey:  strings.TrimSpace(cfg.APIKey),
+		MaxBody: maxBody,
+		HTTP: &http.Client{
+			Timeout:   timeout,
+			Transport: &http.Transport{Proxy: nil},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return errors.New("loopback: redirects are not followed")
+			},
+		},
+	}, nil
+}
+
+// NormalizeBase validates the endpoint and returns the API base:
+// scheme://host[:port]/v1 with no trailing slash.
+func NormalizeBase(raw string) (string, error) {
+	endpoint := strings.TrimSpace(raw)
+	if endpoint == "" {
+		return "", fmt.Errorf("loopback: endpoint is required")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("loopback: invalid endpoint %q", raw)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("loopback: endpoint %q must use http or https", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return "", fmt.Errorf("loopback: endpoint %q must not carry user info, query or fragment", raw)
+	}
+	if !IsLoopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("loopback: endpoint %q is not loopback", raw)
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	base := u.String()
+	if !strings.HasSuffix(u.Path, "/v1") {
+		base += "/v1"
+	}
+	return base, nil
+}
+
+// IsLoopbackHost reports whether host is localhost, a loopback IP literal, or
+// the IPv6 loopback.
+func IsLoopbackHost(host string) bool {
+	h := strings.Trim(host, "[]")
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(h)
+	return err == nil && ip.Unmap().IsLoopback()
+}
+
+// ClassifyDoError marks failures that provably happened before the request was
+// written (dial, refused connection, TLS handshake) as domain.ErrNotSent. All
+// other failures stay ambiguous.
+func ClassifyDoError(err error) error {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	var recErr tls.RecordHeaderError
+	if errors.As(err, &recErr) {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	var unknown x509.UnknownAuthorityError
+	if errors.As(err, &unknown) {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	return err
+}
+
+// Snippet returns a bounded, model-safe fragment of an error body.
+func Snippet(b []byte) string {
+	if len(b) <= errorSnippetBytes {
+		return string(b)
+	}
+	return string(b[:errorSnippetBytes]) + "...(truncated)"
+}
+
+// ReadLimited reads a response body with a hard byte limit.
+func ReadLimited(r io.Reader, max int64) ([]byte, error) {
+	payload, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > max {
+		return nil, fmt.Errorf("loopback: response exceeds %d bytes", max)
+	}
+	return payload, nil
+}
