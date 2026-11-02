@@ -16,6 +16,7 @@ DOCKER_ERROR_PREFIXES = (
     "No such container",
     "Cannot connect to the Docker daemon",
     "error during connect",
+    "Unable to find image",
 )
 
 
@@ -25,6 +26,7 @@ class ExecResult:
     stdout: str = ""
     stderr: str = ""
     timed_out: bool = False
+    duration_s: float = 0.0
 
 
 @dataclasses.dataclass
@@ -41,6 +43,9 @@ def _host_uid():
 
 def is_docker_error(result):
     text = (getattr(result, "stderr", "") or "").strip()
+    # The CLI sometimes prefixes daemon errors with "docker: ".
+    if text.startswith("docker: "):
+        text = text[len("docker: "):]
     return any(text.startswith(prefix) for prefix in DOCKER_ERROR_PREFIXES)
 
 
@@ -57,10 +62,12 @@ def docker_available(timeout_s=5):
 
 
 def _run(argv, timeout_s, input_text=None):
+    started = time.time()
     try:
         p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=timeout_s, input=input_text)
-        return ExecResult(p.returncode, p.stdout, p.stderr, False)
+        return ExecResult(p.returncode, p.stdout, p.stderr, False,
+                          round(time.time() - started, 2))
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout or ""
         stderr = exc.stderr or ""
@@ -68,9 +75,17 @@ def _run(argv, timeout_s, input_text=None):
             stdout = stdout.decode("utf-8", "replace")
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", "replace")
-        return ExecResult(None, stdout, stderr, True)
+        return ExecResult(None, stdout, stderr, True,
+                          round(time.time() - started, 2))
     except OSError as exc:
-        return ExecResult(None, "", str(exc), False)
+        return ExecResult(None, "", str(exc), False,
+                          round(time.time() - started, 2))
+
+
+def _exec_argv(container, argv, timeout_s, docker_bin="docker"):
+    """``docker exec`` argv shared by the sandbox and the adapter."""
+    return [docker_bin, "exec", "-w", "/work", container,
+            "timeout", "-s", "KILL", str(int(timeout_s)), *argv]
 
 
 class DockerSandbox:
@@ -85,6 +100,19 @@ class DockerSandbox:
 
     def _user_args(self):
         return ["--user", self.user] if self.user else []
+
+    def _git_args(self):
+        """Overlay ``.git`` read-only on top of the writable worktree mount.
+
+        Agent code also runs during acceptance and the hidden probe, so every
+        container that mounts the worktree needs this guard.  Otherwise that
+        code could rewrite git metadata and hide the diff (or poison git
+        config consumed by the host-side ``git`` calls).
+        """
+        git_dir = self.work / ".git"
+        if not git_dir.exists():
+            return []
+        return ["-v", f"{git_dir}:/work/.git:ro"]
 
     def common_args(self):
         return [
@@ -107,7 +135,7 @@ class DockerSandbox:
             self.docker_bin, "run", "-d", "--rm", "--name", self.name,
             *self.common_args(),
             "-v", f"{self.work}:/work:rw",
-            "-v", f"{self.work / '.git'}:/work/.git:ro",
+            *self._git_args(),
             "-w", "/work",
             "-e", "HOME=/tmp",
             "-e", "PYTHONIOENCODING=utf-8",
@@ -116,17 +144,15 @@ class DockerSandbox:
         ]
 
     def exec_args(self, argv, timeout_s):
-        return [
-            self.docker_bin, "exec", "-w", "/work", self.name,
-            "timeout", "-s", "KILL", str(int(timeout_s)), *argv,
-        ]
+        return _exec_argv(self.name, argv, timeout_s, self.docker_bin)
 
     def acceptance_args(self, command, timeout_s, probe=None, probe_input=None):
         args = [self.docker_bin, "run", "--rm"]
         if probe is not None:
             args.append("-i")
         args += [*self.common_args(),
-                 "-v", f"{self.work}:/work:rw"]
+                 "-v", f"{self.work}:/work:rw",
+                 *self._git_args()]
         if probe is not None:
             args += ["-v", f"{probe}:/probe/probe.py:ro"]
         args += [
@@ -146,6 +172,7 @@ class DockerSandbox:
             self.docker_bin, "run", "--rm", "-i",
             *self.common_args(),
             "-v", f"{self.work}:/work:rw",
+            *self._git_args(),
             "-v", f"{probe}:/probe/probe.py:ro",
             "-w", "/work",
             "-e", "HOME=/tmp",
@@ -175,7 +202,12 @@ class DockerSandbox:
         return AcceptanceResult(results, probe_result)
 
     def stop(self):
-        return _run([self.docker_bin, "rm", "-f", self.name], 60)
+        result = _run([self.docker_bin, "rm", "-f", self.name], 60)
+        if result.exit_code != 0 and "no such container" in (result.stderr or "").lower():
+            # ``--rm`` reaped the container already; nothing left to stop.
+            return ExecResult(0, result.stdout, result.stderr, result.timed_out,
+                              result.duration_s)
+        return result
 
     def image_digest(self):
         result = _run(
@@ -184,11 +216,8 @@ class DockerSandbox:
 
 
 def docker_exec(container, argv, timeout_s, docker_bin="docker"):
-    return _run(
-        [docker_bin, "exec", "-w", "/work", container,
-         "timeout", "-s", "KILL", str(int(timeout_s)), *argv],
-        int(timeout_s) + 30,
-    )
+    return _run(_exec_argv(container, argv, timeout_s, docker_bin),
+                int(timeout_s) + 30)
 
 
 def sweep_stale(max_age_s=7200, docker_bin="docker"):

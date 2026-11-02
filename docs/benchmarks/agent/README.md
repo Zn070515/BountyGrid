@@ -195,8 +195,8 @@ Fixed data: `runs/schema-fixed.jsonl`, `runs/schema-fixed-summary.json`,
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
 $env:CGO_ENABLED='1'          # required for go test -race
-python -I -X utf8 docs\benchmarks\agent\runner\run_task.py --all --arm oracle --repeat 1 --out $env:TEMP\oracle.jsonl   # 10/10
-python -I -X utf8 docs\benchmarks\agent\runner\run_task.py --all --arm mock   --repeat 1 --out $env:TEMP\mock.jsonl     # 0/10
+python -I -X utf8 docs\benchmarks\agent\runner\run_task.py --all --arm oracle --repeat 1 --sandbox none --out $env:TEMP\oracle.jsonl   # 24/24
+python -I -X utf8 docs\benchmarks\agent\runner\run_task.py --all --arm mock   --repeat 1 --sandbox none --out $env:TEMP\mock.jsonl     # 0/24
 ```
 
 ## Run the paired study

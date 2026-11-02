@@ -169,6 +169,11 @@ class DockerArgsTests(unittest.TestCase):
         self.assertIn("probe.py:/probe/probe.py:ro", joined)
         self.assertIn("PYTHONPATH=/work", joined)
         self.assertIn("timeout -s KILL 60 sh -c", joined)
+        self.assertIn(f"{self.work / '.git'}:/work/.git:ro", joined)
+
+    def test_probe_args_keep_git_read_only(self):
+        args = self.sandbox.probe_args(HERE / "sandbox" / "probe.py")
+        self.assertIn(f"{self.work / '.git'}:/work/.git:ro", " ".join(args))
 
     def test_acceptance_args_without_probe(self):
         args = self.sandbox.acceptance_args("python -m unittest", 60,
@@ -187,8 +192,14 @@ class DockerArgsTests(unittest.TestCase):
             ExecResult(125, "", "Error response from daemon: No such container")))
         self.assertTrue(is_docker_error(
             ExecResult(126, "", "OCI runtime exec failed: exec failed")))
+        self.assertTrue(is_docker_error(
+            ExecResult(125, "", "Unable to find image 'bountygrid-bench:py313' locally")))
+        self.assertTrue(is_docker_error(
+            ExecResult(125, "", "docker: Error response from daemon: pull access denied")))
         self.assertFalse(is_docker_error(
             ExecResult(1, "", "AssertionError: -1 != 5")))
+        self.assertFalse(is_docker_error(
+            ExecResult(1, "", "docker: cleanup finished")))
 
     def test_docker_available_is_false_when_the_binary_is_missing(self):
         with mock.patch("subprocess.run", side_effect=FileNotFoundError):
@@ -235,6 +246,11 @@ class DockerLifecycleTests(unittest.TestCase):
     def test_stop_returns_the_docker_result(self):
         with mock.patch("sandbox.docker._run",
                         return_value=ExecResult(0, self.sandbox.name, "")):
+            self.assertEqual(self.sandbox.stop().exit_code, 0)
+
+    def test_stop_treats_an_already_removed_container_as_success(self):
+        with mock.patch("sandbox.docker._run", return_value=ExecResult(
+                1, "", "Error response from daemon: No such container: bench-agent-x")):
             self.assertEqual(self.sandbox.stop().exit_code, 0)
 
     def test_image_digest_returns_none_on_failure(self):
@@ -365,6 +381,27 @@ class OrchestrationTests(unittest.TestCase):
         spec.pop("sandbox_image")
         rec = rt.run_one(spec, "mock", "", 1, sandbox_mode="docker")
         self.assertEqual(rec["sandbox_error"], "missing sandbox_image")
+        self.assertFalse(rec["overall_success"])
+        # The error record must carry the same keys as a normal record.
+        self.assertEqual(rec["wall_clock_s"], 0.0)
+        self.assertEqual(rec["agent"]["usage"], {})
+
+    def test_unavailable_image_is_a_sandbox_error(self):
+        class NoImage(FakeSandbox):
+            def image_digest(self):
+                return None
+
+        with mock.patch.object(rt, "DockerSandbox", NoImage):
+            rec = rt.run_one(self.spec, "mock", "", 1, sandbox_mode="docker")
+        self.assertEqual(rec["sandbox_error"],
+                         "image unavailable: bountygrid-bench:py313")
+        self.assertFalse(rec["overall_success"])
+
+    def test_malformed_hidden_cases_are_recorded(self):
+        spec = dict(self.spec)
+        spec["hidden_cases"] = [{"module": "calc.ops", "func": "add"}]
+        rec = rt.run_one(spec, "mock", "", 1, sandbox_mode="docker")
+        self.assertTrue(rec["sandbox_error"].startswith("invalid hidden_cases"))
         self.assertFalse(rec["overall_success"])
 
     def test_docker_unavailable_is_a_sandbox_error(self):

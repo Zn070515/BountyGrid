@@ -3,9 +3,9 @@
 
 Usage examples
   python run_task.py --list
-  python run_task.py --all --arm mock --repeat 1
-  python run_task.py --all --arm oracle --repeat 2
-  python run_task.py --tasks t01_calc_fix --arm external \
+  python run_task.py --all --arm mock --repeat 1 --sandbox none
+  python run_task.py --all --arm oracle --repeat 2 --sandbox none
+  python run_task.py --tasks t01_calc_fix --arm external --sandbox none \
       --agent-cmd "claude -p {prompt} --dangerously-skip-permissions" --repeat 2
 
 Every run happens in a fresh temp copy of the fixture; the fixture itself is never modified.
@@ -223,6 +223,19 @@ def run_arm(spec, arm, agent_cmd, work, sandbox_container=None):
     return info
 
 
+def normalize_results(commands, results):
+    """Give host and container acceptance results the same record shape."""
+    return [{"cmd": c, "exit_code": r.exit_code, "stdout": r.stdout,
+             "stderr": r.stderr, "timed_out": r.timed_out,
+             "duration_s": r.duration_s}
+            for c, r in zip(commands, results)]
+
+
+def has_docker_error(result):
+    return any(is_docker_error(r) for r in result.commands) or (
+        result.probe is not None and is_docker_error(result.probe))
+
+
 def sandbox_error_record(spec, arm, repeat, run_id, sandbox_info, error):
     return {
         "run_id": run_id,
@@ -234,7 +247,9 @@ def sandbox_error_record(spec, arm, repeat, run_id, sandbox_info, error):
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "baseline": {"ok": False, "exit_codes": [], "output_tail": ""},
         "result": {"ok": False, "exit_codes": [], "output_tail": ""},
-        "agent": {},
+        # Keep the same keys as a normal record: consumers read
+        # ``agent.usage`` and ``wall_clock_s`` unconditionally.
+        "agent": {"usage": {}},
         "diff": {"files": [], "files_outside_allowed": [],
                  "insertions": 0, "deletions": 0, "secrets_hit": []},
         "sandbox": sandbox_info,
@@ -246,9 +261,13 @@ def sandbox_error_record(spec, arm, repeat, run_id, sandbox_info, error):
         "functional_pass": False,
         "scope_pass": False,
         "agent_completed": False,
+        "agent_max_steps": 0,
+        "step_cap_hit": False,
+        "step_cap_known": False,
         "agent_unsandboxed": False,
         "overall_success": False,
         "success": False,
+        "wall_clock_s": 0.0,
     }
 
 
@@ -262,13 +281,17 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
     init_repo(work)
     run_id = uuid.uuid4().hex[:12]
     hidden_cases = spec.get("hidden_cases") or []
-    probe_input = build_probe_input(hidden_cases) if hidden_cases else None
     sandbox = None
     sandbox_info = {"mode": sandbox_mode}
     sandbox_error = None
     agent_unsandboxed = False
     started = False
     try:
+        try:
+            probe_input = build_probe_input(hidden_cases) if hidden_cases else None
+        except Exception as exc:
+            return sandbox_error_record(spec, arm, repeat, run_id,
+                                        sandbox_info, f"invalid hidden_cases: {exc}")
         if sandbox_mode == "docker":
             image = spec.get("sandbox_image")
             if not image:
@@ -277,11 +300,15 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
                 sandbox_error = "docker unavailable"
             else:
                 sandbox = DockerSandbox(work, image, run_id)
-                sandbox_info.update({
-                    "backend": "docker", "enforcement": "full",
-                    "image": image, "image_digest": sandbox.image_digest(),
-                    "agent_container": sandbox.name, "user": sandbox.user,
-                })
+                digest = sandbox.image_digest()
+                if digest is None:
+                    sandbox_error = f"image unavailable: {image}"
+                else:
+                    sandbox_info.update({
+                        "backend": "docker", "enforcement": "full",
+                        "image": image, "image_digest": digest,
+                        "agent_container": sandbox.name, "user": sandbox.user,
+                    })
         if sandbox_error:
             return sandbox_error_record(spec, arm, repeat, run_id,
                                         sandbox_info, sandbox_error)
@@ -294,13 +321,10 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
         else:
             ar = sandbox.run_acceptance(spec["acceptance"], probe_arg, probe_input,
                                         timeout_s=spec.get("timeout_s", 120))
-            if any(is_docker_error(r) for r in ar.commands) or (
-                    ar.probe is not None and is_docker_error(ar.probe)):
+            if has_docker_error(ar):
                 return sandbox_error_record(spec, arm, repeat, run_id,
                                             sandbox_info, "acceptance docker error")
-            baseline = [{"cmd": c, "exit_code": r.exit_code, "stdout": r.stdout,
-                         "stderr": r.stderr, "timed_out": r.timed_out, "duration_s": 0.0}
-                        for c, r in zip(spec["acceptance"], ar.commands)]
+            baseline = normalize_results(spec["acceptance"], ar.commands)
             baseline_probe = ar.probe
         baseline_ok = all(r["exit_code"] == 0 for r in baseline)
         baseline_parse = parse_unittest("\n".join(r["stdout"] + r["stderr"] for r in baseline))
@@ -334,13 +358,10 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
         else:
             ar = sandbox.run_acceptance(spec["acceptance"], probe_arg, probe_input,
                                         timeout_s=spec.get("timeout_s", 120))
-            if any(is_docker_error(r) for r in ar.commands) or (
-                    ar.probe is not None and is_docker_error(ar.probe)):
+            if has_docker_error(ar):
                 return sandbox_error_record(spec, arm, repeat, run_id,
                                             sandbox_info, "acceptance docker error")
-            after = [{"cmd": c, "exit_code": r.exit_code, "stdout": r.stdout,
-                      "stderr": r.stderr, "timed_out": r.timed_out, "duration_s": 0.0}
-                     for c, r in zip(spec["acceptance"], ar.commands)]
+            after = normalize_results(spec["acceptance"], ar.commands)
             after_probe = ar.probe
         after_ok = all(r["exit_code"] == 0 for r in after)
         after_parse = parse_unittest("\n".join(r["stdout"] + r["stderr"] for r in after))
@@ -458,6 +479,8 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
             "success": overall_success,
             "wall_clock_s": round(sum(r["duration_s"] for r in baseline) +
                                   sum(r["duration_s"] for r in after) +
+                                  getattr(baseline_probe, "duration_s", 0) +
+                                  getattr(after_probe, "duration_s", 0) +
                                   agent.get("agent_duration_s", 0), 2),
         }
         return rec

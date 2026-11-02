@@ -21,6 +21,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+# ``python -I`` (used by the other runners) does not put the script directory
+# on sys.path, so the sandbox package must be made importable explicitly.
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
 SYSTEM = """You are a coding agent working inside a single repository.
 Use the provided tools to inspect and edit files. Do not modify test files unless asked.
 When the task is done, reply with a short summary and no tool calls.
