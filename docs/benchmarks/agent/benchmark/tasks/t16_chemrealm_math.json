@@ -1,0 +1,16 @@
+{
+  "id": "t16_chemrealm_math",
+  "fixture": "chemrealm_math",
+  "prompt": "The TypeScript test suite fails. Fix the deterministic base-10 math in deterministic-math.ts so that all tests pass. Do not modify the tests. Run the tests with: node --test.",
+  "acceptance": [
+    "node --test"
+  ],
+  "setup": [],
+  "allowed_files": [
+    "deterministic-math.ts"
+  ],
+  "timeout_s": 180,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "context_band": "medium"
+}

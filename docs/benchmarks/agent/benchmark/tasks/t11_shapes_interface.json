@@ -1,0 +1,12 @@
+{
+  "id": "t11_shapes_interface",
+  "fixture": "shapes",
+  "prompt": "Add Perimeter() float64 to the Shape interface and to both Circle and Rect, and add TotalPerimeter(shapes []Shape) float64. All tests must pass. Do not modify the tests.",
+  "acceptance": ["go test ./..."],
+  "setup": [],
+  "allowed_files": ["shapes/shape.go", "shapes/circle.go", "shapes/rect.go", "shapes/total.go"],
+  "timeout_s": 180,
+  "expected_baseline": "fail",
+  "category": "refactor",
+  "context_band": "medium"
+}

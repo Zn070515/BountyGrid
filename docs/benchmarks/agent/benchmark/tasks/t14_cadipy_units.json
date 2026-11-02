@@ -1,0 +1,16 @@
+{
+  "id": "t14_cadipy_units",
+  "fixture": "cadipy_units",
+  "prompt": "The test suite fails. Fix the unit-conversion bug in cadipy/units.py so that all tests pass. Do not modify the tests. Run the tests with: python -m unittest discover -s tests -v.",
+  "acceptance": [
+    "python -m unittest discover -s tests -v"
+  ],
+  "setup": [],
+  "allowed_files": [
+    "cadipy/units.py"
+  ],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "context_band": "low"
+}

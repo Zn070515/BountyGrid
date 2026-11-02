@@ -1,0 +1,127 @@
+{
+  "generated_at": "2026-11-02T03:38:46Z",
+  "model": "qwen3.8-flash-next-iq3_s",
+  "reps": 2,
+  "tasks": 9,
+  "paired": {
+    "overall": {
+      "on": {
+        "runs": 18,
+        "success_rate": 0.9444444444444444,
+        "median_wall_s": 34.8,
+        "median_input_tokens": 42530.5,
+        "median_output_tokens": 1986.0,
+        "median_steps": 13.0
+      },
+      "off": {
+        "runs": 18,
+        "success_rate": 0.8888888888888888,
+        "median_wall_s": 9.8,
+        "median_input_tokens": 11938.0,
+        "median_output_tokens": 401.0,
+        "median_steps": 5.0
+      }
+    },
+    "bootstrap_success_diff_on_minus_off": {
+      "observed": 0.056,
+      "ci95": [
+        0.0,
+        0.167
+      ],
+      "tasks": 9
+    },
+    "per_task": {
+      "t14_cadipy_units": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t15_offipy_aesthetic": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t16_chemrealm_math": {
+        "on": {
+          "success": 1,
+          "runs": 2
+        },
+        "off": {
+          "success": 0,
+          "runs": 2
+        }
+      },
+      "t17_artflow_business_rules": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t18_artflow_core_policies": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t19_artflow_file_policies": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t20_artflow_authority": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t21_artflow_delivery": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t22_artflow_private_package": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      }
+    }
+  },
+  "scope_ab": {}
+}

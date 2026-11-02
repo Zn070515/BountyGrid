@@ -1,0 +1,12 @@
+{
+  "id": "t06_counter_race",
+  "fixture": "counter",
+  "prompt": "The Go race detector reports a data race in counter/counter.go. Fix the concurrency bug so that `go test -race ./...` passes. Do not modify the tests.",
+  "acceptance": ["go test -race ./..."],
+  "setup": [],
+  "allowed_files": ["counter/counter.go"],
+  "timeout_s": 240,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "context_band": "medium"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "t07_window_bugfix",
+  "fixture": "window",
+  "prompt": "The test suite fails because the date window is not inclusive of its end date. Fix window/range.py so that all tests pass. Do not modify the tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["window/range.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "context_band": "low"
+}

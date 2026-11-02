@@ -1,0 +1,12 @@
+{
+  "id": "t12_billing_cycle",
+  "fixture": "billing",
+  "prompt": "next_cycle_end is wrong. It must return the same day of the following month, clamped to that month's last day when the day does not exist (including leap years), and December must roll over to January. Fix billing/cycle.py. Do not modify the tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["billing/cycle.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "context_band": "medium"
+}

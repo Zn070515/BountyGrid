@@ -1,0 +1,17 @@
+{
+  "id": "t18_artflow_core_policies",
+  "fixture": "artflow_core_policies",
+  "prompt": "The test suite fails. Fix the activity-phase action policy in core/policies.py so that all tests pass. Do not modify the tests. Run the tests with: C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v.",
+  "acceptance": [
+    "C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v"
+  ],
+  "setup": [],
+  "allowed_files": [
+    "core/policies.py"
+  ],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "context_band": "low"
+}

@@ -1,0 +1,17 @@
+{
+  "id": "t23_artflow_questionnaire",
+  "fixture": "artflow_questionnaire",
+  "prompt": "The test suite fails. Fix the rehearsal round calculation in common/private_test_questionnaire.py so that all tests pass. Do not modify the tests. Run the tests with: C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v.",
+  "acceptance": [
+    "C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v"
+  ],
+  "setup": [],
+  "allowed_files": [
+    "common/private_test_questionnaire.py"
+  ],
+  "timeout_s": 180,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "difficulty": "medium",
+  "context_band": "medium"
+}

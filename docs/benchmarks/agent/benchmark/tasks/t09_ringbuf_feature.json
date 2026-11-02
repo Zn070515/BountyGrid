@@ -1,0 +1,12 @@
+{
+  "id": "t09_ringbuf_feature",
+  "fixture": "ringbuf",
+  "prompt": "Implement the Ring type in ringbuf/ring.go: New rejects a non-positive size, Push appends and overwrites the oldest value when full, Pop returns the oldest value (false when empty), and Len returns the stored count. Do not modify the tests.",
+  "acceptance": ["go test ./..."],
+  "setup": [],
+  "allowed_files": ["ringbuf/ring.go"],
+  "timeout_s": 180,
+  "expected_baseline": "fail",
+  "category": "feature",
+  "context_band": "medium"
+}

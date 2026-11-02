@@ -1,0 +1,12 @@
+{
+  "id": "t13_tickets_state",
+  "fixture": "tickets",
+  "prompt": "Implement transition(current, target) in tickets/state.py using the ALLOWED table. Allowed transitions return target; every other transition, including unknown states, raises InvalidTransition. Do not modify the tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["tickets/state.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "feature",
+  "context_band": "medium"
+}

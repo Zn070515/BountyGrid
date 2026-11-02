@@ -1,0 +1,17 @@
+{
+  "id": "t22_artflow_private_package",
+  "fixture": "artflow_private_package",
+  "prompt": "The test suite fails. Fix the private-test package verifier in verify_private_test_package.py so that all tests pass, including the identity-field rejection. Do not modify the tests. Run the tests with: python -m unittest discover -s tests -v.",
+  "acceptance": [
+    "python -m unittest discover -s tests -v"
+  ],
+  "setup": [],
+  "allowed_files": [
+    "verify_private_test_package.py"
+  ],
+  "timeout_s": 180,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "difficulty": "hard",
+  "context_band": "medium"
+}

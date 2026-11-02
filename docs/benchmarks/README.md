@@ -30,3 +30,4 @@ benchmarks/
 | Date | Target | Deployment | Summary |
 |---|---|---|---|
 | 2026-11-01 | Strata | Qwen3.8-Flash-Next IQ3_S, engine 0.1.55 CUDA, RTX 4090 | [initial](strata/2026-11-01-initial/summary.md) · [fair](strata/2026-11-01-fair/summary.md) · [matrix + agent](strata/2026-11-01-matrix/summary.md) |
+| 2026-11-02 | Qwen agent eval | 13 tasks, thinking/scope/schema/long-context | [harness](agent/README.md) · [summary](agent/summary-2026-11-02.md) |

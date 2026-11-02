@@ -1,0 +1,12 @@
+{
+  "id": "t01_calc_fix",
+  "fixture": "calc",
+  "prompt": "The test suite fails. Find and fix the bug in the arithmetic helpers so that all tests pass. Do not modify the tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["calc/ops.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "context_band": "low"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "t15_offipy_aesthetic",
+  "fixture": "offipy_aesthetic",
+  "prompt": "The color tests fail. Fix the color parsing bug in offipy/aesthetic.py so that all tests pass. Do not modify the tests. Run the tests with: python -m unittest discover -s tests -v.",
+  "acceptance": [
+    "python -m unittest discover -s tests -v"
+  ],
+  "setup": [],
+  "allowed_files": [
+    "offipy/aesthetic.py"
+  ],
+  "timeout_s": 180,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "context_band": "medium"
+}
