@@ -253,7 +253,7 @@ func validateCallOptions(fs *flag.FlagSet, o modelOptions) error {
 	if o.ThinkingBudget < 0 {
 		return fmt.Errorf("model: -thinking-budget must not be negative")
 	}
-	if o.Temperature < -1 {
+	if o.Temperature != -1 && o.Temperature < 0 {
 		return fmt.Errorf("model: -temperature must be -1 (default) or non-negative")
 	}
 	if strings.TrimSpace(o.Program) != "" && !o.Persist {

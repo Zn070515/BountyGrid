@@ -208,6 +208,7 @@ func TestParseModelOptionsThinkingAndTemperature(t *testing.T) {
 		{"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m", "-prompt", "hi", "-thinking", "maybe"},
 		{"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m", "-prompt", "hi", "-thinking-budget", "-1"},
 		{"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m", "-prompt", "hi", "-temperature", "-2"},
+		{"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m", "-prompt", "hi", "-temperature", "-0.5"},
 	} {
 		if _, err := parseModelOptions(args); err == nil {
 			t.Fatalf("%v should fail", args)
