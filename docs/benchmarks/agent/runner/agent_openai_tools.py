@@ -26,6 +26,8 @@ Use the provided tools to inspect and edit files. Do not modify test files unles
 When the task is done, reply with a short summary and no tool calls.
 All paths are relative to the repository root."""
 
+RUN_STATE = {"sandbox_error": None}
+
 TOOLS = [
     {"type": "function", "function": {
         "name": "list_files",
@@ -276,7 +278,7 @@ def read_text(workdir, rel, start=1, limit=200):
     return f"{p.relative_to(workdir)} lines {start}-{start+len(chunk)-1} of {total}\n" + "\n".join(chunk)
 
 
-def tool_call(workdir, name, args, allowed):
+def tool_call(workdir, name, args, allowed, executor=None):
     if name == "list_files":
         return list_files(workdir, args.get("path", "."))
     if name == "read_file":
@@ -306,6 +308,19 @@ def tool_call(workdir, name, args, allowed):
             return list_files(workdir, argv[1] if len(argv) > 1 else ".")
         if exe in INTERNAL_READ:
             return read_text(workdir, argv[1], limit=400)
+        if executor is not None:
+            try:
+                result = executor(
+                    argv,
+                    clamp_timeout(args.get("timeout_s", DEFAULT_COMMAND_TIMEOUT)),
+                )
+            except Exception as exc:
+                return f"ERROR: {exc}"
+            if getattr(result, "timed_out", False):
+                return "ERROR: timeout"
+            return (f"exit={result.exit_code}\n"
+                    f"stdout:\n{result.stdout[-3000:]}\n"
+                    f"stderr:\n{result.stderr[-2000:]}")
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
@@ -338,7 +353,7 @@ def chat(base_url, model, messages, timeout=300, no_thinking=False, max_tokens=0
         return json.loads(r.read().decode("utf-8"))
 
 
-def run_multiturn(args):
+def run_multiturn(args, executor=None):
     """Run consecutive user prompts in one conversation (same session)."""
     prompts = json.loads(Path(args.prompts_file).read_text(encoding="utf-8"))
     if not isinstance(prompts, list) or not prompts or not all(
@@ -352,7 +367,8 @@ def run_multiturn(args):
     usage = {"input_tokens": 0, "output_tokens": 0, "model": args.model, "steps": 0,
              "tool_calls": 0, "denied_writes": 0, "step_usage": [], "turns": [],
              "thinking": "off" if args.no_thinking else "on",
-             "allowed_files": sorted(allowed) if allowed else None}
+             "allowed_files": sorted(allowed) if allowed else None,
+             "sandbox_container": args.sandbox_container or None}
     started = time.time()
     final = ""
     steps_used = 0
@@ -402,7 +418,7 @@ def run_multiturn(args):
                 except Exception:
                     targs = {}
                 try:
-                    result = tool_call(workdir, name, targs, allowed)
+                    result = tool_call(workdir, name, targs, allowed, executor=executor)
                 except Exception as e:
                     result = f"ERROR: {e}"
                 if isinstance(result, str) and result.startswith("ERROR: path not allowed"):
@@ -420,6 +436,7 @@ def run_multiturn(args):
     )
     usage["step_cap_hit"] = (not usage["completed"] and not aborted)
     usage["wall_clock_s"] = round(time.time() - started, 1)
+    usage["sandbox_error"] = RUN_STATE["sandbox_error"]
     (workdir / "agent_usage.json").write_text(json.dumps(usage, ensure_ascii=False, indent=1), encoding="utf-8")
     print(final[-2000:])
     return 0 if not final.startswith("API_ERROR") else 2
@@ -439,10 +456,24 @@ def main():
                     help="comma-separated write allowlist; empty means no enforcement")
     ap.add_argument("--prompts-file", default="",
                     help="JSON list of consecutive user prompts in the same session")
+    ap.add_argument("--sandbox-container",
+                    default=os.environ.get("BENCH_SANDBOX_CONTAINER", ""))
     ap.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "local"))
     args = ap.parse_args()
+    RUN_STATE["sandbox_error"] = None
+    executor = None
+    if args.sandbox_container:
+        from sandbox.docker import docker_exec, is_docker_error
+
+        def executor(argv, timeout_s):
+            result = docker_exec(args.sandbox_container, argv, timeout_s)
+            if is_docker_error(result):
+                RUN_STATE["sandbox_error"] = result.stderr.strip()
+                raise RuntimeError(result.stderr.strip())
+            return result
+
     if args.prompts_file:
-        return run_multiturn(args)
+        return run_multiturn(args, executor)
     prompt = args.prompt or os.environ.get(args.prompt_env, "")
     if not prompt:
         raise SystemExit(f"no prompt: pass --prompt or set {args.prompt_env}")
@@ -453,7 +484,8 @@ def main():
     usage = {"input_tokens": 0, "output_tokens": 0, "model": args.model, "steps": 0,
              "tool_calls": 0, "denied_writes": 0, "step_usage": [],
              "thinking": "off" if args.no_thinking else "on",
-             "allowed_files": sorted(allowed) if allowed else None}
+             "allowed_files": sorted(allowed) if allowed else None,
+             "sandbox_container": args.sandbox_container or None}
     started = time.time()
     final = ""
     completed = False
@@ -492,7 +524,7 @@ def main():
             except Exception:
                 targs = {}
             try:
-                result = tool_call(workdir, name, targs, allowed)
+                result = tool_call(workdir, name, targs, allowed, executor=executor)
             except Exception as e:
                 result = f"ERROR: {e}"
             if isinstance(result, str) and result.startswith("ERROR: path not allowed"):
@@ -501,6 +533,7 @@ def main():
     usage["completed"] = completed
     usage["step_cap_hit"] = (not completed and not final.startswith("API_ERROR"))
     usage["wall_clock_s"] = round(time.time() - started, 1)
+    usage["sandbox_error"] = RUN_STATE["sandbox_error"]
     (workdir / "agent_usage.json").write_text(json.dumps(usage, ensure_ascii=False, indent=1), encoding="utf-8")
     print(final[-2000:])
     return 0 if not final.startswith("API_ERROR") else 2

@@ -275,5 +275,46 @@ class DockerfileTests(unittest.TestCase):
         self.assertNotIn("probe.py", text)
 
 
+import agent_openai_tools as agent
+
+
+class AdapterExecutorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_run_command_uses_the_injected_executor(self):
+        seen = []
+
+        def executor(argv, timeout_s):
+            seen.append((argv, timeout_s))
+            return ExecResult(0, "ok\n", "", False)
+
+        out = agent.tool_call(self.work, "run_command",
+                              {"command": "python -m pytest", "timeout_s": 9999},
+                              None, executor=executor)
+        self.assertEqual(seen[0][0], ["python", "-m", "pytest"])
+        self.assertEqual(seen[0][1], 300)
+        self.assertIn("exit=0", out)
+        self.assertIn("ok", out)
+
+    def test_run_command_executor_timeout_is_an_error(self):
+        def executor(argv, timeout_s):
+            return ExecResult(None, "", "", True)
+
+        out = agent.tool_call(self.work, "run_command",
+                              {"command": "python -m pytest"}, None, executor=executor)
+        self.assertTrue(out.startswith("ERROR: timeout"), out)
+
+    def test_internal_listing_stays_host_side(self):
+        (self.work / "hello.py").write_text("", encoding="utf-8")
+        out = agent.tool_call(self.work, "run_command", {"command": "dir"},
+                              None, executor=lambda argv, t: ExecResult(99, "", "", False))
+        self.assertIn("hello.py", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
