@@ -151,6 +151,41 @@ four-module task.
   code. Regression tests: `python runner/test_run_task.py`; all 24 oracle runs
   pass.
 
+## Execution sandbox (2026-11-02)
+
+`run_task.py --sandbox docker` (the default) runs every agent command and
+acceptance suite in Linux containers:
+
+- agent container: no network, read-only root, only `/work` writable, `.git`
+  read-only, no `docker.sock`, no host home;
+- a fresh acceptance container after the agent is gone, with the data-free
+  probe mounted read-only at `/probe/probe.py`;
+- hidden expectations stay in the task JSON on the host and never enter a
+  container;
+- `--sandbox none` is an explicit, recorded host fallback and skips hidden
+  checks because the task JSON is readable on the host.
+
+Build the image once:
+
+```bash
+docker build -f runner/sandbox/Dockerfile.bench -t bountygrid-bench:py313 runner/sandbox
+```
+
+Only `t01_calc_fix` declares `sandbox_image` in this phase. The other tasks
+fail closed under the default; run them with `--sandbox none` until they get
+images. The `external` arm is only scored when the adapter records the
+matching `sandbox_container` in `agent_usage.json`; otherwise the run is
+`agent_unsandboxed`.
+
+Known limits: Docker shares the Linux kernel (use gVisor/Kata for kernel-level
+threats); the default seccomp profile is the baseline, not a custom deny list;
+a source-based hidden test (as opposed to the probe form) is not hidden from
+agent code during acceptance.
+
+Policy and unit tests: `python runner/test_sandbox.py`. Integration and
+isolation tests: `python runner/test_sandbox_integration.py` (skipped unless
+Docker and the image are available).
+
 Fixed data: `runs/schema-fixed.jsonl`, `runs/schema-fixed-summary.json`,
 `runs/longdepth-fixed.jsonl`, `runs/longdepth-summary.json`
 (`longdepth-summary-v1.json` is the pre-fix summary).
