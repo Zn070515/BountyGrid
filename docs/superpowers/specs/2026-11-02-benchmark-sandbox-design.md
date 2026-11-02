@@ -57,6 +57,9 @@ Untrusted: model output and every file the agent creates or modifies.
 | I5 | The agent container is destroyed before the acceptance container starts. |
 | I6 | Any sandbox failure marks the run `sandbox_error` and `overall_success=false`; there is no host fallback. |
 | I7 | `sandbox.mode` and the image digest are recorded for every run. |
+| I8 | The container cannot reach the host adapter, model endpoint, Docker daemon, or any control-plane/Unix socket. `docker.sock`, the host home, and host IPC sockets are never mounted. |
+| I9 | Docker's default seccomp profile stays in force; `seccomp=unconfined` is never used. |
+| I10 | The agent container is stopped successfully before the acceptance container starts. |
 
 A known gap is recorded in section 12: a source-based hidden test (as opposed
 to the probe form) would be readable by agent code during acceptance.
@@ -67,8 +70,8 @@ to the probe form) would be readable by agent code during acceptance.
 |---|---|
 | `runner/sandbox/__init__.py` | Exports `DockerSandbox`, `docker_available`, `compare_hidden` |
 | `runner/sandbox/docker.py` | `DockerSandbox`: availability check, start/exec/stop, acceptance run, docker arg construction |
-| `runner/sandbox/Dockerfile.bench` | `python:3.13-slim` pinned by digest, plus `git`, `coreutils`, `ca-certificates`; tag `bountygrid-bench:py313` |
-| `runner/sandbox/probe.py` | Generic, data-free call probe mounted read-only at `/probe/probe.py` |
+| `runner/sandbox/Dockerfile.bench` | `python:3.13-slim` pinned by digest, plus `git`, `coreutils`, `ca-certificates`; copies nothing from the build context; tag `bountygrid-bench:py313` |
+| `runner/sandbox/probe.py` | Generic, data-free call probe mounted read-only at `/probe/probe.py`; never baked into the image |
 | `runner/agent_openai_tools.py` | `run_command` delegates to an injected `executor`; default remains host subprocess |
 | `runner/run_task.py` | `--sandbox {docker,none}` (default `docker`), phase orchestration, hidden comparison, run record |
 | `runner/test_sandbox.py` | Arg-builder and probe-comparison unit tests (no Docker) |
@@ -130,6 +133,14 @@ short timeout. `start_agent` starts one detached container named
 inner command with `timeout -s KILL <timeout_s>`, so a host-side timeout does
 not leave the process running. `stop` runs `docker rm -f` in `finally`.
 
+`stop` is a phase barrier: if it fails, the run is `sandbox_error` and phase 2
+does not start. A `docker exec` failure whose stderr carries Docker's own
+prefix (`Error response from daemon`, `OCI runtime exec failed`, container not
+running) is `sandbox_error`, not a command failure; an ordinary nonzero exit
+from the wrapped command stays a command result. There is no
+`dangerouslyDisableSandbox` equivalent: a denied or failed command is returned
+to the agent, which must adapt inside the workspace.
+
 `compare_hidden` is host-only: it parses the probe's marked result line and
 returns `{"declared": bool, "pass": bool, "matched": int, "total": int,
 "detail": str}`. It never runs in a container. `run_acceptance` also wraps each
@@ -155,10 +166,12 @@ Task JSON carries cases, never a test file with assertions:
 ]
 ```
 
-The probe receives the case list as JSON on stdin. It must consume and
-validate the whole input **before** importing any target module, so agent code
-cannot read or alter the case stream on first import. Before importing, it
-also binds its own references to `json.dumps` and `sys.stdout`. It then calls
+The host builds `probe_input` as `[{module, func, args}]` and **strips
+`expect` before serializing it**; expectations never cross into the container.
+The probe receives that list as JSON on stdin. It must consume and validate
+the whole input **before** importing any target module, so agent code cannot
+read or alter the case stream on first import. Before importing, it also binds
+its own references to `json.dumps` and `sys.stdout`. It then calls
 `func(*args)` for each case and prints exactly one marked line:
 
 ```text
@@ -201,6 +214,7 @@ Both containers:
 --memory 2g
 --cpus 2
 --init
+--ipc=private
 -e HOME=/tmp
 -e PYTHONIOENCODING=utf-8
 -e GIT_OPTIONAL_LOCKS=0
@@ -234,6 +248,13 @@ depend on `.git`, which is not mounted in the acceptance container. The agent
 container's `exec` calls remain argv-only. `-i` is required only when hidden
 cases are sent to the probe on stdin; without hidden cases it is harmless.
 
+Docker's default seccomp profile stays in force: `--security-opt seccomp` is
+never set and `seccomp=unconfined` is forbidden. This is the baseline the three
+reference harnesses harden further (Codex/dsh also block `io_uring` and
+socket-family escape routes); a custom profile is future work, not a reason to
+disable the default. Only the volumes listed above are mounted: never
+`/var/run/docker.sock`, the host home, or a host Unix socket.
+
 POSIX hosts pass `--user <host-uid>:<host-gid>` so files created in the bind
 mount remain removable by the host. Windows hosts omit `--user` (there is no
 host UID); the container runs as root inside the container, and the isolation
@@ -259,6 +280,8 @@ New fields:
 ```json
 "sandbox": {
   "mode": "docker",
+  "backend": "docker",
+  "enforcement": "full",
   "image": "bountygrid-bench:py313",
   "image_digest": "<docker image id>",
   "agent_container": "bench-agent-<run_id>",
@@ -266,6 +289,7 @@ New fields:
 },
 "hidden": {
   "declared": true,
+  "skipped": false,
   "baseline_matched": false,
   "baseline_error": false,
   "control_valid": true,
@@ -280,6 +304,19 @@ New fields:
 `success` stays an alias for `overall_success`. Historical records without
 these fields are read as `sandbox.mode=none`, `hidden.declared=false`.
 
+`enforcement` uses the reference harness vocabulary: `full` means the backend
+governs every promised effect, `partial` means a known subset is ungoverned.
+Docker is `full` for the mounts, rootfs and network it is given; the only
+`partial` backends in the reference set are Windows-native runners, which this
+phase does not use.
+
+Under `--sandbox none`, hidden checks are **skipped**
+(`hidden.skipped=true`, `hidden.pass=null`). The expectations live in the task
+JSON inside the repository, and host-side agent code can read it; running the
+probe there would be theater. A `none` run therefore never claims a hidden
+result, and `overall_success` reflects only the public, scope and completion
+criteria.
+
 ## 10. Failure semantics
 
 | Condition | Result |
@@ -288,30 +325,35 @@ these fields are read as `sandbox.mode=none`, `hidden.declared=false`.
 | Task without `sandbox_image` under `--sandbox docker` | `sandbox_error` |
 | `--sandbox docker` with `--arm external` | Refuse to run; require explicit `--sandbox none`, which records `mode=none` |
 | Container create/start/exec failure | `sandbox_error` |
+| `docker exec` returns Docker's own error text | `sandbox_error`, not a command failure |
+| Agent container `stop` fails | `sandbox_error`; phase 2 never starts |
 | Command timeout | `exit_code=null`, `timed_out=true`; functional false |
 | Probe crash | `hidden.pass=false`, `detail=probe_error` |
 | Baseline probe matches or errors | `hidden.pass=false`, `hidden.error=broken_hidden_control`, `overall_success=false` |
 | Missing `.git` at start | `sandbox_error` |
-| `--sandbox none` | Host execution; `mode=none` recorded; not a security claim |
+| `--sandbox none` | Host execution; `mode=none` recorded; hidden checks skipped; not a security claim |
 
 Migration: `--sandbox docker` is the default, so a run without `--sandbox`
 now requires Docker and a task-level `sandbox_image`. The 23 tasks that do not
 yet declare one fail closed; `--sandbox none` restores the old host behavior
-and records `mode=none`. This is intentional: an unsandboxed run is opt-in.
-With `--sandbox none`, the probe and hidden comparison still run on the host
-under the same protocol, so the hidden fields remain comparable; only
-`sandbox.mode=none` marks the absence of isolation.
+and records `mode=none`. This is intentional: an unsandboxed run is opt-in,
+and it never claims a hidden result.
 
 ## 11. Testing
 
 Unit tests (no Docker):
 
 1. Arg builder contains `--network none`, `--read-only`, the tmpfs size, cap
-   drops, pids/memory/cpu limits, `/work`, and `.git:ro`.
+   drops, pids/memory/cpu limits, `--ipc=private`, `/work`, and `.git:ro`.
 2. The agent container args contain no probe mount; acceptance args contain
    `/probe/probe.py:ro`.
-3. Hidden comparison: match, mismatch, probe error, and baseline-match rules.
-4. A task without `sandbox_image` is rejected in docker mode.
+3. No `seccomp=unconfined`, no `docker.sock`, and no host home mount appear in
+   either arg list.
+4. Hidden comparison: match, mismatch, probe error, and baseline-match rules.
+5. A task without `sandbox_image` is rejected in docker mode.
+6. A Docker-level exec error is classified `sandbox_error`, and a failed
+   `stop` prevents phase 2.
+7. `--sandbox none` records `hidden.skipped=true` and `hidden.pass=null`.
 
 Integration tests (`skipUnless(docker_available)`):
 
@@ -320,8 +362,10 @@ Integration tests (`skipUnless(docker_available)`):
 2. A shallow implementation that special-cases only the four public `add`
    inputs is written into the worktree before phase 2: `hidden.pass=false`.
 3. Isolation probes inside the agent container: writing `/etc/x` fails,
-   opening a network socket fails, `/probe` does not exist, `/work` is writable.
-4. `--sandbox none` still runs `t01` and records `mode=none`.
+   opening a network socket fails, `/probe` does not exist, `/work` is
+   writable, `/var/run/docker.sock` does not exist, `$HOME` is `/tmp`, and the
+   repository's `benchmark/tasks` path is not present.
+4. `--sandbox none` still runs `t01`, records `mode=none`, and skips hidden.
 5. An injected `DockerSandbox` whose docker runner fails yields
    `sandbox_error` and does not touch the host worktree.
 
@@ -354,6 +398,17 @@ Integration tests (`skipUnless(docker_available)`):
    Dockerfile (`git`, `coreutils`, `ca-certificates`) float with the Debian
    snapshot. The built image digest is recorded per run, so a result can
    always be traced to the exact image that produced it.
+9. Docker isolation shares the host kernel on Linux CI; it is namespace-level
+   isolation, not a VM. If the threat model expands beyond a model trying to
+   pass tests to kernel-level escapes, switch the runtime to gVisor or Kata.
+10. Docker's default seccomp profile is the baseline, not the ceiling: syscalls
+    such as `io_uring_setup` may remain allowed. Codex and dsh add explicit
+    filters for `io_uring` and socket-family escape routes; a custom profile is
+    future work.
+11. The control-plane lesson from dsh's CVE-2026-82533 is applied by
+    construction: the container has no network, no `docker.sock`, and no host
+    IPC socket, so it cannot reach the adapter, the model endpoint, or any
+    harness control API to widen its own policy.
 
 ## 13. Acceptance criteria
 
@@ -363,8 +418,10 @@ Integration tests (`skipUnless(docker_available)`):
    `overall_success=true`.
 2. The shallow-fix integration case records `hidden.pass=false` and
    `overall_success=false`.
-3. The isolation probes in section 11 pass.
-4. `--sandbox none` runs the same task and records `mode=none`.
+3. The isolation probes in section 11 pass, including the control-plane
+   probes: no `docker.sock`, no repository path, and `$HOME=/tmp`.
+4. `--sandbox none` runs the same task, records `mode=none`, and records
+   `hidden.skipped=true` with `hidden.pass=null`.
 5. A stopped Docker daemon yields `sandbox_error`, no host fallback.
 6. Existing runner tests (`test_command_policy.py`, `test_listing.py`,
    `test_run_task.py`) and the Go gate (`go test ./...`, `go vet ./...`,
@@ -381,3 +438,18 @@ Integration tests (`skipUnless(docker_available)`):
 | Host-side hidden expectations + data-free probe | Prevents the agent from reading the values it is judged against |
 | Per-task `sandbox_image`, fail closed | Avoids silently pretending a task is sandboxed when its toolchain is missing |
 | Default `--sandbox docker` | Safety is the default; `none` is explicit and recorded |
+| No control-plane mounts (I8) | The dsh CVE-2026-82533 escaped through the harness's own API; the container must not be able to reach it |
+| Skip hidden checks under `none` | The task JSON is readable on the host, so a `none` run cannot make a hidden claim |
+| Sandbox error never becomes a test failure | A broken runner must not be scored as a wrong model answer |
+
+## 15. References
+
+- Codex: [`codex-rs/linux-sandbox/README.md`](https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/README.md),
+  [`codex-rs/mxc-sandbox/README.md`](https://github.com/openai/codex/blob/main/codex-rs/mxc-sandbox/README.md),
+  and the sandbox mode prompts under `codex-rs/prompts/templates/permissions/sandbox_mode/`.
+- Claude Code: [sandboxing docs](https://code.claude.com/docs/en/sandboxing) and the
+  [sandbox-runtime README](https://github.com/anthropic-experimental/sandbox-runtime).
+- DeepSeek Harness: [`docs/subsystems/sandbox.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/sandbox.md),
+  [`packages/sandbox/sandbox-local/README.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/sandbox/sandbox-local/README.md),
+  and [`packages/shell/bash-sandbox/README.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/shell/bash-sandbox/README.md).
+- dsh control-plane escape: [CVE-2026-82533 summary](https://github.com/lost-rob0t/agentProlog/issues/16).
