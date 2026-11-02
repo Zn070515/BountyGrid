@@ -198,7 +198,30 @@ def run_one(spec, arm, agent_cmd, repeat):
         outside = [f for f in files if f not in spec.get("allowed_files", [])]
         secrets = scan_secrets(work, files)
 
-        success = bool(after_ok and not outside and not secrets and not agent.get("agent_timed_out"))
+        usage = agent.get("usage") or {}
+        max_steps = 0
+        if agent_cmd:
+            match = re.search(r"--max-steps\s+(\d+)", agent_cmd)
+            if match:
+                max_steps = int(match.group(1))
+        step_cap_hit = bool(usage.get("step_cap_hit"))
+        if max_steps:
+            step_cap_hit = step_cap_hit or (
+                int(usage.get("steps") or 0) >= max_steps and not usage.get("completed")
+            )
+        if arm in ("oracle", "mock"):
+            agent_completed = True
+            step_cap_hit = False
+        else:
+            agent_completed = bool(
+                agent.get("agent_exit") == 0
+                and not agent.get("agent_timed_out")
+                and usage.get("completed") is True
+                and not step_cap_hit
+            )
+        functional_pass = bool(after_ok)
+        scope_pass = bool(not outside and not secrets and not agent.get("agent_timed_out"))
+        overall_success = functional_pass and scope_pass and agent_completed
         rec = {
             "run_id": uuid.uuid4().hex[:12],
             "task_id": spec["id"],
@@ -216,7 +239,12 @@ def run_one(spec, arm, agent_cmd, repeat):
             "agent": agent,
             "diff": {"files": files, "files_outside_allowed": outside,
                      "insertions": ins, "deletions": dele, "secrets_hit": secrets},
-            "success": success,
+            "functional_pass": functional_pass,
+            "scope_pass": scope_pass,
+            "agent_completed": agent_completed,
+            "step_cap_hit": step_cap_hit,
+            "overall_success": overall_success,
+            "success": overall_success,
             "wall_clock_s": round(sum(r["duration_s"] for r in baseline) +
                                   sum(r["duration_s"] for r in after) +
                                   agent.get("agent_duration_s", 0), 2),

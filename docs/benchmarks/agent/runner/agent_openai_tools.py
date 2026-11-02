@@ -63,6 +63,17 @@ TOOLS = [
 
 DENY = re.compile(r"(rm\s+-rf\s+/|format\s+[a-z]:|shutdown|reboot|curl\s|wget\s|Invoke-WebRequest|git\s+push|git\s+reset\s+--hard)", re.I)
 
+# Allow only predefined test, build and read-only inspection commands. This is
+# not a full sandbox; it closes the shell escape around the write allowlist.
+ALLOW = re.compile(
+    r"^\s*(?:(?:python|python\.exe)\s+-m\s+(?:unittest|pytest|py_compile)\b"
+    r"|node\s+--test\b|go\s+test\b|git\s+(?:status|diff|log|show)\b"
+    r"|ls\b|dir\b|type\b|cat\b|head\b|tail\b|wc\b|grep\b|rg\b|find\b"
+    r"|Get-ChildItem\b|Select-String\b)",
+    re.I,
+)
+SHELL_META = re.compile(r"[|<>;&`]|\$\(")
+
 
 def safe_path(workdir, rel):
     p = (workdir / (rel or ".")).resolve()
@@ -112,7 +123,7 @@ def tool_call(workdir, name, args, allowed):
         return f"replaced in {p.relative_to(workdir)}"
     if name == "run_command":
         cmd = args["command"]
-        if DENY.search(cmd):
+        if DENY.search(cmd) or SHELL_META.search(cmd) or not ALLOW.search(cmd):
             return "ERROR: command denied by safety policy"
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
@@ -220,6 +231,10 @@ def run_multiturn(args):
         if aborted or not turn_done:
             break
 
+    usage["completed"] = len(usage["turns"]) == len(prompts) and all(
+        turn["completed"] for turn in usage["turns"]
+    )
+    usage["step_cap_hit"] = (not usage["completed"] and not aborted)
     usage["wall_clock_s"] = round(time.time() - started, 1)
     (workdir / "agent_usage.json").write_text(json.dumps(usage, ensure_ascii=False, indent=1), encoding="utf-8")
     print(final[-2000:])
@@ -257,6 +272,7 @@ def main():
              "allowed_files": sorted(allowed) if allowed else None}
     started = time.time()
     final = ""
+    completed = False
     for step in range(args.max_steps):
         try:
             resp = chat(args.base_url, args.model, messages,
@@ -282,6 +298,7 @@ def main():
         messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
         if not calls:
             final = msg.get("content") or ""
+            completed = True
             break
         for call in calls:
             fn = (call.get("function") or {})
@@ -297,6 +314,8 @@ def main():
             if isinstance(result, str) and result.startswith("ERROR: path not allowed"):
                 usage["denied_writes"] += 1
             messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": str(result)[:8000]})
+    usage["completed"] = completed
+    usage["step_cap_hit"] = (not completed and not final.startswith("API_ERROR"))
     usage["wall_clock_s"] = round(time.time() - started, 1)
     (workdir / "agent_usage.json").write_text(json.dumps(usage, ensure_ascii=False, indent=1), encoding="utf-8")
     print(final[-2000:])

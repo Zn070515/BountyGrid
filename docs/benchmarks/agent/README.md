@@ -102,6 +102,29 @@ Results and the three-way comparison are in
 same-session multi-turn was 2–3× cheaper than fresh-process handoff for this
 four-module task.
 
+## Harness fixes (2026-11-02)
+
+- **Split success metrics.** `run_task.py` now records `functional_pass`,
+  `scope_pass`, `agent_completed`, `step_cap_hit` and `overall_success`;
+  `success` means functional + scope + the agent ended normally (not a step
+  cap). A test-passing run that exhausted its step budget no longer counts as a
+  completed agent.
+- **Shell execution boundary.** `run_command` only allows predefined
+  test/build/read-only commands (`python -m unittest|pytest|py_compile`,
+  `node --test`, `go test`, `git status|diff|log|show`, `ls`/`dir`/`cat`/
+  `grep`/`rg`/`find`); shell metacharacters are rejected. This closes the shell
+  escape around the write allowlist, but it is a command allowlist, not an OS
+  sandbox.
+- **Tool-schema metrics.** `run_schema.py` reports undeclared tools, no tool
+  call, wrong substitute, correct refusal and truncation separately.
+- **Long-context strictness.** `run_longdepth.py` pairs every `@ section N`
+  with its nearest code (a swapped section fails), and adds a second injection
+  variant (`distractor2`).
+
+Fixed data: `runs/schema-fixed.jsonl`, `runs/schema-fixed-summary.json`,
+`runs/longdepth-fixed.jsonl`, `runs/longdepth-summary.json`
+(`longdepth-summary-v1.json` is the pre-fix summary).
+
 ## Validate the pipeline
 
 ```powershell

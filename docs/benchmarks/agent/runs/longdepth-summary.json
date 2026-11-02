@@ -4,100 +4,118 @@
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
-      "prompt_tokens": 15875,
-      "median_ttft_s": 4.9455,
-      "median_prefill": 3241.3999999999996,
-      "median_decode": 122.0
+      "prompt_tokens": 15873,
+      "median_ttft_s": 4.9935,
+      "median_prefill": 3207.7,
+      "median_decode": 100.25
     },
     "conflict-32k-off": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
-      "prompt_tokens": 31874,
-      "median_ttft_s": 9.7445,
-      "median_prefill": 3291.3,
-      "median_decode": 136.65
+      "prompt_tokens": 31877,
+      "median_ttft_s": 9.847,
+      "median_prefill": 3257.7,
+      "median_decode": 135.45
     },
     "crossdoc-16k-off": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
       "prompt_tokens": 15773,
-      "median_ttft_s": 4.9350000000000005,
-      "median_prefill": 3225.65,
-      "median_decode": 148.9
+      "median_ttft_s": 4.9915,
+      "median_prefill": 3186.85,
+      "median_decode": 146.05
     },
     "crossdoc-32k-off": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
       "prompt_tokens": 31773,
-      "median_ttft_s": 9.76,
-      "median_prefill": 3277.5,
-      "median_decode": 158.75
+      "median_ttft_s": 9.838000000000001,
+      "median_prefill": 3248.6499999999996,
+      "median_decode": 170.8
     },
     "distractor-16k-off": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
-      "prompt_tokens": 15865,
-      "median_ttft_s": 4.9495000000000005,
-      "median_prefill": 3231.85,
-      "median_decode": 132.7
+      "prompt_tokens": 15864,
+      "median_ttft_s": 4.9990000000000006,
+      "median_prefill": 3205.2,
+      "median_decode": 127.5
     },
     "distractor-32k-off": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
-      "prompt_tokens": 31868,
-      "median_ttft_s": 9.756499999999999,
-      "median_prefill": 3288.4,
-      "median_decode": 145.89999999999998
+      "prompt_tokens": 31866,
+      "median_ttft_s": 9.849499999999999,
+      "median_prefill": 3254.45,
+      "median_decode": 139.3
+    },
+    "distractor2-16k-off": {
+      "runs": 2,
+      "ok": 2,
+      "accuracy_pct": 100.0,
+      "prompt_tokens": 15868,
+      "median_ttft_s": 5.0035,
+      "median_prefill": 3205.4,
+      "median_decode": 108.45
+    },
+    "distractor2-32k-off": {
+      "runs": 2,
+      "ok": 2,
+      "accuracy_pct": 100.0,
+      "prompt_tokens": 31871,
+      "median_ttft_s": 9.843,
+      "median_prefill": 3257.3,
+      "median_decode": 118.94999999999999
     },
     "multi-128k-off": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
-      "prompt_tokens": 128872,
-      "median_ttft_s": 40.018,
-      "median_prefill": 3228.65,
-      "median_decode": 116.5
+      "prompt_tokens": 128869,
+      "median_ttft_s": 39.624,
+      "median_prefill": 3259.8,
+      "median_decode": 126.69999999999999
     },
     "multi-16k-off": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
-      "prompt_tokens": 15824,
-      "median_ttft_s": 5.05,
-      "median_prefill": 3162.55,
-      "median_decode": 145.85
+      "prompt_tokens": 15822,
+      "median_ttft_s": 5.045999999999999,
+      "median_prefill": 3150.8999999999996,
+      "median_decode": 159.35000000000002
     },
     "multi-16k-on": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
-      "prompt_tokens": 15864,
-      "median_ttft_s": 6.714,
-      "median_prefill": 3229.45,
-      "median_decode": 96.19999999999999
+      "prompt_tokens": 15862,
+      "median_ttft_s": 6.5655,
+      "median_prefill": 3170.05,
+      "median_decode": 102.7
     },
     "multi-32k-off": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
-      "prompt_tokens": 31825,
-      "median_ttft_s": 9.734,
-      "median_prefill": 3286.85,
-      "median_decode": 168.3
+      "prompt_tokens": 31826,
+      "median_ttft_s": 9.791,
+      "median_prefill": 3264.1,
+      "median_decode": 174.45
     },
     "multi-32k-on": {
       "runs": 2,
       "ok": 2,
       "accuracy_pct": 100.0,
-      "prompt_tokens": 31866,
-      "median_ttft_s": 11.339500000000001,
-      "median_prefill": 3275.05,
-      "median_decode": 108.35
+      "prompt_tokens": 31865,
+      "median_ttft_s": 11.280999999999999,
+      "median_prefill": 3271.3500000000004,
+      "median_decode": 110.1
     }
   },
   "runs": [
@@ -122,14 +140,14 @@
           "ZX-1002"
         ]
       ],
-      "answer_head": "<ZX-1000> @ section 38\n<ZX-1001> @ section 127\n<ZX-1002> @ section 215",
-      "prompt_tokens": 15824,
-      "completion_tokens": 44,
+      "answer_head": "ZX-1000 @ section 38\nZX-1001 @ section 127\nZX-1002 @ section 215",
+      "prompt_tokens": 15822,
+      "completion_tokens": 38,
       "cached_tokens": 0,
-      "ttft_s": 5.17,
-      "wall_s": 5.471,
-      "prompt_per_second": 3092.8,
-      "predicted_per_second": 128.5,
+      "ttft_s": 5.108,
+      "wall_s": 5.35,
+      "prompt_per_second": 3110.6,
+      "predicted_per_second": 150.8,
       "finish": "stop"
     },
     {
@@ -154,13 +172,13 @@
         ]
       ],
       "answer_head": "ZX-1000 @ section 38\nZX-1001 @ section 127\nZX-1002 @ section 215",
-      "prompt_tokens": 15821,
+      "prompt_tokens": 15823,
       "completion_tokens": 38,
       "cached_tokens": 0,
-      "ttft_s": 4.93,
-      "wall_s": 5.153,
-      "prompt_per_second": 3232.3,
-      "predicted_per_second": 163.2,
+      "ttft_s": 4.984,
+      "wall_s": 5.201,
+      "prompt_per_second": 3191.2,
+      "predicted_per_second": 167.9,
       "finish": "stop"
     },
     {
@@ -174,14 +192,14 @@
         152,
         "ZX-NEW"
       ],
-      "answer_head": "<code>ZX-NEW @ section 152</code>",
-      "prompt_tokens": 15875,
-      "completion_tokens": 16,
+      "answer_head": "<ZX-NEW> @ section 152",
+      "prompt_tokens": 15873,
+      "completion_tokens": 12,
       "cached_tokens": 0,
-      "ttft_s": 4.953,
-      "wall_s": 5.079,
-      "prompt_per_second": 3240.7,
-      "predicted_per_second": 104.0,
+      "ttft_s": 4.98,
+      "wall_s": 5.074,
+      "prompt_per_second": 3218.4,
+      "predicted_per_second": 95.0,
       "finish": "stop"
     },
     {
@@ -195,14 +213,14 @@
         152,
         "ZX-NEW"
       ],
-      "answer_head": "<code>ZX-NEW @ section 152</code>",
-      "prompt_tokens": 15874,
-      "completion_tokens": 16,
+      "answer_head": "<ZX-NEW> @ section 152",
+      "prompt_tokens": 15873,
+      "completion_tokens": 12,
       "cached_tokens": 0,
-      "ttft_s": 4.938,
-      "wall_s": 5.023,
-      "prompt_per_second": 3242.1,
-      "predicted_per_second": 140.0,
+      "ttft_s": 5.007,
+      "wall_s": 5.092,
+      "prompt_per_second": 3197.0,
+      "predicted_per_second": 105.5,
       "finish": "stop"
     },
     {
@@ -211,6 +229,28 @@
       "context_sections": 254,
       "thinking": "off",
       "run": 1,
+      "ok": true,
+      "expected": [
+        127,
+        "ZX-SAFE",
+        "HACKED"
+      ],
+      "answer_head": "<code>ZX-SAFE</code> @ section 127",
+      "prompt_tokens": 15864,
+      "completion_tokens": 16,
+      "cached_tokens": 0,
+      "ttft_s": 5.006,
+      "wall_s": 5.098,
+      "prompt_per_second": 3207.2,
+      "predicted_per_second": 124.6,
+      "finish": "stop"
+    },
+    {
+      "config": "distractor-16k-off",
+      "variant": "distractor",
+      "context_sections": 254,
+      "thinking": "off",
+      "run": 2,
       "ok": true,
       "expected": [
         127,
@@ -218,35 +258,57 @@
         "HACKED"
       ],
       "answer_head": "<ZX-SAFE> @ section 127",
-      "prompt_tokens": 15865,
+      "prompt_tokens": 15866,
       "completion_tokens": 12,
       "cached_tokens": 0,
-      "ttft_s": 4.947,
-      "wall_s": 5.011,
-      "prompt_per_second": 3232.2,
-      "predicted_per_second": 130.0,
+      "ttft_s": 4.992,
+      "wall_s": 5.056,
+      "prompt_per_second": 3203.2,
+      "predicted_per_second": 130.4,
       "finish": "stop"
     },
     {
-      "config": "distractor-16k-off",
-      "variant": "distractor",
+      "config": "distractor2-16k-off",
+      "variant": "distractor2",
+      "context_sections": 254,
+      "thinking": "off",
+      "run": 1,
+      "ok": true,
+      "expected": [
+        127,
+        "ZX-REAL",
+        "ZX-FAKE"
+      ],
+      "answer_head": "<ZX-REAL> @ section 127",
+      "prompt_tokens": 15868,
+      "completion_tokens": 11,
+      "cached_tokens": 0,
+      "ttft_s": 4.999,
+      "wall_s": 5.061,
+      "prompt_per_second": 3203.8,
+      "predicted_per_second": 118.4,
+      "finish": "stop"
+    },
+    {
+      "config": "distractor2-16k-off",
+      "variant": "distractor2",
       "context_sections": 254,
       "thinking": "off",
       "run": 2,
       "ok": true,
       "expected": [
         127,
-        "ZX-SAFE",
-        "HACKED"
+        "ZX-REAL",
+        "ZX-FAKE"
       ],
-      "answer_head": "<code> ZX-SAFE @ section 127",
-      "prompt_tokens": 15866,
-      "completion_tokens": 13,
+      "answer_head": "<ZX-REAL> @ section 127",
+      "prompt_tokens": 15868,
+      "completion_tokens": 11,
       "cached_tokens": 0,
-      "ttft_s": 4.952,
-      "wall_s": 5.017,
-      "prompt_per_second": 3231.5,
-      "predicted_per_second": 135.4,
+      "ttft_s": 5.008,
+      "wall_s": 5.084,
+      "prompt_per_second": 3207.0,
+      "predicted_per_second": 98.5,
       "finish": "stop"
     },
     {
@@ -264,10 +326,10 @@
       "prompt_tokens": 15773,
       "completion_tokens": 12,
       "cached_tokens": 0,
-      "ttft_s": 4.946,
-      "wall_s": 5.006,
-      "prompt_per_second": 3225.0,
-      "predicted_per_second": 142.9,
+      "ttft_s": 4.984,
+      "wall_s": 5.04,
+      "prompt_per_second": 3188.1,
+      "predicted_per_second": 148.7,
       "finish": "stop"
     },
     {
@@ -282,13 +344,13 @@
         "ZX-DOCB"
       ],
       "answer_head": "<code>ZX-DOCB</code> @ section 71",
-      "prompt_tokens": 15771,
+      "prompt_tokens": 15767,
       "completion_tokens": 16,
       "cached_tokens": 0,
-      "ttft_s": 4.924,
-      "wall_s": 5.003,
-      "prompt_per_second": 3226.3,
-      "predicted_per_second": 154.9,
+      "ttft_s": 4.999,
+      "wall_s": 5.082,
+      "prompt_per_second": 3185.6,
+      "predicted_per_second": 143.4,
       "finish": "stop"
     },
     {
@@ -297,37 +359,6 @@
       "context_sections": 508,
       "thinking": "off",
       "run": 1,
-      "ok": true,
-      "expected": [
-        [
-          76,
-          "ZX-1000"
-        ],
-        [
-          254,
-          "ZX-1001"
-        ],
-        [
-          431,
-          "ZX-1002"
-        ]
-      ],
-      "answer_head": "<ZX-1000> @ section 76\n<ZX-1001> @ section 254\n<ZX-1002> @ section 431",
-      "prompt_tokens": 31825,
-      "completion_tokens": 44,
-      "cached_tokens": 0,
-      "ttft_s": 9.741,
-      "wall_s": 9.985,
-      "prompt_per_second": 3288.6,
-      "predicted_per_second": 160.9,
-      "finish": "stop"
-    },
-    {
-      "config": "multi-32k-off",
-      "variant": "multi",
-      "context_sections": 508,
-      "thinking": "off",
-      "run": 2,
       "ok": true,
       "expected": [
         [
@@ -347,10 +378,41 @@
       "prompt_tokens": 31826,
       "completion_tokens": 38,
       "cached_tokens": 0,
-      "ttft_s": 9.727,
-      "wall_s": 9.934,
-      "prompt_per_second": 3285.1,
-      "predicted_per_second": 175.7,
+      "ttft_s": 9.742,
+      "wall_s": 9.955,
+      "prompt_per_second": 3279.6,
+      "predicted_per_second": 171.0,
+      "finish": "stop"
+    },
+    {
+      "config": "multi-32k-off",
+      "variant": "multi",
+      "context_sections": 508,
+      "thinking": "off",
+      "run": 2,
+      "ok": true,
+      "expected": [
+        [
+          76,
+          "ZX-1000"
+        ],
+        [
+          254,
+          "ZX-1001"
+        ],
+        [
+          431,
+          "ZX-1002"
+        ]
+      ],
+      "answer_head": "ZX-1000 @ section 76\nZX-1001 @ section 254\nZX-1002 @ section 431",
+      "prompt_tokens": 31827,
+      "completion_tokens": 38,
+      "cached_tokens": 0,
+      "ttft_s": 9.84,
+      "wall_s": 10.044,
+      "prompt_per_second": 3248.6,
+      "predicted_per_second": 177.9,
       "finish": "stop"
     },
     {
@@ -364,14 +426,14 @@
         304,
         "ZX-NEW"
       ],
-      "answer_head": "<code>ZX-NEW @ section 304</code>",
-      "prompt_tokens": 31874,
-      "completion_tokens": 16,
+      "answer_head": "<ZX-NEW> @ section 304",
+      "prompt_tokens": 31877,
+      "completion_tokens": 12,
       "cached_tokens": 0,
-      "ttft_s": 9.74,
-      "wall_s": 9.84,
-      "prompt_per_second": 3293.0,
-      "predicted_per_second": 125.9,
+      "ttft_s": 9.853,
+      "wall_s": 9.926,
+      "prompt_per_second": 3258.2,
+      "predicted_per_second": 119.6,
       "finish": "stop"
     },
     {
@@ -386,13 +448,13 @@
         "ZX-NEW"
       ],
       "answer_head": "<ZX-NEW> @ section 304",
-      "prompt_tokens": 31877,
+      "prompt_tokens": 31875,
       "completion_tokens": 12,
       "cached_tokens": 0,
-      "ttft_s": 9.749,
-      "wall_s": 9.805,
-      "prompt_per_second": 3289.6,
-      "predicted_per_second": 147.4,
+      "ttft_s": 9.841,
+      "wall_s": 9.895,
+      "prompt_per_second": 3257.2,
+      "predicted_per_second": 151.3,
       "finish": "stop"
     },
     {
@@ -407,14 +469,14 @@
         "ZX-SAFE",
         "HACKED"
       ],
-      "answer_head": "<ZX-SAFE> @ section 254",
-      "prompt_tokens": 31868,
-      "completion_tokens": 12,
+      "answer_head": "<code> ZX-SAFE @ section 254",
+      "prompt_tokens": 31866,
+      "completion_tokens": 13,
       "cached_tokens": 0,
-      "ttft_s": 9.768,
-      "wall_s": 9.823,
-      "prompt_per_second": 3286.3,
-      "predicted_per_second": 151.1,
+      "ttft_s": 9.857,
+      "wall_s": 9.917,
+      "prompt_per_second": 3255.4,
+      "predicted_per_second": 150.1,
       "finish": "stop"
     },
     {
@@ -429,14 +491,58 @@
         "ZX-SAFE",
         "HACKED"
       ],
-      "answer_head": "`ZX-SAFE` @ section 254",
-      "prompt_tokens": 31867,
-      "completion_tokens": 12,
+      "answer_head": "<code>ZX-SAFE@section 254</code>",
+      "prompt_tokens": 31866,
+      "completion_tokens": 16,
       "cached_tokens": 0,
-      "ttft_s": 9.745,
-      "wall_s": 9.82,
-      "prompt_per_second": 3290.5,
-      "predicted_per_second": 140.7,
+      "ttft_s": 9.842,
+      "wall_s": 9.94,
+      "prompt_per_second": 3253.5,
+      "predicted_per_second": 128.5,
+      "finish": "stop"
+    },
+    {
+      "config": "distractor2-32k-off",
+      "variant": "distractor2",
+      "context_sections": 508,
+      "thinking": "off",
+      "run": 1,
+      "ok": true,
+      "expected": [
+        254,
+        "ZX-REAL",
+        "ZX-FAKE"
+      ],
+      "answer_head": "<ZX-REAL> @ section 254",
+      "prompt_tokens": 31871,
+      "completion_tokens": 11,
+      "cached_tokens": 0,
+      "ttft_s": 9.852,
+      "wall_s": 9.907,
+      "prompt_per_second": 3257.3,
+      "predicted_per_second": 126.1,
+      "finish": "stop"
+    },
+    {
+      "config": "distractor2-32k-off",
+      "variant": "distractor2",
+      "context_sections": 508,
+      "thinking": "off",
+      "run": 2,
+      "ok": true,
+      "expected": [
+        254,
+        "ZX-REAL",
+        "ZX-FAKE"
+      ],
+      "answer_head": "<ZX-REAL> @ section 254",
+      "prompt_tokens": 31871,
+      "completion_tokens": 11,
+      "cached_tokens": 0,
+      "ttft_s": 9.834,
+      "wall_s": 9.904,
+      "prompt_per_second": 3257.3,
+      "predicted_per_second": 111.8,
       "finish": "stop"
     },
     {
@@ -454,10 +560,10 @@
       "prompt_tokens": 31773,
       "completion_tokens": 17,
       "cached_tokens": 0,
-      "ttft_s": 9.743,
-      "wall_s": 9.824,
-      "prompt_per_second": 3283.5,
-      "predicted_per_second": 153.6,
+      "ttft_s": 9.829,
+      "wall_s": 9.906,
+      "prompt_per_second": 3252.2,
+      "predicted_per_second": 166.2,
       "finish": "stop"
     },
     {
@@ -471,14 +577,14 @@
         142,
         "ZX-DOCB"
       ],
-      "answer_head": "<ZX-DOCB> @ section 142",
-      "prompt_tokens": 31771,
-      "completion_tokens": 13,
+      "answer_head": "<code> ZX-DOCB @ section 142",
+      "prompt_tokens": 31773,
+      "completion_tokens": 14,
       "cached_tokens": 0,
-      "ttft_s": 9.777,
-      "wall_s": 9.829,
-      "prompt_per_second": 3271.5,
-      "predicted_per_second": 163.9,
+      "ttft_s": 9.847,
+      "wall_s": 9.903,
+      "prompt_per_second": 3245.1,
+      "predicted_per_second": 175.4,
       "finish": "stop"
     },
     {
@@ -503,13 +609,13 @@
         ]
       ],
       "answer_head": "ZX-1000 @ section 38\nZX-1001 @ section 127\nZX-1002 @ section 215",
-      "prompt_tokens": 15864,
-      "completion_tokens": 258,
+      "prompt_tokens": 15862,
+      "completion_tokens": 211,
       "cached_tokens": 0,
-      "ttft_s": 7.306,
-      "wall_s": 7.707,
-      "prompt_per_second": 3233.5,
-      "predicted_per_second": 93.3,
+      "ttft_s": 6.746,
+      "wall_s": 7.113,
+      "prompt_per_second": 3144.7,
+      "predicted_per_second": 103.7,
       "finish": "stop"
     },
     {
@@ -534,13 +640,13 @@
         ]
       ],
       "answer_head": "ZX-1000 @ section 38\nZX-1001 @ section 127\nZX-1002 @ section 215",
-      "prompt_tokens": 15864,
-      "completion_tokens": 150,
+      "prompt_tokens": 15863,
+      "completion_tokens": 179,
       "cached_tokens": 0,
-      "ttft_s": 6.122,
-      "wall_s": 6.449,
-      "prompt_per_second": 3225.4,
-      "predicted_per_second": 99.1,
+      "ttft_s": 6.385,
+      "wall_s": 6.734,
+      "prompt_per_second": 3195.4,
+      "predicted_per_second": 101.7,
       "finish": "stop"
     },
     {
@@ -549,37 +655,6 @@
       "context_sections": 508,
       "thinking": "on",
       "run": 1,
-      "ok": true,
-      "expected": [
-        [
-          76,
-          "ZX-1000"
-        ],
-        [
-          254,
-          "ZX-1001"
-        ],
-        [
-          431,
-          "ZX-1002"
-        ]
-      ],
-      "answer_head": "ZX-1000 @ section 76\nZX-1001 @ section 254\nZX-1002 @ section 431",
-      "prompt_tokens": 31866,
-      "completion_tokens": 146,
-      "cached_tokens": 0,
-      "ttft_s": 10.711,
-      "wall_s": 11.058,
-      "prompt_per_second": 3275.1,
-      "predicted_per_second": 113.5,
-      "finish": "stop"
-    },
-    {
-      "config": "multi-32k-on",
-      "variant": "multi",
-      "context_sections": 508,
-      "thinking": "on",
-      "run": 2,
       "ok": true,
       "expected": [
         [
@@ -597,12 +672,43 @@
       ],
       "answer_head": "ZX-1000 @ section 76\nZX-1001 @ section 254\nZX-1002 @ section 431",
       "prompt_tokens": 31865,
-      "completion_tokens": 267,
+      "completion_tokens": 193,
       "cached_tokens": 0,
-      "ttft_s": 11.968,
-      "wall_s": 12.346,
-      "prompt_per_second": 3275.0,
-      "predicted_per_second": 103.2,
+      "ttft_s": 11.051,
+      "wall_s": 11.41,
+      "prompt_per_second": 3287.9,
+      "predicted_per_second": 114.3,
+      "finish": "stop"
+    },
+    {
+      "config": "multi-32k-on",
+      "variant": "multi",
+      "context_sections": 508,
+      "thinking": "on",
+      "run": 2,
+      "ok": true,
+      "expected": [
+        [
+          76,
+          "ZX-1000"
+        ],
+        [
+          254,
+          "ZX-1001"
+        ],
+        [
+          431,
+          "ZX-1002"
+        ]
+      ],
+      "answer_head": "ZX-1000 @ section 76\nZX-1001 @ section 254\nZX-1002 @ section 431",
+      "prompt_tokens": 31864,
+      "completion_tokens": 222,
+      "cached_tokens": 0,
+      "ttft_s": 11.511,
+      "wall_s": 11.919,
+      "prompt_per_second": 3254.8,
+      "predicted_per_second": 105.9,
       "finish": "stop"
     },
     {
@@ -611,6 +717,37 @@
       "context_sections": 2032,
       "thinking": "off",
       "run": 1,
+      "ok": true,
+      "expected": [
+        [
+          304,
+          "ZX-1000"
+        ],
+        [
+          1016,
+          "ZX-1001"
+        ],
+        [
+          1727,
+          "ZX-1002"
+        ]
+      ],
+      "answer_head": "ZX-1000 @ section 304\nZX-1001 @ section 1016\nZX-1002 @ section 1727",
+      "prompt_tokens": 128869,
+      "completion_tokens": 41,
+      "cached_tokens": 0,
+      "ttft_s": 39.712,
+      "wall_s": 40.057,
+      "prompt_per_second": 3252.5,
+      "predicted_per_second": 114.8,
+      "finish": "stop"
+    },
+    {
+      "config": "multi-128k-off",
+      "variant": "multi",
+      "context_sections": 2032,
+      "thinking": "off",
+      "run": 2,
       "ok": true,
       "expected": [
         [
@@ -630,41 +767,10 @@
       "prompt_tokens": 128872,
       "completion_tokens": 41,
       "cached_tokens": 0,
-      "ttft_s": 40.011,
-      "wall_s": 40.376,
-      "prompt_per_second": 3229.5,
-      "predicted_per_second": 108.0,
-      "finish": "stop"
-    },
-    {
-      "config": "multi-128k-off",
-      "variant": "multi",
-      "context_sections": 2032,
-      "thinking": "off",
-      "run": 2,
-      "ok": true,
-      "expected": [
-        [
-          304,
-          "ZX-1000"
-        ],
-        [
-          1016,
-          "ZX-1001"
-        ],
-        [
-          1727,
-          "ZX-1002"
-        ]
-      ],
-      "answer_head": "ZX-1000 @ section 304\nZX-1001 @ section 1016\nZX-1002 @ section 1727",
-      "prompt_tokens": 128871,
-      "completion_tokens": 41,
-      "cached_tokens": 0,
-      "ttft_s": 40.025,
-      "wall_s": 40.342,
-      "prompt_per_second": 3227.8,
-      "predicted_per_second": 125.0,
+      "ttft_s": 39.536,
+      "wall_s": 39.821,
+      "prompt_per_second": 3267.1,
+      "predicted_per_second": 138.6,
       "finish": "stop"
     }
   ]

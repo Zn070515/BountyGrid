@@ -13,6 +13,7 @@ Thinking on/off are paired; 8 runs each; same max_tokens 256; order alternates.
 
 import json
 import os
+import re
 import statistics
 import time
 import urllib.request
@@ -22,10 +23,16 @@ BASE = "http://127.0.0.1:8080/v1"
 MODEL = "qwen3.8-flash-next-iq3_s"
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.environ.get("BENCH_SCHEMA_OUT") or os.path.join(HERE, "..", "runs", "schema.jsonl")
+SUMMARY = os.environ.get("BENCH_SCHEMA_SUMMARY") or os.path.join(HERE, "..", "runs", "schema-summary.json")
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 ACTIONS = {"inspect", "patch", "verify"}
 RISKS = {"low", "medium", "high"}
+REFUSAL = re.compile(
+    r"(cannot|can't|can not|unable|not available|do not have|don't have"
+    r"|only .*read_file|no (?:such|write) tool)",
+    re.I,
+)
 
 TOOLS = [{
     "type": "function",
@@ -130,25 +137,39 @@ def main():
             r = call(JSON_PROMPT.format(uuid.uuid4().hex[:8]), no_thinking=no_thinking)
             rows.append({"probe": "json", "mode": mode, "run": run,
                          "valid": valid_json_object(r["content"]),
+                         "empty_content": not r["content"].strip(),
+                         "truncated": r["finish"] == "length",
                          "completion_tokens": r["usage"].get("completion_tokens"),
                          "wall_s": r["wall_s"], "finish": r["finish"]})
 
             r = call(TOOL_PROMPT.format(uuid.uuid4().hex[:8]), tools=TOOLS, no_thinking=no_thinking)
             ok, why = valid_tool_call(r["tool_calls"], {"read_file"})
+            names = [(c.get("function") or {}).get("name") for c in r["tool_calls"]]
             rows.append({"probe": "tool-known", "mode": mode, "run": run,
                          "valid": ok, "why": why,
                          "calls": len(r["tool_calls"]),
+                         "no_tool_call": not r["tool_calls"],
+                         "undeclared": any(n not in {"read_file"} for n in names),
+                         "truncated": r["finish"] == "length",
                          "completion_tokens": r["usage"].get("completion_tokens"),
                          "wall_s": r["wall_s"], "finish": r["finish"]})
 
             r = call(UNKNOWN_TOOL_PROMPT.format(uuid.uuid4().hex[:8]), tools=TOOLS, no_thinking=no_thinking)
-            ok, why = valid_tool_call(r["tool_calls"], {"read_file"})
-            # For the unknown-tool probe, a valid outcome is a call to the only
-            # declared tool; inventing write_file is a violation.
-            invented = any((c.get("function") or {}).get("name") not in {"read_file"} for c in r["tool_calls"])
+            names = [(c.get("function") or {}).get("name") for c in r["tool_calls"]]
+            undeclared = any(n not in {"read_file"} for n in names)
+            no_tool_call = not r["tool_calls"]
+            wrong_substitute = any(n == "read_file" for n in names)
+            correct_refusal = no_tool_call and bool(REFUSAL.search(r["content"]))
             rows.append({"probe": "tool-unknown", "mode": mode, "run": run,
-                         "valid": not invented, "why": "invented tool" if invented else "",
+                         "valid": not undeclared,
+                         "why": "invented tool" if undeclared else ("wrong substitute" if wrong_substitute else ""),
                          "calls": len(r["tool_calls"]),
+                         "no_tool_call": no_tool_call,
+                         "undeclared": undeclared,
+                         "wrong_substitute": wrong_substitute,
+                         "correct_refusal": correct_refusal,
+                         "truncated": r["finish"] == "length",
+                         "content_head": r["content"][:120],
                          "completion_tokens": r["usage"].get("completion_tokens"),
                          "wall_s": r["wall_s"], "finish": r["finish"]})
 
@@ -160,14 +181,26 @@ def main():
     for probe in ("json", "tool-known", "tool-unknown"):
         for mode in ("on", "off"):
             sel = [r for r in rows if r["probe"] == probe and r["mode"] == mode]
+
+            def pct(key):
+                return round(100 * sum(1 for r in sel if r.get(key)) / len(sel), 1)
+
             summary[f"{probe}/{mode}"] = {
                 "runs": len(sel),
                 "valid": sum(1 for r in sel if r["valid"]),
                 "valid_pct": round(100 * sum(1 for r in sel if r["valid"]) / len(sel), 1),
+                "undeclared_pct": pct("undeclared"),
+                "no_tool_call_pct": pct("no_tool_call"),
+                "wrong_substitute_pct": pct("wrong_substitute"),
+                "correct_refusal_pct": pct("correct_refusal"),
+                "truncated_pct": pct("truncated"),
+                "empty_content_pct": pct("empty_content"),
                 "median_tokens": statistics.median([r["completion_tokens"] for r in sel if r["completion_tokens"]]),
                 "median_wall_s": round(statistics.median([r["wall_s"] for r in sel]), 2),
             }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    with open(SUMMARY, "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
