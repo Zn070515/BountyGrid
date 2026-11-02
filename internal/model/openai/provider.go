@@ -7,14 +7,18 @@ package openai
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
@@ -248,7 +252,28 @@ func toMessages(in []model.Message) []chatMessage {
 	return out
 }
 
-func classifyDoError(err error) error { return err }
+func classifyDoError(err error) error {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	var recErr tls.RecordHeaderError
+	if errors.As(err, &recErr) {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	var unknown x509.UnknownAuthorityError
+	if errors.As(err, &unknown) {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return fmt.Errorf("%w: %v", domain.ErrNotSent, err)
+	}
+	return err
+}
 
 func snippet(b []byte) string {
 	if len(b) <= errorSnippetBytes {

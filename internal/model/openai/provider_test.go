@@ -3,13 +3,17 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/model"
 )
 
@@ -202,5 +206,130 @@ func TestCompleteEmptyContentIsValid(t *testing.T) {
 	}
 	if resp.Content != "" || resp.Usage.OutputTokens != 5 {
 		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+func TestCompleteHTTP500IsAmbiguous(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if err == nil {
+		t.Fatal("HTTP 500 returned no error")
+	}
+	if errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("HTTP 500 was classified as not sent: %v", err)
+	}
+}
+
+func TestCompleteMalformedJSONIsAmbiguous(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `not json`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if err == nil || errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("malformed JSON err = %v, want an ambiguous error", err)
+	}
+}
+
+func TestCompleteOversizedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"`+strings.Repeat("x", 100)+`"}}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL, MaxResponseBytes: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if err == nil || errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("oversized err = %v, want an ambiguous size error", err)
+	}
+}
+
+func TestCompleteDialFailureIsNotSent(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	p, err := New(Config{Model: "m", Endpoint: "http://" + addr + "/v1", Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if !errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("dial failure err = %v, want domain.ErrNotSent", err)
+	}
+}
+
+func TestCompleteTimeoutIsAmbiguous(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"late"}}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL, Timeout: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if err == nil {
+		t.Fatal("timeout returned no error")
+	}
+	if errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("timeout was classified as not sent: %v", err)
+	}
+}
+
+func TestCompleteDoesNotFollowRedirects(t *testing.T) {
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"redirected"}}]}`)
+	}))
+	defer target.Close()
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/v1/chat/completions", http.StatusFound)
+	}))
+	defer front.Close()
+
+	p, err := New(Config{Model: "m", Endpoint: front.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if err == nil {
+		t.Fatal("redirect returned no error")
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("redirect target was called %d times", hits.Load())
+	}
+	if errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("redirect error was classified as not sent: %v", err)
 	}
 }
