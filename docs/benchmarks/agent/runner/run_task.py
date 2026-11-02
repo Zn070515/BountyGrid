@@ -213,12 +213,14 @@ def run_one(spec, arm, agent_cmd, repeat):
             agent_completed = True
             step_cap_hit = False
         else:
-            agent_completed = bool(
-                agent.get("agent_exit") == 0
-                and not agent.get("agent_timed_out")
-                and usage.get("completed") is True
-                and not step_cap_hit
-            )
+            exit_ok = agent.get("agent_exit") == 0 and not agent.get("agent_timed_out")
+            completed_flag = usage.get("completed")
+            if completed_flag is None:
+                # A non-adapter CLI (cloud arm) has no completion flag; its exit
+                # status is the only completion signal available.
+                agent_completed = bool(exit_ok and not step_cap_hit)
+            else:
+                agent_completed = bool(exit_ok and completed_flag is True and not step_cap_hit)
         functional_pass = bool(after_ok)
         scope_pass = bool(not outside and not secrets and not agent.get("agent_timed_out"))
         overall_success = functional_pass and scope_pass and agent_completed

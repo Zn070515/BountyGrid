@@ -61,7 +61,12 @@ TOOLS = [
             "required": ["command"]}}},
 ]
 
-DENY = re.compile(r"(rm\s+-rf\s+/|format\s+[a-z]:|shutdown|reboot|curl\s|wget\s|Invoke-WebRequest|git\s+push|git\s+reset\s+--hard)", re.I)
+DENY = re.compile(
+    r"(rm\s+-rf\s+/|format\s+[a-z]:|shutdown|reboot|curl\s|wget\s|Invoke-WebRequest|git\s+push|git\s+reset\s+--hard"
+    r"|-exec\b|-delete\b|-ok\b|-fprint\b|-fprintf\b|-fls\b|--output\b|(^|\s)-o(\s|$)"
+    r"|-coverprofile|--coverprofile|-cpuprofile|-memprofile|-trace\b|--junitxml|--cov-report|--html\b|xargs\b)",
+    re.I,
+)
 
 # Allow only predefined test, build and read-only inspection commands. This is
 # not a full sandbox; it closes the shell escape around the write allowlist.
@@ -72,7 +77,7 @@ ALLOW = re.compile(
     r"|Get-ChildItem\b|Select-String\b)",
     re.I,
 )
-SHELL_META = re.compile(r"[|<>;&`]|\$\(")
+SHELL_META = re.compile(r"[|<>;&`]|\$\(|[\r\n]")
 
 
 def safe_path(workdir, rel):

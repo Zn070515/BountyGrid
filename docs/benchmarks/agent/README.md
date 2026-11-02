@@ -112,9 +112,14 @@ four-module task.
 - **Shell execution boundary.** `run_command` only allows predefined
   test/build/read-only commands (`python -m unittest|pytest|py_compile`,
   `node --test`, `go test`, `git status|diff|log|show`, `ls`/`dir`/`cat`/
-  `grep`/`rg`/`find`); shell metacharacters are rejected. This closes the shell
+  `grep`/`rg`/`find`); shell metacharacters and newlines are rejected. It also
+  rejects write-capable flags such as `find -exec/-delete/-fprint`, `--output`,
+  `go test -o`, coverage/profile flags and `--junitxml`. This closes the shell
   escape around the write allowlist, but it is a command allowlist, not an OS
   sandbox.
+- **Non-adapter agents.** A cloud CLI without an `agent_usage.json` completion
+  flag falls back to its exit status for `agent_completed`; the adapter writes
+  `completed`/`step_cap_hit` explicitly.
 - **Tool-schema metrics.** `run_schema.py` reports undeclared tools, no tool
   call, wrong substitute, correct refusal and truncation separately.
 - **Long-context strictness.** `run_longdepth.py` pairs every `@ section N`
