@@ -1648,37 +1648,37 @@ class IsolationTests(unittest.TestCase):
         self.sandbox.stop()
         self.tmp.cleanup()
 
-    def run(self, code):
+    def exec_code(self, code):
         return self.sandbox.exec(["python", "-c", code], 30)
 
     def test_cannot_write_the_root_filesystem(self):
-        result = self.run("open('/etc/x','w').write('x')")
+        result = self.exec_code("open('/etc/x','w').write('x')")
         self.assertNotEqual(result.exit_code, 0)
 
     def test_cannot_open_a_network_connection(self):
-        result = self.run(
+        result = self.exec_code(
             "import socket; socket.create_connection(('1.1.1.1', 53), 1)")
         self.assertNotEqual(result.exit_code, 0)
 
     def test_probe_is_not_mounted_in_the_agent_container(self):
-        result = self.run("import os; print(os.path.exists('/probe'))")
+        result = self.exec_code("import os; print(os.path.exists('/probe'))")
         self.assertIn("False", result.stdout)
 
     def test_worktree_is_writable(self):
-        result = self.run("open('written.txt','w').write('ok')")
+        result = self.exec_code("open('written.txt','w').write('ok')")
         self.assertEqual(result.exit_code, 0)
         self.assertTrue((self.work / "written.txt").exists())
 
     def test_no_docker_socket(self):
-        result = self.run("import os; print(os.path.exists('/var/run/docker.sock'))")
+        result = self.exec_code("import os; print(os.path.exists('/var/run/docker.sock'))")
         self.assertIn("False", result.stdout)
 
     def test_home_is_tmp(self):
-        result = self.run("import os; print(os.environ.get('HOME'))")
+        result = self.exec_code("import os; print(os.environ.get('HOME'))")
         self.assertIn("/tmp", result.stdout)
 
     def test_repository_is_not_mounted(self):
-        result = self.run("import os; print(os.path.exists('/benchmark/tasks'))")
+        result = self.exec_code("import os; print(os.path.exists('/benchmark/tasks'))")
         self.assertIn("False", result.stdout)
 
 
