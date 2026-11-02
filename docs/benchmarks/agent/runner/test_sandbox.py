@@ -439,6 +439,7 @@ class OrchestrationTests(unittest.TestCase):
             cmd = f'"{sys.executable}" "{script}"'
             rec = rt.run_one(self.spec, "external", cmd, 1, sandbox_mode="docker")
         self.assertTrue(rec["agent_unsandboxed"])
+        self.assertEqual(rec["agent_trust"], "HOST_UNTRUSTED")
         self.assertFalse(rec["overall_success"])
 
     def test_git_pins_line_endings_and_safe_directory(self):
@@ -453,6 +454,77 @@ class OrchestrationTests(unittest.TestCase):
             rt.git(Path("."), "status --porcelain")
         self.assertIn("core.autocrlf=false", calls[0])
         self.assertIn("safe.directory=*", calls[0])
+
+
+class CompletionStatusTests(unittest.TestCase):
+    def test_stopped_normally(self):
+        self.assertEqual(agent.classify_completion("stop", "done"), "STOPPED_NORMALLY")
+
+    def test_length_is_truncated(self):
+        self.assertEqual(agent.classify_completion("length", "partial"), "TOKEN_TRUNCATED")
+
+    def test_empty_final_is_distinct(self):
+        self.assertEqual(agent.classify_completion("stop", "   "), "EMPTY_FINAL")
+
+    def test_missing_finish_reason_with_content_is_normal(self):
+        self.assertEqual(agent.classify_completion("", "done"), "STOPPED_NORMALLY")
+
+
+class BaselineGateTests(unittest.TestCase):
+    def test_expected_fail_requires_a_failing_baseline(self):
+        self.assertFalse(rt.baseline_valid({"expected_baseline": "fail"}, True))
+        self.assertTrue(rt.baseline_valid({"expected_baseline": "fail"}, False))
+
+    def test_expected_pass_requires_a_passing_baseline(self):
+        self.assertTrue(rt.baseline_valid({"expected_baseline": "pass"}, True))
+        self.assertFalse(rt.baseline_valid({"expected_baseline": "pass"}, False))
+
+    def test_unknown_expectation_is_permissive(self):
+        self.assertTrue(rt.baseline_valid({}, True))
+
+
+class CompletionAndTrustTests(unittest.TestCase):
+    def setUp(self):
+        self.spec = next(s for s in rt.load_tasks({"t01_calc_fix"}))
+        self.patch = mock.patch.multiple(
+            rt, DockerSandbox=FakeSandbox, docker_available=lambda: True)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+
+    def test_step_cap_status_makes_run_incomplete(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = Path(d) / "fake_agent.py"
+            script.write_text(
+                "import json, pathlib\n"
+                "usage = {'completed': False, 'completion_status': 'STEP_CAP', "
+                "'step_cap_hit': True}\n"
+                "pathlib.Path('agent_usage.json').write_text(json.dumps(usage))\n",
+                encoding="utf-8",
+            )
+            rec = rt.run_one(self.spec, "external",
+                             f'"{sys.executable}" "{script}"', 1,
+                             sandbox_mode="none")
+        self.assertEqual(rec["completion_status"], "STEP_CAP")
+        self.assertFalse(rec["agent_completed"])
+        self.assertTrue(rec["step_cap_hit"])
+
+    def test_adapter_backend_with_matching_container_is_trusted(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = Path(d) / "fake_agent.py"
+            script.write_text(
+                "import json, os, pathlib\n"
+                "usage = {'completed': True, 'completion_status': 'STOPPED_NORMALLY',\n"
+                "         'sandbox_container': os.environ.get('BENCH_SANDBOX_CONTAINER', '')}\n"
+                "pathlib.Path('agent_usage.json').write_text(json.dumps(usage))\n",
+                encoding="utf-8",
+            )
+            rec = rt.run_one(self.spec, "external",
+                             f'"{sys.executable}" "{script}"', 1,
+                             sandbox_mode="docker", agent_backend="adapter")
+        self.assertEqual(rec["agent_trust"], "TRUSTED_ADAPTER")
+        self.assertFalse(rec["agent_unsandboxed"])
 
 
 if __name__ == "__main__":

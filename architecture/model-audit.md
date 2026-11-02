@@ -169,6 +169,9 @@ history（`ON CONFLICT DO NOTHING`），再删除 `FAILED_BEFORE_SEND` 的逻辑
 外键级联删除原 attempts，但 history 保留“这个 CallID 曾经调用过哪些 Provider、
 每次可能花了多少”的不可变记录。`Repo.ListModelCallAttemptHistory` 可读取。
 
+审计写入使用脱离调用方取消、但带 30 秒上限的 context：请求取消不会丢账，
+存储阻塞也不会无限挂住调用；超时按审计失败返回，账本状态仍可对账。
+
 ## 7. 对账与限制
 
 - `FAILED_BEFORE_SEND` 的逻辑调用可以被 `Reclaim`；当前尝试先归档到
@@ -189,7 +192,9 @@ history（`ON CONFLICT DO NOTHING`），再删除 `FAILED_BEFORE_SEND` 的逻辑
 `internal/model/openai` 实现一个只走 loopback 的 `model.Provider`：
 
 - **端点**：只接受 `http(s)` 且 host 为 `127.0.0.0/8`、`::1` 或 `localhost`；base 统一为
-  `scheme://host[:port]/v1`，请求路径为 `/v1/chat/completions`。
+  `scheme://host[:port]/v1`，请求路径为 `/v1/chat/completions`。连接时重新解析目标，
+  所有解析结果都必须是 loopback，并直接连接已验证的 IP；`localhost` 被解析到非回环
+  地址或在校验后二次解析时连接会被拒绝。
 - **信任边界**：`Trust=IN_PROCESS`，因此 `SENSITIVE` 数据可以调用；非 loopback 端点
   需要在 `LOCAL_NETWORK`（trusted CIDR）或 `THIRD_PARTY`（escalation）下另行设计。
 - **传输**：不跟随重定向，不使用 `HTTP_PROXY`/`HTTPS_PROXY`/PAC。
@@ -211,11 +216,14 @@ history（`ON CONFLICT DO NOTHING`），再删除 `FAILED_BEFORE_SEND` 的逻辑
 
 请求控制：`ModelRequest.Thinking`（auto/on/off）、`ThinkingBudget` 和 `Temperature`
 由 Provider 映射到各自协议——OpenAI 用 `chat_template_kwargs.enable_thinking` 与
-`temperature`，Anthropic 用 `thinking` 与 `temperature`。`ModelResponse.StopReason` /
-`Truncated` 保存 provider 原生停止原因；OpenAI 的 `length` 与 Anthropic 的
-`max_tokens` 标记为截断，Anthropic 的 `refusal` 原样保留。CLI 对应
+`temperature`，Anthropic 用 `thinking` 与 `temperature`。OpenAI 协议没有 thinking
+budget 的通用字段，因此 `ThinkingBudget > 0` 会在发送前以 `ErrNotSent` 拒绝，而不是
+静默忽略；Anthropic 使用该字段。`ModelResponse.StopReason` / `Truncated` 保存
+provider 原生停止原因；OpenAI 的 `length` 与 Anthropic 的 `max_tokens` 标记为截断，
+Anthropic 的 `refusal` 原样保留。`ModelResponse.Usable()` 另行判断响应是否有非空、
+未截断的内容：`COMPLETED` 只是传输事实，不等于可用回答。CLI 对应
 `-thinking auto|on|off`、`-thinking-budget N`、`-temperature T`，输出包含
-`stop_reason`/`truncated`。
+`stop_reason`/`truncated`/`usable`。
 
 `loopback.NewProvider` 统一了两个 Provider 的名称、模型名、价格与 token 上限校验，
 消息格式包只保留请求/响应映射，避免两种格式的校验漂移。

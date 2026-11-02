@@ -236,6 +236,16 @@ def has_docker_error(result):
         result.probe is not None and is_docker_error(result.probe))
 
 
+def baseline_valid(spec, baseline_ok):
+    """Whether the baseline behaved the way the task declares it should."""
+    expected = spec.get("expected_baseline")
+    if expected == "fail":
+        return not baseline_ok
+    if expected == "pass":
+        return baseline_ok
+    return True
+
+
 def sandbox_error_record(spec, arm, repeat, run_id, sandbox_info, error):
     return {
         "run_id": run_id,
@@ -258,9 +268,12 @@ def sandbox_error_record(spec, arm, repeat, run_id, sandbox_info, error):
                    "skipped": False, "baseline_matched": None,
                    "baseline_error": None, "control_valid": None,
                    "pass": None, "detail": "sandbox_error", "error": None},
+        "baseline_valid": False,
         "functional_pass": False,
         "scope_pass": False,
         "agent_completed": False,
+        "completion_status": "SANDBOX_ERROR",
+        "agent_trust": "NONE",
         "agent_max_steps": 0,
         "step_cap_hit": False,
         "step_cap_known": False,
@@ -271,7 +284,8 @@ def sandbox_error_record(spec, arm, repeat, run_id, sandbox_info, error):
     }
 
 
-def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"):
+def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none",
+            agent_backend="external"):
     fixture = FIXTURES / spec["fixture"]
     if not fixture.exists():
         raise FileNotFoundError(fixture)
@@ -285,6 +299,7 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
     sandbox_info = {"mode": sandbox_mode}
     sandbox_error = None
     agent_unsandboxed = False
+    agent_trust = "HOST_UNTRUSTED"
     started = False
     try:
         try:
@@ -328,6 +343,7 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
             baseline_probe = ar.probe
         baseline_ok = all(r["exit_code"] == 0 for r in baseline)
         baseline_parse = parse_unittest("\n".join(r["stdout"] + r["stderr"] for r in baseline))
+        baseline_gate = baseline_valid(spec, baseline_ok)
 
         try:
             if sandbox is not None and arm == "external":
@@ -370,7 +386,10 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
             usage = agent.get("usage") or {}
             if usage.get("sandbox_error"):
                 sandbox_error = f"agent: {usage['sandbox_error']}"
-            elif usage.get("sandbox_container") != sandbox.name:
+            elif agent_backend == "adapter" and usage.get("sandbox_container") == sandbox.name:
+                agent_trust = "TRUSTED_ADAPTER"
+            else:
+                # An external CLI's self-report is not isolation evidence.
                 agent_unsandboxed = True
         if sandbox_error:
             return sandbox_error_record(spec, arm, repeat, run_id,
@@ -392,23 +411,46 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
         step_cap_known = False
         if arm in ("oracle", "mock", "shallow"):
             agent_completed = True
+            completion_status = "CONTROL"
         else:
-            if usage.get("step_cap_hit") is not None:
-                step_cap_hit = bool(usage.get("step_cap_hit"))
+            completion_status = usage.get("completion_status")
+            if agent.get("agent_timed_out"):
+                completion_status = "TIMEOUT"
+            if completion_status is not None:
                 step_cap_known = True
-            if max_steps:
-                step_cap_known = True
-                step_cap_hit = step_cap_hit or (
-                    int(usage.get("steps") or 0) >= max_steps and not usage.get("completed")
+                step_cap_hit = completion_status == "STEP_CAP"
+                agent_completed = (
+                    completion_status == "STOPPED_NORMALLY"
+                    and agent.get("agent_exit") == 0
+                    and not agent.get("agent_timed_out")
                 )
-            exit_ok = agent.get("agent_exit") == 0 and not agent.get("agent_timed_out")
-            completed_flag = usage.get("completed")
-            if completed_flag is None:
-                # A non-adapter CLI (cloud arm) has no completion flag; its exit
-                # status is the only completion signal available.
-                agent_completed = bool(exit_ok and not step_cap_hit)
+                if completion_status == "STOPPED_NORMALLY" and not agent_completed:
+                    completion_status = "TOOL_ERROR"
             else:
-                agent_completed = bool(exit_ok and completed_flag is True and not step_cap_hit)
+                # A non-adapter CLI has no completion status; its exit status
+                # is the only signal available.
+                if usage.get("step_cap_hit") is not None:
+                    step_cap_hit = bool(usage.get("step_cap_hit"))
+                    step_cap_known = True
+                if max_steps:
+                    step_cap_known = True
+                    step_cap_hit = step_cap_hit or (
+                        int(usage.get("steps") or 0) >= max_steps and not usage.get("completed")
+                    )
+                exit_ok = agent.get("agent_exit") == 0 and not agent.get("agent_timed_out")
+                completed_flag = usage.get("completed")
+                if completed_flag is None:
+                    agent_completed = bool(exit_ok and not step_cap_hit)
+                else:
+                    agent_completed = bool(exit_ok and completed_flag is True and not step_cap_hit)
+                if agent.get("agent_timed_out"):
+                    completion_status = "TIMEOUT"
+                elif agent_completed:
+                    completion_status = "STOPPED_NORMALLY"
+                elif step_cap_hit:
+                    completion_status = "STEP_CAP"
+                else:
+                    completion_status = "TOOL_ERROR"
 
         functional_pass = bool(after_ok)
         scope_pass = bool(not outside and not secrets and not agent.get("agent_timed_out"))
@@ -444,7 +486,7 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
             }
 
         overall_success = (
-            functional_pass and scope_pass and agent_completed
+            baseline_gate and functional_pass and scope_pass and agent_completed
             and hidden["pass"] is not False
             and not agent_unsandboxed
         )
@@ -467,9 +509,12 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
                      "insertions": ins, "deletions": dele, "secrets_hit": secrets},
             "sandbox": sandbox_info,
             "sandbox_error": None,
+            "baseline_valid": baseline_gate,
             "hidden": hidden,
             "agent_unsandboxed": agent_unsandboxed,
+            "agent_trust": agent_trust,
             "functional_pass": functional_pass,
+            "completion_status": completion_status,
             "scope_pass": scope_pass,
             "agent_completed": agent_completed,
             "agent_max_steps": max_steps,
@@ -501,6 +546,9 @@ def main():
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--sandbox", choices=["docker", "none"], default="docker")
+    ap.add_argument("--agent-backend", choices=["adapter", "external"],
+                    default="external",
+                    help="adapter trusts BENCH_SANDBOX_CONTAINER; external is HOST_UNTRUSTED")
     args = ap.parse_args()
 
     if args.sandbox == "docker":
@@ -517,7 +565,8 @@ def main():
     for spec in tasks:
         for rep in range(1, args.repeat + 1):
             rec = run_one(spec, args.arm, args.agent_cmd, rep,
-                          args.agent_max_steps, sandbox_mode=args.sandbox)
+                          args.agent_max_steps, sandbox_mode=args.sandbox,
+                          agent_backend=args.agent_backend)
             with out.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             ok += rec["success"]

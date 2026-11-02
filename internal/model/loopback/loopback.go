@@ -5,6 +5,7 @@
 package loopback
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -27,7 +28,11 @@ const (
 	DefaultMaxResponseBytes = int64(8 << 20)
 	errorSnippetBytes       = 256
 	maxModelNameBytes       = 256
+	dialTimeout             = 10 * time.Second
 )
+
+// resolveNetIP is a test seam; production uses the system resolver.
+var resolveNetIP = net.DefaultResolver.LookupNetIP
 
 // ProviderConfig is the common static configuration of a loopback provider.
 type ProviderConfig struct {
@@ -140,13 +145,54 @@ func New(cfg Config) (*Client, error) {
 		apiKey:  strings.TrimSpace(cfg.APIKey),
 		maxBody: maxBody,
 		http: &http.Client{
-			Timeout:   timeout,
-			Transport: &http.Transport{Proxy: nil},
+			Timeout: timeout,
+			Transport: &http.Transport{
+				Proxy:       nil,
+				DialContext: dialLoopback,
+			},
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return errors.New("loopback: redirects are not followed")
 			},
 		},
 	}, nil
+}
+
+// dialLoopback resolves the destination and refuses to connect unless every
+// resolved address is loopback. It dials a validated IP directly so a second
+// DNS answer cannot redirect the connection after the check.
+func dialLoopback(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("loopback: invalid dial address %q: %w", addr, err)
+	}
+	var ips []netip.Addr
+	if ip, perr := netip.ParseAddr(host); perr == nil {
+		ips = []netip.Addr{ip}
+	} else {
+		ips, err = resolveNetIP(ctx, "ip", host)
+		if err != nil {
+			return nil, fmt.Errorf("loopback: resolve %s: %w", host, err)
+		}
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("loopback: %s resolved to no addresses", host)
+	}
+	for _, ip := range ips {
+		if !ip.Unmap().IsLoopback() {
+			return nil, fmt.Errorf("loopback: %s resolved to non-loopback %s", host, ip)
+		}
+	}
+	dialer := &net.Dialer{Timeout: dialTimeout}
+	var lastErr error
+	for _, ip := range ips {
+		conn, derr := dialer.DialContext(ctx, network,
+			net.JoinHostPort(ip.Unmap().String(), port))
+		if derr == nil {
+			return conn, nil
+		}
+		lastErr = derr
+	}
+	return nil, lastErr
 }
 
 // NormalizeBase validates the endpoint and returns the API base:

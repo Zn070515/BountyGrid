@@ -102,6 +102,10 @@ func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.
 	if req.Temperature != nil && (*req.Temperature < 0 || *req.Temperature > 2) {
 		return model.ModelResponse{}, fmt.Errorf("%w: temperature must be in [0, 2]", domain.ErrNotSent)
 	}
+	if req.ThinkingBudget > 0 {
+		return model.ModelResponse{}, fmt.Errorf(
+			"%w: openai provider does not support thinking budgets", domain.ErrNotSent)
+	}
 	body, err := json.Marshal(chatRequest{
 		Model:              p.info.Model,
 		Messages:           toMessages(req.Input),

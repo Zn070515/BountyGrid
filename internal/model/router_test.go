@@ -14,6 +14,25 @@ import (
 
 var testNow = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 
+func TestAuditContextIsDetachedButBounded(t *testing.T) {
+	old := auditTimeout
+	auditTimeout = 20 * time.Millisecond
+	defer func() { auditTimeout = old }()
+
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx, done := auditContext(parent)
+	defer done()
+	select {
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want deadline exceeded", ctx.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("audit context did not expire")
+	}
+}
+
 func testProvider(name string, local bool, strength int, maxOut int, price int64, response string) *StaticProvider {
 	return &StaticProvider{
 		Meta: ProviderInfo{

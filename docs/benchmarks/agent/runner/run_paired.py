@@ -59,6 +59,7 @@ def run_cell(spec, thinking, enforce, rep, phase):
         rep,
         spec.get("max_steps", 20),
         sandbox_mode="none",
+        agent_backend="adapter",
         # Paired tasks do not declare sandbox_image yet; keep the host path
         # explicit so the record never claims isolation.
     )
