@@ -58,6 +58,9 @@ def run_cell(spec, thinking, enforce, rep, phase):
         agent_cmd(thinking, enforce, spec.get("allowed_files", []), spec.get("max_steps", 20)),
         rep,
         spec.get("max_steps", 20),
+        sandbox_mode="none",
+        # Paired tasks do not declare sandbox_image yet; keep the host path
+        # explicit so the record never claims isolation.
     )
     rec["thinking"] = thinking
     rec["enforce_scope"] = bool(enforce)

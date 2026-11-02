@@ -129,6 +129,7 @@ from unittest import mock
 
 from sandbox.docker import (
     DOCKER_ERROR_PREFIXES,
+    AcceptanceResult,
     DockerSandbox,
     ExecResult,
     docker_available,
@@ -314,6 +315,107 @@ class AdapterExecutorTests(unittest.TestCase):
         out = agent.tool_call(self.work, "run_command", {"command": "dir"},
                               None, executor=lambda argv, t: ExecResult(99, "", "", False))
         self.assertIn("hello.py", out)
+
+
+import run_task as rt
+
+
+class FakeSandbox:
+    def __init__(self, work, image, run_id, **kwargs):
+        self.work = Path(work)
+        self.image = image
+        self.name = f"bench-agent-{run_id}"
+        self.user = "1000:1000"
+        self.started = False
+        self.stopped = False
+        self.stop_result = ExecResult(0, self.name, "")
+
+    def start_agent(self):
+        self.started = True
+
+    def exec(self, argv, timeout_s):
+        return ExecResult(0, "", "")
+
+    def run_acceptance(self, commands, probe, probe_input, timeout_s=120):
+        fixed = "a + b" in (self.work / "calc" / "ops.py").read_text(encoding="utf-8")
+        code = 0 if fixed else 1
+        return AcceptanceResult([ExecResult(code, "", "") for _ in commands],
+                                ExecResult(0, "__PROBE_RESULT__[]", "") if probe else None)
+
+    def stop(self):
+        self.stopped = True
+        return self.stop_result
+
+    def image_digest(self):
+        return "sha256:fake"
+
+
+class OrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        self.spec = next(s for s in rt.load_tasks({"t01_calc_fix"}))
+        self.patch = mock.patch.multiple(
+            rt, DockerSandbox=FakeSandbox, docker_available=lambda: True)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+
+    def test_missing_image_is_a_sandbox_error(self):
+        spec = dict(self.spec)
+        spec.pop("sandbox_image")
+        rec = rt.run_one(spec, "mock", "", 1, sandbox_mode="docker")
+        self.assertEqual(rec["sandbox_error"], "missing sandbox_image")
+        self.assertFalse(rec["overall_success"])
+
+    def test_docker_unavailable_is_a_sandbox_error(self):
+        with mock.patch.object(rt, "docker_available", return_value=False):
+            rec = rt.run_one(self.spec, "mock", "", 1, sandbox_mode="docker")
+        self.assertEqual(rec["sandbox_error"], "docker unavailable")
+        self.assertFalse(rec["overall_success"])
+
+    def test_none_skips_hidden(self):
+        rec = rt.run_one(self.spec, "mock", "", 1, sandbox_mode="none")
+        self.assertTrue(rec["hidden"]["skipped"])
+        self.assertIsNone(rec["hidden"]["pass"])
+
+    def test_stop_failure_blocks_phase_two(self):
+        class FailingStop(FakeSandbox):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.stop_result = ExecResult(1, "", "Error response from daemon: nope")
+
+        with mock.patch.object(rt, "DockerSandbox", FailingStop):
+            rec = rt.run_one(self.spec, "external", f'"{sys.executable}" -c "pass"',
+                             1, sandbox_mode="docker")
+        self.assertEqual(rec["sandbox_error"], "stop failed")
+        self.assertFalse(rec["overall_success"])
+
+    def test_agent_without_sandbox_container_is_unsandboxed(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = Path(d) / "fake_agent.py"
+            script.write_text(
+                "import json, pathlib\n"
+                "pathlib.Path('agent_usage.json').write_text("
+                "json.dumps({'completed': True}))\n",
+                encoding="utf-8",
+            )
+            cmd = f'"{sys.executable}" "{script}"'
+            rec = rt.run_one(self.spec, "external", cmd, 1, sandbox_mode="docker")
+        self.assertTrue(rec["agent_unsandboxed"])
+        self.assertFalse(rec["overall_success"])
+
+    def test_git_pins_line_endings_and_safe_directory(self):
+        calls = []
+
+        def fake_run(cmd, cwd, timeout):
+            calls.append(cmd)
+            return {"cmd": cmd, "exit_code": 0, "stdout": "", "stderr": "",
+                    "timed_out": False, "duration_s": 0.0}
+
+        with mock.patch.object(rt, "run_cmd", side_effect=fake_run):
+            rt.git(Path("."), "status --porcelain")
+        self.assertIn("core.autocrlf=false", calls[0])
+        self.assertIn("safe.directory=*", calls[0])
 
 
 if __name__ == "__main__":
