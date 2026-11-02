@@ -109,6 +109,12 @@ four-module task.
   `success` means functional + scope + the agent ended normally (not a step
   cap). A test-passing run that exhausted its step budget no longer counts as a
   completed agent.
+- **Completion status and baseline gate.** The adapter records
+  `completion_status` (`STOPPED_NORMALLY`, `STEP_CAP`, `TOKEN_TRUNCATED`,
+  `EMPTY_FINAL`, `TOOL_ERROR`, `TIMEOUT`) from the final `finish_reason` and
+  content. `overall_success` requires `STOPPED_NORMALLY`; a run whose baseline
+  does not match `expected_baseline` is recorded `baseline_valid=false` and is
+  not scored.
 - **Command boundary.** `run_command` no longer uses a shell. The command is
   split into an argv list and executed with `shell=False`; only predefined
   (executable, subcommand) pairs are accepted (`python -m
@@ -173,9 +179,9 @@ docker build -f runner/sandbox/Dockerfile.bench -t bountygrid-bench:py313 runner
 
 Only `t01_calc_fix` declares `sandbox_image` in this phase. The other tasks
 fail closed under the default; run them with `--sandbox none` until they get
-images. The `external` arm is only scored when the adapter records the
-matching `sandbox_container` in `agent_usage.json`; otherwise the run is
-`agent_unsandboxed`.
+images. `--agent-backend adapter` is required for `agent_trust=TRUSTED_ADAPTER`
+and `sandbox_container` matching; the default `external` is recorded
+`HOST_UNTRUSTED` and cannot claim container isolation.
 
 Known limits: Docker shares the Linux kernel (use gVisor/Kata for kernel-level
 threats); the default seccomp profile is the baseline, not a custom deny list;

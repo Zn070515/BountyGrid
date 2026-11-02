@@ -305,7 +305,10 @@ New fields:
   "pass": true,
   "detail": "5/5 cases",
   "error": null
-}
+},
+"baseline_valid": true,
+"completion_status": "STOPPED_NORMALLY",
+"agent_trust": "TRUSTED_ADAPTER"
 ```
 
 `hidden.pass` is `null` when the task declares no `hidden_cases`.
@@ -339,6 +342,9 @@ criteria.
 | Command timeout | `exit_code=null`, `timed_out=true`; functional false |
 | Probe crash | `hidden.pass=false`, `detail=probe_error` |
 | Baseline probe matches or errors | `hidden.pass=false`, `hidden.error=broken_hidden_control`, `overall_success=false` |
+| Baseline result does not match `expected_baseline` | `baseline_valid=false`, `overall_success=false` |
+| Agent final status is not `STOPPED_NORMALLY` | `agent_completed=false`; `STEP_CAP`, `TOKEN_TRUNCATED`, `EMPTY_FINAL`, `TOOL_ERROR` and `TIMEOUT` are distinct |
+| `--agent-backend external` (the default) | `agent_trust=HOST_UNTRUSTED`; a self-reported `sandbox_container` is not isolation evidence |
 | Missing `.git` at start | `sandbox_error` |
 | `--sandbox none` | Host execution; `mode=none` recorded; hidden checks skipped; not a security claim |
 
@@ -365,6 +371,12 @@ Unit tests (no Docker):
 7. `--sandbox none` records `hidden.skipped=true` and `hidden.pass=null`.
 8. A missing or mismatched `agent_usage.json.sandbox_container` sets
    `agent_unsandboxed=true` and `overall_success=false`.
+9. `completion_status` distinguishes normal stop, step cap, token truncation,
+   empty final, tool error and timeout; only `STOPPED_NORMALLY` completes.
+10. A fixture whose baseline does not match `expected_baseline` is rejected
+    with `baseline_valid=false`.
+11. `--agent-backend external` records `agent_trust=HOST_UNTRUSTED`; only
+    `--agent-backend adapter` with a matching container is trusted.
 
 Integration tests (`skipUnless(docker_available)`):
 
@@ -438,6 +450,8 @@ Integration tests (`skipUnless(docker_available)`):
 5. A stopped Docker daemon yields `sandbox_error`, no host fallback.
 6. An agent command that does not record the matching `sandbox_container`
    yields `agent_unsandboxed=true` and `overall_success=false`.
+7. A step-cap, truncated or empty-final run is `agent_completed=false`; a
+   baseline that already passes is `baseline_valid=false`; both fail the run.
 7. Existing runner tests (`test_command_policy.py`, `test_listing.py`,
    `test_run_task.py`) and the Go gate (`go test ./...`, `go vet ./...`,
    `CGO_ENABLED=0 go build ./...`) stay green.

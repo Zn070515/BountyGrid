@@ -34,6 +34,15 @@ All paths are relative to the repository root."""
 
 RUN_STATE = {"sandbox_error": None}
 
+
+def classify_completion(finish_reason, content):
+    """Classify a final message without conflating transport success with completion."""
+    if (finish_reason or "").lower() == "length":
+        return "TOKEN_TRUNCATED"
+    if not (content or "").strip():
+        return "EMPTY_FINAL"
+    return "STOPPED_NORMALLY"
+
 TOOLS = [
     {"type": "function", "function": {
         "name": "list_files",
@@ -379,10 +388,12 @@ def run_multiturn(args, executor=None):
     final = ""
     steps_used = 0
     aborted = False
+    finish_reason = ""
 
     for turn_index, turn_prompt in enumerate(prompts, start=1):
         messages.append({"role": "user", "content": turn_prompt})
         turn_input = turn_output = turn_steps = turn_tools = 0
+        turn_status = None
         turn_done = False
         while steps_used < args.max_steps:
             try:
@@ -403,6 +414,7 @@ def run_multiturn(args, executor=None):
             turn_steps += 1
             usage["steps"] = steps_used
             msg = (resp.get("choices") or [{}])[0].get("message") or {}
+            finish_reason = (resp.get("choices") or [{}])[0].get("finish_reason") or ""
             calls = msg.get("tool_calls") or []
             usage["tool_calls"] += len(calls)
             turn_tools += len(calls)
@@ -414,7 +426,8 @@ def run_multiturn(args, executor=None):
             messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
             if not calls:
                 final = msg.get("content") or ""
-                turn_done = True
+                turn_status = classify_completion(finish_reason, final)
+                turn_done = turn_status == "STOPPED_NORMALLY"
                 break
             for call in calls:
                 fn = (call.get("function") or {})
@@ -430,9 +443,12 @@ def run_multiturn(args, executor=None):
                 if isinstance(result, str) and result.startswith("ERROR: path not allowed"):
                     usage["denied_writes"] += 1
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": str(result)[:8000]})
+        if turn_status is None:
+            turn_status = "TOOL_ERROR" if aborted else "STEP_CAP"
         usage["turns"].append({
             "turn": turn_index, "input_tokens": turn_input, "output_tokens": turn_output,
             "steps": turn_steps, "tool_calls": turn_tools, "completed": turn_done,
+            "completion_status": turn_status,
         })
         if aborted or not turn_done:
             break
@@ -440,7 +456,21 @@ def run_multiturn(args, executor=None):
     usage["completed"] = len(usage["turns"]) == len(prompts) and all(
         turn["completed"] for turn in usage["turns"]
     )
-    usage["step_cap_hit"] = (not usage["completed"] and not aborted)
+    statuses = [turn.get("completion_status") for turn in usage["turns"]]
+    if aborted:
+        completion_status = "TOOL_ERROR"
+    elif "TOKEN_TRUNCATED" in statuses:
+        completion_status = "TOKEN_TRUNCATED"
+    elif "EMPTY_FINAL" in statuses:
+        completion_status = "EMPTY_FINAL"
+    elif not usage["completed"]:
+        completion_status = "STEP_CAP"
+    else:
+        completion_status = "STOPPED_NORMALLY"
+    usage["completion_status"] = completion_status
+    usage["completed"] = completion_status == "STOPPED_NORMALLY"
+    usage["step_cap_hit"] = completion_status == "STEP_CAP"
+    usage["finish_reason"] = finish_reason
     usage["wall_clock_s"] = round(time.time() - started, 1)
     usage["sandbox_error"] = RUN_STATE["sandbox_error"]
     (workdir / "agent_usage.json").write_text(json.dumps(usage, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -495,6 +525,8 @@ def main():
     started = time.time()
     final = ""
     completed = False
+    completion_status = None
+    finish_reason = ""
     for step in range(args.max_steps):
         try:
             resp = chat(args.base_url, args.model, messages,
@@ -509,6 +541,7 @@ def main():
         usage["output_tokens"] += step_output
         usage["steps"] = step + 1
         msg = (resp.get("choices") or [{}])[0].get("message") or {}
+        finish_reason = (resp.get("choices") or [{}])[0].get("finish_reason") or ""
         calls = msg.get("tool_calls") or []
         usage["tool_calls"] += len(calls)
         usage["step_usage"].append({
@@ -520,7 +553,8 @@ def main():
         messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
         if not calls:
             final = msg.get("content") or ""
-            completed = True
+            completion_status = classify_completion(finish_reason, final)
+            completed = completion_status == "STOPPED_NORMALLY"
             break
         for call in calls:
             fn = (call.get("function") or {})
@@ -536,8 +570,12 @@ def main():
             if isinstance(result, str) and result.startswith("ERROR: path not allowed"):
                 usage["denied_writes"] += 1
             messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": str(result)[:8000]})
-    usage["completed"] = completed
-    usage["step_cap_hit"] = (not completed and not final.startswith("API_ERROR"))
+    if completion_status is None:
+        completion_status = "TOOL_ERROR" if final.startswith("API_ERROR") else "STEP_CAP"
+    usage["completion_status"] = completion_status
+    usage["finish_reason"] = finish_reason
+    usage["completed"] = completion_status == "STOPPED_NORMALLY"
+    usage["step_cap_hit"] = completion_status == "STEP_CAP"
     usage["wall_clock_s"] = round(time.time() - started, 1)
     usage["sandbox_error"] = RUN_STATE["sandbox_error"]
     (workdir / "agent_usage.json").write_text(json.dumps(usage, ensure_ascii=False, indent=1), encoding="utf-8")

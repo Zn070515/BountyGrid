@@ -171,6 +171,20 @@ func TestCompleteRejectsOutOfRangeTemperature(t *testing.T) {
 	}
 }
 
+func TestCompleteRejectsThinkingBudgetBeforeSend(t *testing.T) {
+	p, err := New(Config{Model: "m", Endpoint: "http://127.0.0.1:1/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+		ThinkingBudget: 1024,
+	})
+	if !errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("err = %v, want ErrNotSent", err)
+	}
+}
+
 func TestCompleteSendsThinkingAndTemperature(t *testing.T) {
 	var got struct {
 		Temperature        *float64       `json:"temperature"`

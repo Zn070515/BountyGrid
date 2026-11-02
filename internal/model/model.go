@@ -315,6 +315,13 @@ type ModelResponse struct {
 	Cost       domain.Money  `json:"cost"`
 }
 
+// Usable reports whether a transport-completed response carries a non-empty,
+// non-truncated answer. A COMPLETED call is a transport fact, not a claim that
+// the response can be used as a research step.
+func (r ModelResponse) Usable() bool {
+	return strings.TrimSpace(r.Content) != "" && !r.Truncated
+}
+
 // ProviderTrust is the deployment/trust boundary of a model provider.
 //
 // The three kinds replace the old binary Local flag:

@@ -31,6 +31,7 @@ type modelCallOutput struct {
 	LatencyMS  int64        `json:"latency_ms"`
 	StopReason string       `json:"stop_reason,omitempty"`
 	Truncated  bool         `json:"truncated,omitempty"`
+	Usable     bool         `json:"usable"`
 }
 
 func runModelCall(ctx context.Context, opts modelOptions) error {
@@ -154,6 +155,7 @@ func executeModelCall(ctx context.Context, opts modelOptions) (modelCallOutput, 
 		LatencyMS:  resp.Latency.Milliseconds(),
 		StopReason: resp.StopReason,
 		Truncated:  resp.Truncated,
+		Usable:     resp.Usable(),
 	}, nil
 }
 

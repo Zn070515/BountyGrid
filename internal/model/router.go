@@ -17,6 +17,15 @@ import (
 	"github.com/Zn070515/BountyGrid/internal/domain"
 )
 
+// auditTimeout bounds the non-cancellable audit writes so a blocked store
+// cannot hang the caller after the provider responded. It is a variable so
+// tests can shorten it.
+var auditTimeout = 30 * time.Second
+
+func auditContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), auditTimeout)
+}
+
 // CallStatus is the durable state of a logical model call. The transitions are
 // explicit: RESERVED -> STARTED -> COMPLETED, or STARTED -> AMBIGUOUS /
 // FAILED_BEFORE_SEND. Only FAILED_BEFORE_SEND is safe to retry, because the
@@ -594,8 +603,11 @@ func (r *Router) Route(ctx context.Context, req ModelRequest) (ModelResponse, er
 		}
 		rec.ID = callID
 		// The audit trail must not be lost because the caller's context was
-		// cancelled after the provider responded.
-		return r.calls.Complete(context.WithoutCancel(ctx), callID, rec)
+		// cancelled after the provider responded; the detached context still
+		// has a deadline so a blocked store cannot hang the call.
+		actx, cancel := auditContext(ctx)
+		defer cancel()
+		return r.calls.Complete(actx, callID, rec)
 	}
 	joinFinish := func(err error, ferr error) error {
 		if ferr != nil {
@@ -825,8 +837,11 @@ func (r *Router) provider(name string) Provider {
 // lose the cost of an ambiguous attempt across a restart.
 func (r *Router) recordAttempt(ctx context.Context, req ModelRequest, attempt ModelCallAttempt) error {
 	// The audit trail must not be lost because the caller's context was
-	// cancelled after the provider responded.
-	ctx = context.WithoutCancel(ctx)
+	// cancelled after the provider responded; the detached context still has
+	// a deadline so a blocked store cannot hang the call.
+	actx, cancel := auditContext(ctx)
+	defer cancel()
+	ctx = actx
 	if r.calls != nil {
 		if err := r.calls.RecordAttempt(ctx, attempt); err != nil {
 			return fmt.Errorf("model: record attempt: %w", err)
