@@ -210,11 +210,15 @@ $env:NO_PROXY='127.0.0.1,localhost'
 python -I -X utf8 docs\benchmarks\agent\runner\run_paired.py
 ```
 
-It runs 13 tasks × thinking {on,off} × 2 repetitions in counterbalanced order,
-plus a scope-enforcement A/B on `t04`/`t10`, and writes
-`runs/paired_2026-11-02.jsonl` and `runs/paired-summary.json`. To run a subset,
-set `BENCH_TASKS` to a comma-separated list of task IDs and set `BENCH_OUT` /
-`BENCH_SUMMARY` to separate files.
+It runs the selected tasks × thinking {on,off} × 2 repetitions in
+counterbalanced order, plus a scope-enforcement A/B on `t04`/`t10`. The default
+output paths overwrite the v1 files, so pass `BENCH_OUT` / `BENCH_SUMMARY` for
+a new run. The 2026-11-02 v2 rerun used the four groups t01–t10, t11–t13,
+t14–t22 and t24, wrote `runs/*-v2.jsonl` / `runs/*-summary-v2.json`, and is
+reported in
+[`summary-2026-11-02-v2.md`](summary-2026-11-02-v2.md). Under the
+completion-aware metric the real group scores 17/18 (thinking on) and 10/18
+(thinking off); see that report for the step-cap breakdown.
 
 The other probes:
 

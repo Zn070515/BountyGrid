@@ -1,0 +1,47 @@
+{
+  "generated_at": "2026-11-02T07:15:53Z",
+  "model": "qwen3.8-flash-next-iq3_s",
+  "reps": 1,
+  "tasks": 1,
+  "paired": {
+    "overall": {
+      "on": {
+        "runs": 1,
+        "success_rate": 1.0,
+        "median_wall_s": 65.0,
+        "median_input_tokens": 43154,
+        "median_output_tokens": 5261,
+        "median_steps": 12
+      },
+      "off": {
+        "runs": 1,
+        "success_rate": 1.0,
+        "median_wall_s": 36.4,
+        "median_input_tokens": 45125,
+        "median_output_tokens": 2887,
+        "median_steps": 12
+      }
+    },
+    "bootstrap_success_diff_on_minus_off": {
+      "observed": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "tasks": 1
+    },
+    "per_task": {
+      "t24_longlib_full": {
+        "on": {
+          "success": 1,
+          "runs": 1
+        },
+        "off": {
+          "success": 1,
+          "runs": 1
+        }
+      }
+    }
+  },
+  "scope_ab": {}
+}

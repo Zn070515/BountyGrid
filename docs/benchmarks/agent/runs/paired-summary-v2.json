@@ -1,0 +1,166 @@
+{
+  "generated_at": "2026-11-02T06:40:20Z",
+  "model": "qwen3.8-flash-next-iq3_s",
+  "reps": 2,
+  "tasks": 10,
+  "paired": {
+    "overall": {
+      "on": {
+        "runs": 20,
+        "success_rate": 1.0,
+        "median_wall_s": 12.7,
+        "median_input_tokens": 8171.5,
+        "median_output_tokens": 677.5,
+        "median_steps": 7.0
+      },
+      "off": {
+        "runs": 20,
+        "success_rate": 1.0,
+        "median_wall_s": 8.1,
+        "median_input_tokens": 6639.0,
+        "median_output_tokens": 340.5,
+        "median_steps": 5.5
+      }
+    },
+    "bootstrap_success_diff_on_minus_off": {
+      "observed": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "tasks": 10
+    },
+    "per_task": {
+      "t01_calc_fix": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t02_textutil_fix": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t03_inventory_restock": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t04_inventory_refactor": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t05_gocalc_bugfix": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t06_counter_race": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t07_window_bugfix": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t08_paging_feature": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t09_ringbuf_feature": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t10_reporting_refactor": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      }
+    }
+  },
+  "scope_ab": {
+    "t04_inventory_refactor": {
+      "True": {
+        "success": 2,
+        "runs": 2,
+        "outside_files": 0,
+        "denied_writes": 3
+      },
+      "False": {
+        "success": 0,
+        "runs": 2,
+        "outside_files": 3,
+        "denied_writes": 0
+      }
+    },
+    "t10_reporting_refactor": {
+      "True": {
+        "success": 2,
+        "runs": 2,
+        "outside_files": 0,
+        "denied_writes": 0
+      },
+      "False": {
+        "success": 2,
+        "runs": 2,
+        "outside_files": 0,
+        "denied_writes": 0
+      }
+    }
+  }
+}
