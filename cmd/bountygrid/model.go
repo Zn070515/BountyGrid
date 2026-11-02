@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/model"
@@ -22,6 +23,19 @@ type modelOptions struct {
 	ModelEgress string
 	Redacted    bool
 	Escalation  string
+
+	Call          bool
+	Endpoint      string
+	ProviderModel string
+	ProviderName  string
+	APIKeyEnv     string
+	Prompt        string
+	PromptFile    string
+	Program       string
+	Step          string
+	Timeout       time.Duration
+	CallID        string
+	Persist       bool
 }
 
 type modelPlan struct {
@@ -59,6 +73,18 @@ func parseModelOptions(args []string) (modelOptions, error) {
 	fs.BoolVar(&o.Redacted, "redacted", false, "attest the input is redacted (needed for REMOTE_REDACTED_ONLY)")
 	fs.StringVar(&o.Escalation, "escalation", "",
 		"optional escalation: STALLED|LOW_CONFIDENCE|HIGH_VALUE_TASK|VERIFICATION_CONFLICT")
+	fs.BoolVar(&o.Call, "call", false, "perform one real model call instead of printing a plan")
+	fs.StringVar(&o.Endpoint, "endpoint", os.Getenv("BOUNTYGRID_MODEL_ENDPOINT"), "loopback OpenAI-compatible base URL")
+	fs.StringVar(&o.ProviderModel, "provider-model", os.Getenv("BOUNTYGRID_MODEL_NAME"), "provider model name")
+	fs.StringVar(&o.ProviderName, "provider-name", "local-openai", "registered provider name")
+	fs.StringVar(&o.APIKeyEnv, "api-key-env", "", "environment variable holding the bearer token")
+	fs.StringVar(&o.Prompt, "prompt", "", "user prompt for -call")
+	fs.StringVar(&o.PromptFile, "prompt-file", "", "UTF-8 file with the user prompt for -call")
+	fs.StringVar(&o.Program, "program", "", "program whose egress policy governs the call")
+	fs.StringVar(&o.Step, "step", "", "task step name for a stable call id")
+	fs.DurationVar(&o.Timeout, "timeout", 120*time.Second, "per-call timeout")
+	fs.StringVar(&o.CallID, "call-id", "", "explicit idempotency key")
+	fs.BoolVar(&o.Persist, "persist", false, "persist model calls and attempts in PostgreSQL")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -68,6 +94,9 @@ func parseModelOptions(args []string) (modelOptions, error) {
 	if o.Budget < 0 {
 		return o, fmt.Errorf("model: -budget must not be negative")
 	}
+	if err := validateCallOptions(fs, o); err != nil {
+		return o, err
+	}
 	return o, nil
 }
 
@@ -75,6 +104,9 @@ func runModel(ctx context.Context, args []string) error {
 	opts, err := parseModelOptions(args)
 	if err != nil {
 		return err
+	}
+	if opts.Call {
+		return runModelCall(ctx, opts)
 	}
 	plan, err := buildModelPlan(opts)
 	if err != nil {
@@ -163,4 +195,62 @@ func demoProviders() []model.Provider {
 			MaxOutputTokens: 16384, InputPricePerMTok: 1000, OutputPricePerMTok: 2000, Strength: 5,
 		}},
 	}
+}
+
+func validateCallOptions(fs *flag.FlagSet, o modelOptions) error {
+	callOnly := []string{
+		"endpoint", "provider-model", "provider-name", "api-key-env",
+		"prompt", "prompt-file", "program", "step", "timeout", "call-id", "persist",
+	}
+	if !o.Call {
+		for _, name := range callOnly {
+			if flagWasSet(fs, name) {
+				return fmt.Errorf("model: -%s requires -call", name)
+			}
+		}
+		return nil
+	}
+	if o.Timeout <= 0 {
+		return fmt.Errorf("model: -timeout must be positive")
+	}
+	if !model.Purpose(strings.ToUpper(strings.TrimSpace(o.Purpose))).Valid() {
+		return fmt.Errorf("model: invalid purpose %q", o.Purpose)
+	}
+	if !model.DataClass(strings.ToUpper(strings.TrimSpace(o.DataClass))).Valid() {
+		return fmt.Errorf("model: invalid data class %q", o.DataClass)
+	}
+	if !model.EscalationReason(strings.ToUpper(strings.TrimSpace(o.Escalation))).Valid() {
+		return fmt.Errorf("model: invalid escalation %q", o.Escalation)
+	}
+	if (strings.TrimSpace(o.Prompt) == "") == (strings.TrimSpace(o.PromptFile) == "") {
+		return fmt.Errorf("model: -call requires exactly one of -prompt and -prompt-file")
+	}
+	if strings.TrimSpace(o.Endpoint) == "" {
+		return fmt.Errorf("model: -call requires -endpoint or BOUNTYGRID_MODEL_ENDPOINT")
+	}
+	if strings.TrimSpace(o.ProviderModel) == "" {
+		return fmt.Errorf("model: -call requires -provider-model or BOUNTYGRID_MODEL_NAME")
+	}
+	if strings.TrimSpace(o.Program) != "" && !o.Persist {
+		return fmt.Errorf("model: -program requires -persist")
+	}
+	if flagWasSet(fs, "model-egress") {
+		return fmt.Errorf("model: -model-egress is not allowed with -call; the ceiling comes from the stored program")
+	}
+	if o.APIKeyEnv != "" {
+		if _, ok := os.LookupEnv(o.APIKeyEnv); !ok || strings.TrimSpace(os.Getenv(o.APIKeyEnv)) == "" {
+			return fmt.Errorf("model: -api-key-env %s is unset or empty", o.APIKeyEnv)
+		}
+	}
+	return nil
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }

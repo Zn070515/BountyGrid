@@ -94,3 +94,89 @@ func TestParseModelOptions(t *testing.T) {
 		t.Fatal("zero max tokens should fail")
 	}
 }
+
+func TestParseModelOptionsCallFlags(t *testing.T) {
+	opts, err := parseModelOptions([]string{
+		"-call",
+		"-endpoint", "http://127.0.0.1:8080/v1",
+		"-provider-model", "qwen3.8-flash-next-iq3_s",
+		"-provider-name", "strata",
+		"-prompt", "hello",
+		"-timeout", "30s",
+		"-call-id", "call/test/1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.Call || opts.Endpoint != "http://127.0.0.1:8080/v1" ||
+		opts.ProviderModel != "qwen3.8-flash-next-iq3_s" || opts.ProviderName != "strata" ||
+		opts.Prompt != "hello" || opts.Timeout.Seconds() != 30 || opts.CallID != "call/test/1" {
+		t.Fatalf("opts = %+v", opts)
+	}
+}
+
+func TestParseModelOptionsCallRequiresPrompt(t *testing.T) {
+	if _, err := parseModelOptions([]string{"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m"}); err == nil {
+		t.Fatal("-call without a prompt should fail")
+	}
+}
+
+func TestParseModelOptionsCallRejectsBothPrompts(t *testing.T) {
+	if _, err := parseModelOptions([]string{
+		"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m",
+		"-prompt", "hi", "-prompt-file", "p.txt",
+	}); err == nil {
+		t.Fatal("-prompt with -prompt-file should fail")
+	}
+}
+
+func TestParseModelOptionsNewFlagsRequireCall(t *testing.T) {
+	for _, args := range [][]string{
+		{"-endpoint", "http://127.0.0.1:8080/v1"},
+		{"-provider-model", "m"},
+		{"-prompt", "hi"},
+		{"-persist"},
+		{"-timeout", "5s"},
+	} {
+		if _, err := parseModelOptions(args); err == nil {
+			t.Fatalf("%v without -call should fail", args)
+		}
+	}
+}
+
+func TestParseModelOptionsProgramRequiresPersist(t *testing.T) {
+	if _, err := parseModelOptions([]string{
+		"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m",
+		"-prompt", "hi", "-program", "vulbox/444",
+	}); err == nil {
+		t.Fatal("-program without -persist should fail")
+	}
+}
+
+func TestParseModelOptionsCallRejectsModelEgress(t *testing.T) {
+	if _, err := parseModelOptions([]string{
+		"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m",
+		"-prompt", "hi", "-model-egress", "REMOTE_ALLOWED",
+	}); err == nil {
+		t.Fatal("-model-egress with -call should fail")
+	}
+}
+
+func TestParseModelOptionsCallRejectsInvalidPurpose(t *testing.T) {
+	if _, err := parseModelOptions([]string{
+		"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m",
+		"-prompt", "hi", "-purpose", "NOPE",
+	}); err == nil {
+		t.Fatal("an invalid purpose with -call should fail")
+	}
+}
+
+func TestParseModelOptionsAPIKeyEnvUnset(t *testing.T) {
+	t.Setenv("BOUNTYGRID_TEST_KEY", "")
+	if _, err := parseModelOptions([]string{
+		"-call", "-endpoint", "http://127.0.0.1:8080/v1", "-provider-model", "m",
+		"-prompt", "hi", "-api-key-env", "BOUNTYGRID_TEST_KEY",
+	}); err == nil {
+		t.Fatal("an empty api key env should fail")
+	}
+}
