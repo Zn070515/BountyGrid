@@ -524,7 +524,6 @@ def main():
              "sandbox_container": args.sandbox_container or None}
     started = time.time()
     final = ""
-    completed = False
     completion_status = None
     finish_reason = ""
     for step in range(args.max_steps):
@@ -554,7 +553,6 @@ def main():
         if not calls:
             final = msg.get("content") or ""
             completion_status = classify_completion(finish_reason, final)
-            completed = completion_status == "STOPPED_NORMALLY"
             break
         for call in calls:
             fn = (call.get("function") or {})

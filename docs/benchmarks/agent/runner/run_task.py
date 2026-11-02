@@ -236,8 +236,24 @@ def has_docker_error(result):
         result.probe is not None and is_docker_error(result.probe))
 
 
-def baseline_valid(spec, baseline_ok):
-    """Whether the baseline behaved the way the task declares it should."""
+def baseline_valid(spec, results):
+    """Whether the baseline is a legitimate starting point for this task.
+
+    A timeout, a missing interpreter or a build/import failure is not a
+    "fixture fails as expected"; it is a broken control and must not score.
+    """
+    if any(r.get("timed_out") or r.get("exit_code") is None for r in results):
+        return False
+    text = "\n".join((r.get("stdout") or "") + (r.get("stderr") or "") for r in results)
+    infra = (
+        "No such file or directory",
+        "can't open file",
+        "command not found",
+        "is not recognized as an internal or external command",
+    )
+    if any(marker in text for marker in infra):
+        return False
+    baseline_ok = all(r.get("exit_code") == 0 for r in results)
     expected = spec.get("expected_baseline")
     if expected == "fail":
         return not baseline_ok
@@ -343,7 +359,7 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0, sandbox_mode="none"
             baseline_probe = ar.probe
         baseline_ok = all(r["exit_code"] == 0 for r in baseline)
         baseline_parse = parse_unittest("\n".join(r["stdout"] + r["stderr"] for r in baseline))
-        baseline_gate = baseline_valid(spec, baseline_ok)
+        baseline_gate = baseline_valid(spec, baseline)
 
         try:
             if sandbox is not None and arm == "external":

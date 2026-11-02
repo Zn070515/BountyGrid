@@ -471,16 +471,41 @@ class CompletionStatusTests(unittest.TestCase):
 
 
 class BaselineGateTests(unittest.TestCase):
+    def result(self, code, stdout="", stderr="", timed_out=False):
+        return [{"exit_code": code, "stdout": stdout, "stderr": stderr,
+                 "timed_out": timed_out}]
+
     def test_expected_fail_requires_a_failing_baseline(self):
-        self.assertFalse(rt.baseline_valid({"expected_baseline": "fail"}, True))
-        self.assertTrue(rt.baseline_valid({"expected_baseline": "fail"}, False))
+        self.assertFalse(rt.baseline_valid({"expected_baseline": "fail"}, self.result(0)))
+        self.assertTrue(rt.baseline_valid(
+            {"expected_baseline": "fail"},
+            self.result(1, "Ran 4 tests\nFAILED (failures=2)")))
 
     def test_expected_pass_requires_a_passing_baseline(self):
-        self.assertTrue(rt.baseline_valid({"expected_baseline": "pass"}, True))
-        self.assertFalse(rt.baseline_valid({"expected_baseline": "pass"}, False))
+        self.assertTrue(rt.baseline_valid({"expected_baseline": "pass"}, self.result(0)))
+        self.assertFalse(rt.baseline_valid({"expected_baseline": "pass"}, self.result(1)))
 
     def test_unknown_expectation_is_permissive(self):
-        self.assertTrue(rt.baseline_valid({}, True))
+        self.assertTrue(rt.baseline_valid({}, self.result(0)))
+
+    def test_timeout_is_not_a_legitimate_failure(self):
+        self.assertFalse(rt.baseline_valid(
+            {"expected_baseline": "fail"}, self.result(None, timed_out=True)))
+
+    def test_missing_interpreter_is_not_a_legitimate_failure(self):
+        self.assertFalse(rt.baseline_valid(
+            {"expected_baseline": "fail"},
+            self.result(1, stderr="python: can't open file 'tests.py'")))
+
+    def test_unrecognized_command_is_not_a_legitimate_failure(self):
+        self.assertFalse(rt.baseline_valid(
+            {"expected_baseline": "fail"},
+            self.result(1, stderr="'C:\\missing\\python.exe' is not recognized as an internal or external command")))
+
+    def test_build_failure_is_a_legitimate_feature_baseline(self):
+        self.assertTrue(rt.baseline_valid(
+            {"expected_baseline": "fail"},
+            self.result(1, stdout="FAIL\tpkg [build failed]\nundefined: TotalPerimeter")))
 
 
 class CompletionAndTrustTests(unittest.TestCase):
