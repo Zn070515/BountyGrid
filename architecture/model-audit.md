@@ -181,3 +181,27 @@ history（`ON CONFLICT DO NOTHING`），再删除 `FAILED_BEFORE_SEND` 的逻辑
 - 当前没有真实 provider 适配器，`StaticProvider` 仅用于测试/本地 dry-run；
   尝试账本的字段已为真实 adapter 预留。
 - 模型审计不产生 `ActionDecision`，也不能触发平台动作。
+
+## 8. 本地 OpenAI 兼容 Provider
+
+`internal/model/openai` 实现一个只走 loopback 的 `model.Provider`：
+
+- **端点**：只接受 `http(s)` 且 host 为 `127.0.0.0/8`、`::1` 或 `localhost`；base 统一为
+  `scheme://host[:port]/v1`，请求路径为 `/v1/chat/completions`。
+- **信任边界**：`Trust=IN_PROCESS`，因此 `SENSITIVE` 数据可以调用；非 loopback 端点
+  需要在 `LOCAL_NETWORK`（trusted CIDR）或 `THIRD_PARTY`（escalation）下另行设计。
+- **传输**：不跟随重定向，不使用 `HTTP_PROXY`/`HTTPS_PROXY`/PAC。
+- **错误语义**：JSON marshal、URL 构造、dial/TCP 连接与 TLS 握手的失败发生在请求写出
+  之前，包装 `domain.ErrNotSent`（`FAILED_BEFORE_SEND`，可安全重试）；超时、HTTP 非 200、
+  响应过大或 JSON 损坏都是普通错误（`AMBIGUOUS`，不自动重试）。
+- **输出**：只返回 `choices[0].message.content` 与 usage；模型输出仍然只是文本，不会
+  变成 `ActionDecision` 或平台动作。
+
+`StorePolicyResolver` 从存储的 `Program.ModelEgressPolicy` 取 ceiling；没有 `ProgramID`
+时 fail closed 到 `LOCAL_ONLY`。`Redacted`/`Escalation` 是 operator attestation，永远不读
+请求里的 hint。
+
+`bountygrid model -call` 使用该 Provider：`-endpoint`/`-provider-model`（或
+`BOUNTYGRID_MODEL_ENDPOINT`/`BOUNTYGRID_MODEL_NAME`）、`-prompt`/`-prompt-file`、可选
+`-program -persist`。持久化时写入 `model_calls`、`model_call_attempts` 和 `model.call`
+审计事件；不持久化时使用内存存储。
