@@ -141,6 +141,12 @@ from the wrapped command stays a command result. There is no
 `dangerouslyDisableSandbox` equivalent: a denied or failed command is returned
 to the agent, which must adapt inside the workspace.
 
+The adapter records the container it used in `agent_usage.json` under
+`sandbox_container`. `run_task` compares it with the container it started: a
+mismatch or a missing field means the agent ran unsandboxed, and the run is
+marked `agent_unsandboxed` (never eligible for `overall_success`). This is how
+an external CLI that ignores `BENCH_SANDBOX_CONTAINER` is detected.
+
 `compare_hidden` is host-only: it parses the probe's marked result line and
 returns `{"declared": bool, "pass": bool, "matched": int, "total": int,
 "detail": str}`. It never runs in a container. `run_acceptance` also wraps each
@@ -247,6 +253,9 @@ task-spec strings and run through `sh -c` (no login shell); they must not
 depend on `.git`, which is not mounted in the acceptance container. The agent
 container's `exec` calls remain argv-only. `-i` is required only when hidden
 cases are sent to the probe on stdin; without hidden cases it is harmless.
+`run_task` exports `BENCH_SANDBOX_CONTAINER=<container name>` to the agent
+process; the adapter uses it for `run_command` and writes the same value into
+`agent_usage.json`.
 
 Docker's default seccomp profile stays in force: `--security-opt seccomp` is
 never set and `seccomp=unconfined` is forbidden. This is the baseline the three
@@ -323,7 +332,7 @@ criteria.
 |---|---|
 | Docker CLI missing or daemon down | `sandbox_error`, `overall_success=false`, no host fallback |
 | Task without `sandbox_image` under `--sandbox docker` | `sandbox_error` |
-| `--sandbox docker` with `--arm external` | Refuse to run; require explicit `--sandbox none`, which records `mode=none` |
+| `--arm external` whose `agent_usage.json` lacks the matching `sandbox_container` | `agent_unsandboxed=true`, `overall_success=false`; use `--sandbox none` for a deliberately unsandboxed CLI |
 | Container create/start/exec failure | `sandbox_error` |
 | `docker exec` returns Docker's own error text | `sandbox_error`, not a command failure |
 | Agent container `stop` fails | `sandbox_error`; phase 2 never starts |
@@ -354,6 +363,8 @@ Unit tests (no Docker):
 6. A Docker-level exec error is classified `sandbox_error`, and a failed
    `stop` prevents phase 2.
 7. `--sandbox none` records `hidden.skipped=true` and `hidden.pass=null`.
+8. A missing or mismatched `agent_usage.json.sandbox_container` sets
+   `agent_unsandboxed=true` and `overall_success=false`.
 
 Integration tests (`skipUnless(docker_available)`):
 
@@ -393,7 +404,9 @@ Integration tests (`skipUnless(docker_available)`):
 6. Per-command `docker exec` adds latency (tens to low hundreds of ms). Paired
    comparisons remain valid, but absolute wall-clock values are not comparable
    with pre-sandbox runs.
-7. The external arm is unsandboxed by design in this phase.
+7. An external CLI that ignores `BENCH_SANDBOX_CONTAINER` cannot be
+   containerized by this design; it is detected through `agent_usage.json` and
+   recorded as `agent_unsandboxed`.
 8. The image pins its base digest, but the `apt` packages installed in the
    Dockerfile (`git`, `coreutils`, `ca-certificates`) float with the Debian
    snapshot. The built image digest is recorded per run, so a result can
@@ -423,7 +436,9 @@ Integration tests (`skipUnless(docker_available)`):
 4. `--sandbox none` runs the same task, records `mode=none`, and records
    `hidden.skipped=true` with `hidden.pass=null`.
 5. A stopped Docker daemon yields `sandbox_error`, no host fallback.
-6. Existing runner tests (`test_command_policy.py`, `test_listing.py`,
+6. An agent command that does not record the matching `sandbox_container`
+   yields `agent_unsandboxed=true` and `overall_success=false`.
+7. Existing runner tests (`test_command_policy.py`, `test_listing.py`,
    `test_run_task.py`) and the Go gate (`go test ./...`, `go vet ./...`,
    `CGO_ENABLED=0 go build ./...`) stay green.
 
