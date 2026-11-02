@@ -79,5 +79,51 @@ class CompareHiddenTests(unittest.TestCase):
         self.assertIsNone(result["pass"])
 
 
+import subprocess
+
+
+class ProbeScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self.tmp.name)
+        (self.work / "target.py").write_text(
+            "def add(a, b):\n    return a + b\n\n"
+            "def boom():\n    raise ValueError('nope')\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_probe(self, payload):
+        env = {"PYTHONPATH": str(self.work), "PYTHONIOENCODING": "utf-8"}
+        p = subprocess.run(
+            [sys.executable, str(HERE / "sandbox" / "probe.py")],
+            input=json.dumps(payload), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", cwd=self.work, env=env,
+        )
+        return p, parse_probe_output(p.stdout)
+
+    def test_calls_the_target_and_marks_the_result(self):
+        p, results = self.run_probe([
+            {"module": "target", "func": "add", "args": [2, 3]},
+        ])
+        self.assertEqual(p.returncode, 0)
+        self.assertEqual(results, [{"ok": True, "value": 5}])
+
+    def test_reports_a_target_exception_without_crashing(self):
+        p, results = self.run_probe([
+            {"module": "target", "func": "boom", "args": []},
+        ])
+        self.assertEqual(p.returncode, 0)
+        self.assertFalse(results[0]["ok"])
+        self.assertIn("ValueError", results[0]["error"])
+
+    def test_rejects_malformed_input(self):
+        p, results = self.run_probe({"not": "a list"})
+        self.assertEqual(p.returncode, 2)
+        self.assertIsNone(results)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
