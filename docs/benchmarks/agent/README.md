@@ -119,7 +119,12 @@ four-module task.
   sandbox.
 - **Non-adapter agents.** A cloud CLI without an `agent_usage.json` completion
   flag falls back to its exit status for `agent_completed`; the adapter writes
-  `completed`/`step_cap_hit` explicitly.
+  `completed`/`step_cap_hit` explicitly. Pass `--agent-max-steps N` so
+  `step_cap_hit` is known for a non-adapter command; every record carries
+  `agent_max_steps` and `step_cap_known`.
+- **Historical data.** Records written before 2026-11-02 use the old `success`
+  definition (functional + scope only). New records use `overall_success`,
+  which also requires `agent_completed`.
 - **Tool-schema metrics.** `run_schema.py` reports undeclared tools, no tool
   call, wrong substitute, correct refusal and truncation separately.
 - **Long-context strictness.** `run_longdepth.py` pairs every `@ section N`

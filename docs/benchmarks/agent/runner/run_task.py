@@ -174,7 +174,7 @@ def run_arm(spec, arm, agent_cmd, work):
     return info
 
 
-def run_one(spec, arm, agent_cmd, repeat):
+def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0):
     fixture = FIXTURES / spec["fixture"]
     if not fixture.exists():
         raise FileNotFoundError(fixture)
@@ -204,15 +204,20 @@ def run_one(spec, arm, agent_cmd, repeat):
             match = re.search(r"--max-steps\s+(\d+)", agent_cmd)
             if match:
                 max_steps = int(match.group(1))
-        step_cap_hit = bool(usage.get("step_cap_hit"))
-        if max_steps:
-            step_cap_hit = step_cap_hit or (
-                int(usage.get("steps") or 0) >= max_steps and not usage.get("completed")
-            )
+        max_steps = int(spec.get("max_steps") or 0) or max_steps or int(agent_max_steps or 0)
+        step_cap_hit = False
+        step_cap_known = False
         if arm in ("oracle", "mock"):
             agent_completed = True
-            step_cap_hit = False
         else:
+            if usage.get("step_cap_hit") is not None:
+                step_cap_hit = bool(usage.get("step_cap_hit"))
+                step_cap_known = True
+            if max_steps:
+                step_cap_known = True
+                step_cap_hit = step_cap_hit or (
+                    int(usage.get("steps") or 0) >= max_steps and not usage.get("completed")
+                )
             exit_ok = agent.get("agent_exit") == 0 and not agent.get("agent_timed_out")
             completed_flag = usage.get("completed")
             if completed_flag is None:
@@ -244,7 +249,9 @@ def run_one(spec, arm, agent_cmd, repeat):
             "functional_pass": functional_pass,
             "scope_pass": scope_pass,
             "agent_completed": agent_completed,
+            "agent_max_steps": max_steps,
             "step_cap_hit": step_cap_hit,
+            "step_cap_known": step_cap_known,
             "overall_success": overall_success,
             "success": overall_success,
             "wall_clock_s": round(sum(r["duration_s"] for r in baseline) +
@@ -263,6 +270,8 @@ def main():
     ap.add_argument("--arm", default="mock", choices=["mock", "oracle", "external"])
     ap.add_argument("--agent-cmd", default="")
     ap.add_argument("--repeat", type=int, default=1)
+    ap.add_argument("--agent-max-steps", type=int, default=0,
+                    help="known step budget for a non-adapter agent command")
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
@@ -277,7 +286,7 @@ def main():
     ok = 0
     for spec in tasks:
         for rep in range(1, args.repeat + 1):
-            rec = run_one(spec, args.arm, args.agent_cmd, rep)
+            rec = run_one(spec, args.arm, args.agent_cmd, rep, args.agent_max_steps)
             with out.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             ok += rec["success"]

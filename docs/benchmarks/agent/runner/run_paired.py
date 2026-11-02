@@ -57,6 +57,7 @@ def run_cell(spec, thinking, enforce, rep, phase):
         "external",
         agent_cmd(thinking, enforce, spec.get("allowed_files", []), spec.get("max_steps", 20)),
         rep,
+        spec.get("max_steps", 20),
     )
     rec["thinking"] = thinking
     rec["enforce_scope"] = bool(enforce)
