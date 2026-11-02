@@ -64,7 +64,8 @@ TOOLS = [
 DENY = re.compile(
     r"(rm\s+-rf\s+/|format\s+[a-z]:|shutdown|reboot|curl\s|wget\s|Invoke-WebRequest|git\s+push|git\s+reset\s+--hard"
     r"|-exec\b|-delete\b|-ok\b|-fprint\b|-fprintf\b|-fls\b|--output\b|(^|\s)-o(\s|$)"
-    r"|-coverprofile|--coverprofile|-cpuprofile|-memprofile|-trace\b|--junitxml|--cov-report|--html\b|xargs\b)",
+    r"|-coverprofile|--coverprofile|-cpuprofile|-memprofile|-trace\b|--junitxml|--cov-report|--html\b|xargs\b"
+    r"|--pre\b)",
     re.I,
 )
 
