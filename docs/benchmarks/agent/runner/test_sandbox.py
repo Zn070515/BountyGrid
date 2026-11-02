@@ -264,5 +264,16 @@ class SweepTests(unittest.TestCase):
         self.assertFalse(any("rm" in c and "new" in c for c in calls))
 
 
+class DockerfileTests(unittest.TestCase):
+    def test_image_copies_nothing_from_the_build_context(self):
+        text = (HERE / "sandbox" / "Dockerfile.bench").read_text(encoding="utf-8")
+        self.assertNotIn("COPY", text)
+        self.assertNotIn("ADD ", text)
+
+    def test_probe_is_not_referenced(self):
+        text = (HERE / "sandbox" / "Dockerfile.bench").read_text(encoding="utf-8")
+        self.assertNotIn("probe.py", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
