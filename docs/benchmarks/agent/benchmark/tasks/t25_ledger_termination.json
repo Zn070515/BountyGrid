@@ -1,0 +1,12 @@
+{
+  "id": "t25_ledger_termination",
+  "fixture": "ledger_audit",
+  "prompt": "The test suite fails somewhere in the ledger package. Locate the arithmetic bug and fix it. Do not modify tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["ledger/totals.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "termination",
+  "context_band": "medium"
+}

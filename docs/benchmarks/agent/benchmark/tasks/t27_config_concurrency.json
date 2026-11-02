@@ -1,0 +1,12 @@
+{
+  "id": "t27_config_concurrency",
+  "fixture": "config_loader",
+  "prompt": "Loader instances leak values between each other. Fix the loader while respecting CONSTRAINTS.md: no module-level mutable state, no API change, stdlib only.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["config/loader.py"],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "constraint",
+  "context_band": "medium"
+}

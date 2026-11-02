@@ -1,0 +1,19 @@
+{
+  "id": "t26_money_rounding",
+  "fixture": "money_rounding",
+  "prompt": "Money must be rounded half away from zero in cents. The tests fail because of floating-point rounding; fix round_cents without changing the tests.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["money/rounding.py"],
+  "sandbox_image": "bountygrid-bench:py313",
+  "hidden_cases": [
+    {"module": "money.rounding", "func": "round_cents", "args": [10.075], "expect": 10.08},
+    {"module": "money.rounding", "func": "round_cents", "args": [0.005], "expect": 0.01},
+    {"module": "money.rounding", "func": "round_cents", "args": [-1.005], "expect": -1.01},
+    {"module": "money.rounding", "func": "round_cents", "args": [999999.995], "expect": 1000000.0}
+  ],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "numeric",
+  "context_band": "low"
+}

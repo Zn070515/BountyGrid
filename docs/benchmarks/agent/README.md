@@ -10,7 +10,7 @@ reproduce a run lives in this directory; no external checkout is required.
 benchmark/
   fixtures/           10 self-contained projects (calc, textutil, inventory,
                       gocalc, counter, window, paging, ringbuf, reporting)
-  tasks/              t01..t10 task definitions (prompt, acceptance, allowed files)
+  tasks/              t01..t27 task definitions (prompt, acceptance, allowed files)
   solutions/          oracle patch per task, used only to validate the pipeline
 runner/
   run_task.py         copy fixture -> agent -> acceptance -> JSONL record
@@ -101,6 +101,30 @@ Results and the three-way comparison are in
 [`long-tasks-2026-11-02.md`](long-tasks-2026-11-02.md). All six runs passed;
 same-session multi-turn was 2–3× cheaper than fresh-process handoff for this
 four-module task.
+
+## Weakness suite (2026-11-02)
+
+Three tasks target the failure modes visible in the v2 rerun:
+
+| Task | Target | Execution |
+|---|---|---|
+| `t25_ledger_termination` | locate a one-line fix in a longer package; completion vs step cap | host |
+| `t26_money_rounding` | float/decimal rounding; public tests plus a 4-case hidden probe | Docker (`sandbox_image`) |
+| `t27_config_concurrency` | constraint retention and per-instance state under threads | host |
+
+Run the suite with:
+
+```powershell
+$env:BENCH_TASKS='t25_ledger_termination,t26_money_rounding,t27_config_concurrency'
+$env:BENCH_REPS='2'
+$env:BENCH_OUT='runs/paired-weakness-v2.jsonl'
+$env:BENCH_SUMMARY='runs/paired-weakness-summary-v2.json'
+python -I -X utf8 runner/run_paired.py
+```
+
+`t26` is the second task with `sandbox_image` and `hidden_cases`; run it with
+`--sandbox docker` to exercise the hidden probe. The paired runner still uses
+the host path for all tasks.
 
 ## Harness fixes (2026-11-02)
 
