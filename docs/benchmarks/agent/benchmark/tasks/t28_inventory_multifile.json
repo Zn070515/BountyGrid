@@ -1,0 +1,22 @@
+{
+  "id": "t28_inventory_multifile",
+  "fixture": "inventory_v2",
+  "prompt": "Two behaviors are wrong in the inventory package: removing more units than present drives the quantity negative, and the report ignores quantities. Fix the store and report layers. Do not change tests or inventory/api.py.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["inventory/store.py", "inventory/report.py"],
+  "sandbox_image": "bountygrid-bench:py313",
+  "hidden_cases": [
+    {"module": "inventory.api", "func": "after_remove_value", "args": [5, 200, 2], "expect": 600},
+    {"module": "inventory.api", "func": "after_remove_value", "args": [5, 200, 5], "expect": 0},
+    {"module": "inventory.api", "func": "remove_rejects", "args": [5, 6], "expect": true},
+    {"module": "inventory.api", "func": "remove_rejects", "args": [5, 5], "expect": false},
+    {"module": "inventory.api", "func": "summary_value", "args": [2, 100], "expect": 200},
+    {"module": "inventory.api", "func": "summary_value", "args": [3, 250], "expect": 750}
+  ],
+  "max_steps": 40,
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "multi_file",
+  "context_band": "medium"
+}

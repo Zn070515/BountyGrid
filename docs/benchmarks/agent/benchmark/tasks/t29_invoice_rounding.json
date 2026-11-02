@@ -1,0 +1,20 @@
+{
+  "id": "t29_invoice_rounding",
+  "fixture": "invoice_rounding",
+  "prompt": "Tax must be computed on the invoice subtotal and rounded once, half away from zero. The current code rounds each line. Fix invoice/tax.py without changing tests or invoice/api.py.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": ["invoice/tax.py"],
+  "sandbox_image": "bountygrid-bench:py313",
+  "hidden_cases": [
+    {"module": "invoice.api", "func": "total_cents", "args": [[[1, 100], [1, 100], [1, 100]], 750], "expect": 323},
+    {"module": "invoice.api", "func": "total_cents", "args": [[[5, 100]], 750], "expect": 538},
+    {"module": "invoice.api", "func": "total_cents", "args": [[[-1, 100], [-1, 100]], 750], "expect": -215},
+    {"module": "invoice.api", "func": "total_cents", "args": [[], 750], "expect": 0}
+  ],
+  "max_steps": 30,
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "numeric",
+  "context_band": "low"
+}
