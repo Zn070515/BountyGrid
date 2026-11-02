@@ -194,5 +194,75 @@ class DockerArgsTests(unittest.TestCase):
             self.assertFalse(docker_available())
 
 
+class DockerLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self.tmp.name)
+        (self.work / ".git").mkdir()
+        self.sandbox = DockerSandbox(self.work, "img:1", "abc123", host_uid=None)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_start_agent_raises_on_docker_failure(self):
+        with mock.patch("sandbox.docker._run",
+                        return_value=ExecResult(125, "", "Error response from daemon: nope")):
+            with self.assertRaises(RuntimeError):
+                self.sandbox.start_agent()
+
+    def test_exec_marks_timeouts(self):
+        with mock.patch("sandbox.docker._run",
+                        return_value=ExecResult(None, "", "", True)):
+            self.assertTrue(self.sandbox.exec(["python", "-m", "pytest"], 30).timed_out)
+
+    def test_run_acceptance_runs_commands_and_probe(self):
+        calls = []
+
+        def fake_run(argv, timeout_s, input_text=None):
+            calls.append((argv, input_text))
+            if "python" in argv:
+                return ExecResult(0, "__PROBE_RESULT__[]", "")
+            return ExecResult(0, "", "")
+
+        with mock.patch("sandbox.docker._run", side_effect=fake_run):
+            result = self.sandbox.run_acceptance(
+                ["python -m unittest"], HERE / "sandbox" / "probe.py", "[]", timeout_s=60)
+        self.assertEqual(len(result.commands), 1)
+        self.assertEqual(result.probe.exit_code, 0)
+        self.assertEqual(len(calls), 2)
+
+    def test_stop_returns_the_docker_result(self):
+        with mock.patch("sandbox.docker._run",
+                        return_value=ExecResult(0, self.sandbox.name, "")):
+            self.assertEqual(self.sandbox.stop().exit_code, 0)
+
+    def test_image_digest_returns_none_on_failure(self):
+        with mock.patch("sandbox.docker._run",
+                        return_value=ExecResult(1, "", "no image")):
+            self.assertIsNone(self.sandbox.image_digest())
+
+
+class SweepTests(unittest.TestCase):
+    def test_removes_only_old_labelled_containers(self):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        new = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        calls = []
+
+        def fake_run(argv, timeout_s, input_text=None):
+            calls.append(argv)
+            if "ps" in argv:
+                return ExecResult(0, "old new", "")
+            if "inspect" in argv:
+                return ExecResult(0, old if argv[-1] == "old" else new, "")
+            return ExecResult(0, "", "")
+
+        with mock.patch("sandbox.docker._run", side_effect=fake_run):
+            removed = sweep_stale()
+        self.assertEqual(removed, 1)
+        self.assertTrue(any("rm" in c and "old" in c for c in calls))
+        self.assertFalse(any("rm" in c and "new" in c for c in calls))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

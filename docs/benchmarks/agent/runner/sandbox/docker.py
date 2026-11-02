@@ -154,6 +154,34 @@ class DockerSandbox:
             self.image, "python", PROBE_CONTAINER_PATH,
         ]
 
+    def start_agent(self):
+        result = _run(self.agent_args(), 120)
+        if result.exit_code != 0:
+            _run([self.docker_bin, "rm", "-f", self.name], 30)
+            raise RuntimeError(result.stderr.strip() or "docker run failed")
+
+    def exec(self, argv, timeout_s):
+        return _run(self.exec_args(argv, timeout_s), int(timeout_s) + 30)
+
+    def run_acceptance(self, commands, probe, probe_input, timeout_s=120):
+        results = [
+            _run(self.acceptance_args(command, timeout_s, probe=None), timeout_s + 30)
+            for command in commands
+        ]
+        probe_result = None
+        if probe is not None:
+            probe_result = _run(self.probe_args(probe), timeout_s + 30,
+                                input_text=probe_input or "[]")
+        return AcceptanceResult(results, probe_result)
+
+    def stop(self):
+        return _run([self.docker_bin, "rm", "-f", self.name], 60)
+
+    def image_digest(self):
+        result = _run(
+            [self.docker_bin, "image", "inspect", "--format", "{{.Id}}", self.image], 30)
+        return result.stdout.strip() if result.exit_code == 0 else None
+
 
 def docker_exec(container, argv, timeout_s, docker_bin="docker"):
     return _run(
