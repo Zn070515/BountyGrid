@@ -35,14 +35,14 @@ REPS = int(os.environ.get("BENCH_REPS", "2"))
 SCOPE_TASKS = {"t04_inventory_refactor", "t10_reporting_refactor"}
 
 
-def agent_cmd(thinking, enforce, allowed):
+def agent_cmd(thinking, enforce, allowed, max_steps=20):
     parts = [
         "python", "-I", "-X", "utf8", f'"{ADAPTER}"',
         "--workdir", "{workdir}",
         "--prompt-env", "BENCH_PROMPT",
         "--base-url", BASE,
         "--model", MODEL,
-        "--max-steps", "20",
+        "--max-steps", str(max_steps),
     ]
     if thinking == "off":
         parts.append("--no-thinking")
@@ -52,7 +52,12 @@ def agent_cmd(thinking, enforce, allowed):
 
 
 def run_cell(spec, thinking, enforce, rep, phase):
-    rec = rt.run_one(spec, "external", agent_cmd(thinking, enforce, spec.get("allowed_files", [])), rep)
+    rec = rt.run_one(
+        spec,
+        "external",
+        agent_cmd(thinking, enforce, spec.get("allowed_files", []), spec.get("max_steps", 20)),
+        rep,
+    )
     rec["thinking"] = thinking
     rec["enforce_scope"] = bool(enforce)
     rec["phase"] = phase

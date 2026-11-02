@@ -1,0 +1,17 @@
+{
+  "id": "t19_artflow_file_policies",
+  "fixture": "artflow_file_policies",
+  "prompt": "The test suite fails. Fix the file-purpose policy lookup in files/policies.py so that all tests pass. Do not modify the tests. Run the tests with: C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v.",
+  "acceptance": [
+    "C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v"
+  ],
+  "setup": [],
+  "allowed_files": [
+    "files/policies.py"
+  ],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "difficulty": "medium",
+  "context_band": "medium"
+}

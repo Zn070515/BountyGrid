@@ -1,0 +1,17 @@
+{
+  "id": "t17_artflow_business_rules",
+  "fixture": "artflow_business_rules",
+  "prompt": "The test suite fails. Fix the registration-phase guard in common/business_rules.py so that all tests pass. Do not modify the tests. Run the tests with: C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v.",
+  "acceptance": [
+    "C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v"
+  ],
+  "setup": [],
+  "allowed_files": [
+    "common/business_rules.py"
+  ],
+  "timeout_s": 120,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "context_band": "low"
+}

@@ -55,10 +55,52 @@ runs/                 generated records (gitignored via *.log only; JSONL kept)
 | t11 | refactor | shapes (Go) | `go test ./...` | shapes/shape.go, circle.go, rect.go, total.go |
 | t12 | bugfix | billing (Python) | unittest | billing/cycle.py |
 | t13 | feature | tickets (Python) | unittest | tickets/state.py |
+| t24 | feature | longlib (Python, 4 modules) | unittest (27 tests) | longlib/*.py |
 
 `t10` has a structural acceptance command so a no-op cannot pass a refactor
 task. `t11` changes an interface across four files; `t12` covers month-end and
 leap-year clamping.
+
+## Real local-project slices (difficulty gradient)
+
+These are copies of real code from CADiPy, offipy, ChemRealm and ArtFlow with
+one controlled mutation per task; the oracle is the original file. Sources,
+commits and exact mutations are in [`PROVENANCE.md`](PROVENANCE.md).
+
+| ID | Source | Difficulty | Focus |
+|---|---|---|---|
+| t14 | CADiPy `domain/units.py` | easy | length conversion factor |
+| t17 | ArtFlow `common/business_rules.py` | easy | inverted registration guard |
+| t18 | ArtFlow `core/policies.py` | easy | archived phase must be read-only |
+| t15 | offipy `aesthetic.py` | medium | color alpha default |
+| t16 | ChemRealm `deterministic-math.ts` | medium | 1-ulp numeric policy |
+| t19 | ArtFlow `files/policies.py` | medium | unknown purpose must fail |
+| t20 | ArtFlow `common/authority.py` | medium | nested thread-local scope restore |
+| t21 | ArtFlow `common/delivery.py` | medium | media-root prefix check |
+| t23 | ArtFlow `common/private_test_questionnaire.py` | medium | advancement rounds and file-policy integration |
+| t22 | ArtFlow `scripts/verify_private_test_package.py` | hard | PII guard in vote CSV |
+
+t17–t21 use ArtFlow's Django virtualenv for acceptance; see PROVENANCE.
+
+## Long-horizon experiments
+
+`t24_longlib_full` implements four modules (text, stats, store, CLI, 27 tests) in
+one prompt with `max_steps=40`. Three execution modes are available:
+
+| Mode | Runner | State carried between stages |
+|---|---|---|
+| Single prompt | `run_paired.py` with `BENCH_TASKS=t24_longlib_full` | one conversation |
+| Staged, fresh process | `run_staged.py` | repository + deterministic `HANDOFF.md` |
+| Multi-turn, same session | `run_multiturn.py` | one conversation with four user turns |
+
+The staged runner writes `HANDOFF.md` (completed stages, changed files, last
+full-suite status, next instruction) before each stage, so resumption does not
+depend on conversation memory.
+
+Results and the three-way comparison are in
+[`long-tasks-2026-11-02.md`](long-tasks-2026-11-02.md). All six runs passed;
+same-session multi-turn was 2–3× cheaper than fresh-process handoff for this
+four-module task.
 
 ## Validate the pipeline
 

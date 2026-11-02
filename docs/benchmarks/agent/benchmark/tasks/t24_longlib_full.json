@@ -1,0 +1,20 @@
+{
+  "id": "t24_longlib_full",
+  "fixture": "longlib",
+  "prompt": "Implement the longlib library so that all tests pass. Read the tests for the exact behavior. The modules are longlib/text.py, longlib/stats.py, longlib/store.py and longlib/cli.py. Do not modify the tests. Run the tests with: python -m unittest discover -s tests -v.",
+  "acceptance": ["python -m unittest discover -s tests -v"],
+  "setup": [],
+  "allowed_files": [
+    "longlib/__init__.py",
+    "longlib/text.py",
+    "longlib/stats.py",
+    "longlib/store.py",
+    "longlib/cli.py"
+  ],
+  "max_steps": 40,
+  "timeout_s": 300,
+  "expected_baseline": "fail",
+  "category": "feature",
+  "difficulty": "hard",
+  "context_band": "high"
+}

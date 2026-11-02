@@ -1,0 +1,17 @@
+{
+  "id": "t20_artflow_authority",
+  "fixture": "artflow_authority",
+  "prompt": "The test suite fails. Fix the thread-local write-authority scope handling in common/authority.py so that all tests pass. Do not modify the tests. Run the tests with: C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v.",
+  "acceptance": [
+    "C:\\Users\\16275\\Desktop\\ArtFlow\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v"
+  ],
+  "setup": [],
+  "allowed_files": [
+    "common/authority.py"
+  ],
+  "timeout_s": 180,
+  "expected_baseline": "fail",
+  "category": "bugfix",
+  "difficulty": "medium",
+  "context_band": "medium"
+}

@@ -1,0 +1,231 @@
+[
+  {
+    "thinking": "off",
+    "agent_exit": 0,
+    "agent_timed_out": false,
+    "success": true,
+    "full_exit": 0,
+    "wall_s": 35.77,
+    "usage": {
+      "input_tokens": 59690,
+      "output_tokens": 2235,
+      "model": "qwen3.8-flash-next-iq3_s",
+      "steps": 18,
+      "tool_calls": 18,
+      "denied_writes": 0,
+      "step_usage": [
+        {
+          "step": 1,
+          "turn": 1,
+          "input_tokens": 681,
+          "output_tokens": 53,
+          "tools": [
+            "list_files",
+            "read_file"
+          ]
+        },
+        {
+          "step": 2,
+          "turn": 1,
+          "input_tokens": 1061,
+          "output_tokens": 28,
+          "tools": [
+            "read_file"
+          ]
+        },
+        {
+          "step": 3,
+          "turn": 1,
+          "input_tokens": 1225,
+          "output_tokens": 212,
+          "tools": [
+            "write_file"
+          ]
+        },
+        {
+          "step": 4,
+          "turn": 1,
+          "input_tokens": 1467,
+          "output_tokens": 51,
+          "tools": [
+            "run_command"
+          ]
+        },
+        {
+          "step": 5,
+          "turn": 1,
+          "input_tokens": 1725,
+          "output_tokens": 51,
+          "tools": []
+        },
+        {
+          "step": 6,
+          "turn": 2,
+          "input_tokens": 1850,
+          "output_tokens": 56,
+          "tools": [
+            "read_file",
+            "read_file"
+          ]
+        },
+        {
+          "step": 7,
+          "turn": 2,
+          "input_tokens": 2404,
+          "output_tokens": 388,
+          "tools": [
+            "write_file"
+          ]
+        },
+        {
+          "step": 8,
+          "turn": 2,
+          "input_tokens": 2823,
+          "output_tokens": 35,
+          "tools": [
+            "run_command"
+          ]
+        },
+        {
+          "step": 9,
+          "turn": 2,
+          "input_tokens": 3038,
+          "output_tokens": 40,
+          "tools": []
+        },
+        {
+          "step": 10,
+          "turn": 3,
+          "input_tokens": 3149,
+          "output_tokens": 56,
+          "tools": [
+            "read_file",
+            "read_file"
+          ]
+        },
+        {
+          "step": 11,
+          "turn": 3,
+          "input_tokens": 3838,
+          "output_tokens": 438,
+          "tools": [
+            "write_file"
+          ]
+        },
+        {
+          "step": 12,
+          "turn": 3,
+          "input_tokens": 4307,
+          "output_tokens": 35,
+          "tools": [
+            "run_command"
+          ]
+        },
+        {
+          "step": 13,
+          "turn": 3,
+          "input_tokens": 4512,
+          "output_tokens": 57,
+          "tools": []
+        },
+        {
+          "step": 14,
+          "turn": 4,
+          "input_tokens": 4631,
+          "output_tokens": 56,
+          "tools": [
+            "read_file",
+            "read_file"
+          ]
+        },
+        {
+          "step": 15,
+          "turn": 4,
+          "input_tokens": 5266,
+          "output_tokens": 30,
+          "tools": [
+            "read_file"
+          ]
+        },
+        {
+          "step": 16,
+          "turn": 4,
+          "input_tokens": 5345,
+          "output_tokens": 537,
+          "tools": [
+            "write_file"
+          ]
+        },
+        {
+          "step": 17,
+          "turn": 4,
+          "input_tokens": 5913,
+          "output_tokens": 36,
+          "tools": [
+            "run_command"
+          ]
+        },
+        {
+          "step": 18,
+          "turn": 4,
+          "input_tokens": 6455,
+          "output_tokens": 76,
+          "tools": []
+        }
+      ],
+      "turns": [
+        {
+          "turn": 1,
+          "input_tokens": 6159,
+          "output_tokens": 395,
+          "steps": 5,
+          "tool_calls": 5,
+          "completed": true
+        },
+        {
+          "turn": 2,
+          "input_tokens": 10115,
+          "output_tokens": 519,
+          "steps": 4,
+          "tool_calls": 4,
+          "completed": true
+        },
+        {
+          "turn": 3,
+          "input_tokens": 15806,
+          "output_tokens": 586,
+          "steps": 4,
+          "tool_calls": 4,
+          "completed": true
+        },
+        {
+          "turn": 4,
+          "input_tokens": 27610,
+          "output_tokens": 735,
+          "steps": 5,
+          "tool_calls": 5,
+          "completed": true
+        }
+      ],
+      "thinking": "off",
+      "allowed_files": [
+        "longlib/__init__.py",
+        "longlib/cli.py",
+        "longlib/stats.py",
+        "longlib/store.py",
+        "longlib/text.py"
+      ],
+      "wall_clock_s": 35.7
+    },
+    "changed_files": [
+      "_prompts.json",
+      "longlib/__pycache__/",
+      "longlib/cli.py",
+      "longlib/stats.py",
+      "longlib/store.py",
+      "longlib/text.py",
+      "tests/__pycache__/"
+    ],
+    "full_output_tail": "Stats.test_median_even) ... ok\ntest_median_odd (test_stats.TestStats.test_median_odd) ... ok\ntest_percentile_edges (test_stats.TestStats.test_percentile_edges) ... ok\ntest_percentile_interpolates (test_stats.TestStats.test_percentile_interpolates) ... ok\ntest_percentile_invalid (test_stats.TestStats.test_percentile_invalid) ... ok\ntest_delete (test_store.TestStore.test_delete) ... ok\ntest_invalid_key (test_store.TestStore.test_invalid_key) ... ok\ntest_keys_are_sorted (test_store.TestStore.test_keys_are_sorted) ... ok\ntest_load_missing_file_is_empty (test_store.TestStore.test_load_missing_file_is_empty) ... ok\ntest_non_serializable_value (test_store.TestStore.test_non_serializable_value) ... ok\ntest_save_load_roundtrip (test_store.TestStore.test_save_load_roundtrip) ... ok\ntest_set_get (test_store.TestStore.test_set_get) ... ok\ntest_basic (test_text.TestSlugify.test_basic) ... ok\ntest_collapses_runs_and_strips (test_text.TestSlugify.test_collapses_runs_and_strips) ... ok\ntest_empty (test_text.TestSlugify.test_empty) ... ok\ntest_symbols (test_text.TestSlugify.test_symbols) ... ok\ntest_cut_adds_ellipsis (test_text.TestTruncate.test_cut_adds_ellipsis) ... ok\ntest_fitting_value_is_unchanged (test_text.TestTruncate.test_fitting_value_is_unchanged) ... ok\ntest_invalid_limit (test_text.TestTruncate.test_invalid_limit) ... ok\ntest_limit_one (test_text.TestTruncate.test_limit_one) ... ok\n\n----------------------------------------------------------------------\nRan 27 tests in 0.008s\n\nOK\n"
+  }
+]

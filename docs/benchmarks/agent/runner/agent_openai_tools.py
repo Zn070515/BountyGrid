@@ -143,6 +143,89 @@ def chat(base_url, model, messages, timeout=300, no_thinking=False, max_tokens=0
         return json.loads(r.read().decode("utf-8"))
 
 
+def run_multiturn(args):
+    """Run consecutive user prompts in one conversation (same session)."""
+    prompts = json.loads(Path(args.prompts_file).read_text(encoding="utf-8"))
+    if not isinstance(prompts, list) or not prompts or not all(
+        isinstance(prompt, str) and prompt.strip() for prompt in prompts
+    ):
+        raise SystemExit("--prompts-file must contain a non-empty list of non-empty strings")
+
+    workdir = Path(args.workdir).resolve()
+    allowed = set(x.strip() for x in args.allowed_files.split(",") if x.strip()) or None
+    messages = [{"role": "system", "content": SYSTEM}]
+    usage = {"input_tokens": 0, "output_tokens": 0, "model": args.model, "steps": 0,
+             "tool_calls": 0, "denied_writes": 0, "step_usage": [], "turns": [],
+             "thinking": "off" if args.no_thinking else "on",
+             "allowed_files": sorted(allowed) if allowed else None}
+    started = time.time()
+    final = ""
+    steps_used = 0
+    aborted = False
+
+    for turn_index, turn_prompt in enumerate(prompts, start=1):
+        messages.append({"role": "user", "content": turn_prompt})
+        turn_input = turn_output = turn_steps = turn_tools = 0
+        turn_done = False
+        while steps_used < args.max_steps:
+            try:
+                resp = chat(args.base_url, args.model, messages,
+                            no_thinking=args.no_thinking, max_tokens=args.max_tokens)
+            except Exception as e:
+                final = f"API_ERROR: {e}"
+                aborted = True
+                break
+            u = resp.get("usage") or {}
+            step_input = int(u.get("prompt_tokens") or 0)
+            step_output = int(u.get("completion_tokens") or 0)
+            usage["input_tokens"] += step_input
+            usage["output_tokens"] += step_output
+            turn_input += step_input
+            turn_output += step_output
+            steps_used += 1
+            turn_steps += 1
+            usage["steps"] = steps_used
+            msg = (resp.get("choices") or [{}])[0].get("message") or {}
+            calls = msg.get("tool_calls") or []
+            usage["tool_calls"] += len(calls)
+            turn_tools += len(calls)
+            usage["step_usage"].append({
+                "step": steps_used, "turn": turn_index,
+                "input_tokens": step_input, "output_tokens": step_output,
+                "tools": [(call.get("function") or {}).get("name") for call in calls],
+            })
+            messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
+            if not calls:
+                final = msg.get("content") or ""
+                turn_done = True
+                break
+            for call in calls:
+                fn = (call.get("function") or {})
+                name = fn.get("name")
+                try:
+                    targs = json.loads(fn.get("arguments") or "{}")
+                except Exception:
+                    targs = {}
+                try:
+                    result = tool_call(workdir, name, targs, allowed)
+                except Exception as e:
+                    result = f"ERROR: {e}"
+                if isinstance(result, str) and result.startswith("ERROR: path not allowed"):
+                    usage["denied_writes"] += 1
+                messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": str(result)[:8000]})
+        usage["turns"].append({
+            "turn": turn_index, "input_tokens": turn_input, "output_tokens": turn_output,
+            "steps": turn_steps, "tool_calls": turn_tools, "completed": turn_done,
+        })
+        if aborted or not turn_done:
+            break
+
+    usage["wall_clock_s"] = round(time.time() - started, 1)
+    (workdir / "agent_usage.json").write_text(json.dumps(usage, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(final[-2000:])
+    return 0 if not final.startswith("API_ERROR") else 2
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workdir", required=True)
@@ -155,8 +238,12 @@ def main():
     ap.add_argument("--no-thinking", action="store_true")
     ap.add_argument("--allowed-files", default="",
                     help="comma-separated write allowlist; empty means no enforcement")
+    ap.add_argument("--prompts-file", default="",
+                    help="JSON list of consecutive user prompts in the same session")
     ap.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "local"))
     args = ap.parse_args()
+    if args.prompts_file:
+        return run_multiturn(args)
     prompt = args.prompt or os.environ.get(args.prompt_env, "")
     if not prompt:
         raise SystemExit(f"no prompt: pass --prompt or set {args.prompt_env}")
@@ -165,7 +252,7 @@ def main():
     allowed = set(x.strip() for x in args.allowed_files.split(",") if x.strip()) or None
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
     usage = {"input_tokens": 0, "output_tokens": 0, "model": args.model, "steps": 0,
-             "tool_calls": 0, "denied_writes": 0,
+             "tool_calls": 0, "denied_writes": 0, "step_usage": [],
              "thinking": "off" if args.no_thinking else "on",
              "allowed_files": sorted(allowed) if allowed else None}
     started = time.time()
@@ -178,12 +265,20 @@ def main():
             final = f"API_ERROR: {e}"
             break
         u = resp.get("usage") or {}
-        usage["input_tokens"] += int(u.get("prompt_tokens") or 0)
-        usage["output_tokens"] += int(u.get("completion_tokens") or 0)
+        step_input = int(u.get("prompt_tokens") or 0)
+        step_output = int(u.get("completion_tokens") or 0)
+        usage["input_tokens"] += step_input
+        usage["output_tokens"] += step_output
         usage["steps"] = step + 1
         msg = (resp.get("choices") or [{}])[0].get("message") or {}
         calls = msg.get("tool_calls") or []
         usage["tool_calls"] += len(calls)
+        usage["step_usage"].append({
+            "step": step + 1,
+            "input_tokens": step_input,
+            "output_tokens": step_output,
+            "tools": [(call.get("function") or {}).get("name") for call in calls],
+        })
         messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
         if not calls:
             final = msg.get("content") or ""

@@ -1,0 +1,17 @@
+[
+  {
+    "run": 1,
+    "thinking": "on",
+    "stages": 4,
+    "completed": [
+      "cli"
+    ],
+    "all_stages_ok": false,
+    "final_full_ok": true,
+    "success": false,
+    "total_wall_s": 202.1,
+    "total_input_tokens": 194043,
+    "total_output_tokens": 14151,
+    "final_output_tail": ""
+  }
+]
