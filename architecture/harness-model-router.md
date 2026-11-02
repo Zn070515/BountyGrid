@@ -246,7 +246,7 @@ type Router interface {
 - 审计：每次尝试写 `model.call`，payload 只有 `attempt_id/call_id/step_id/task_id/purpose/data_class/provider/model/status/estimated_cost/actual_cost/prompt_hash/response_hash/usage/duration_ms/error`，不含 prompt/response 原文。
 - 失败降级：Provider 报错时记录尝试并按路由顺序尝试下一个；全部失败返回最后一个错误，逻辑调用保留 `AMBIGUOUS` 或 `FAILED_BEFORE_SEND`。
 - `bountygrid model -purpose ... -data-class ... -model-egress ... [-redacted] [-escalation ...] -max-tokens ... -budget ...` 只打印路由计划（`Candidates` + 估算成本），不调用模型、不发网络请求。默认 `UNKNOWN` 只显示本地候选。
-- 未实现：真实本地/云端 Provider 适配器（需要 env 配置与密钥管理）、Model Router 与 ResearchTask 的自动领取。`StaticProvider` 仅用于测试/本地 dry-run；PostgreSQL `model_calls` 存储已实现，但 CLI 尚未接入真实调用链。
+- 已实现：本地 loopback 的 OpenAI / Anthropic Provider，并通过 `bountygrid model -call` 接入真实调用链（详见 `architecture/model-audit.md` §8）。未实现：云端 Provider 适配器（需要 env 配置与密钥管理）、Model Router 与 ResearchTask 的自动领取。`StaticProvider` 仅用于测试/本地 dry-run；PostgreSQL `model_calls` 存储已实现。
 
 ## 6. 审计事件
 

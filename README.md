@@ -26,7 +26,7 @@
 
 BountyGrid 是面向国内漏洞赏金平台（阿里云先知 / ASRC、漏洞盒子、补天）的 **统一控制层**。它不代替人挖洞，也不做自动扫描器；它负责把平台事实、账号资格、项目 Scope、测试约束、竞争数据与收益账本收束成一套可审计、可调度、可回放的 Go 系统。
 
-当前阶段：**Phase 0–8 control plane implemented; active execution remains disabled.** 尚未对任何厂商资产发起真实测试，未报名、未签 NDA、未提交漏洞、未提现。真实平台 SubmitAdapter 与真实模型 Provider 仍未实现。
+当前阶段：**Phase 0–8 control plane implemented; active execution remains disabled.** 尚未对任何厂商资产发起真实测试，未报名、未签 NDA、未提交漏洞、未提现。真实平台 SubmitAdapter 与云端模型 Provider 仍未实现；本地 loopback 的 OpenAI / Anthropic Provider 已实现。
 
 > **项目状态：** `platform-audit/` 是三平台账号与规则的事实基线；`architecture/` 是完整 Go 设计；`internal/` 是实现。验证入口以 `architecture/implementation-order.md` 的退出条件为准；本文不复述测试数量、commit 或 CI 结果，避免与代码漂移。
 
@@ -111,7 +111,7 @@ bash probes/butian/grow-dates.sh
 
 ## 实现进度 · Implementation
 
-> **真实状态：Phase 0 complete; Phase 1–8 control plane implemented; active execution remains disabled.** 三平台 Reader 主路径已通并落库；Policy/Gateway/Opportunity/Scheduler/Harness 已有实现并在控制层收口；Verification 规则引擎（执行回执 + durable human review）、ReportDraft、dry-run Submission、CNY 现金 Ledger（含 Feedback 回灌 Opportunity）已实现。**真实平台 SubmitAdapter 与真实模型 Provider 仍未实现**；`ACTIVE_HTTP` 工具不存在，主动执行保持 disabled。执行可信度硬化（输入新鲜度、逐请求 Egress/代理授权、SSRF/DNS rebinding、AMBIGUOUS 回执/提交意图、模型调用状态机、trace）见下方 Implementation notes 与 `architecture/`。
+> **真实状态：Phase 0 complete; Phase 1–8 control plane implemented; active execution remains disabled.** 三平台 Reader 主路径已通并落库；Policy/Gateway/Opportunity/Scheduler/Harness 已有实现并在控制层收口；Verification 规则引擎（执行回执 + durable human review）、ReportDraft、dry-run Submission、CNY 现金 Ledger（含 Feedback 回灌 Opportunity）已实现。**真实平台 SubmitAdapter 与云端模型 Provider 仍未实现**（本地 loopback 的 OpenAI / Anthropic Provider 已实现）；`ACTIVE_HTTP` 工具不存在，主动执行保持 disabled。执行可信度硬化（输入新鲜度、逐请求 Egress/代理授权、SSRF/DNS rebinding、AMBIGUOUS 回执/提交意图、模型调用状态机、trace）见下方 Implementation notes 与 `architecture/`。
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
@@ -120,7 +120,7 @@ bash probes/butian/grow-dates.sh
 | Phase 1 | Browser Sidecar + Vulbox / Xianzhi / Butian Readers | 基本完成：三平台主路径已实测并落库；部分 scope/detail 与数据语义仍在收口 |
 | Phase 2/3 | Facts/State/Policy | 已实现并硬化；Fact 年龄限制 State TTL，运行环境约束进入 Policy |
 | Phase 4 | Opportunity / Scheduler | 已实现：append-only 评分历史、DB cooldown、CompetitionSnapshot TTL/decay |
-| Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 的路由/数据分级/预算/审计已实现（仅本地 dry-run，**无真实 Provider**）；**无 ACTIVE_HTTP 工具** |
+| Phase 5 | Harness / Model Router | Harness 注册表/Gateway/沙箱/预算/执行回执已实现；Model Router 的路由/数据分级/预算/审计已实现，本地 loopback 的 OpenAI / Anthropic Provider 经 `model -call` 接入（**云端 Provider 未实现**）；**无 ACTIVE_HTTP 工具** |
 | Phase 6 | Verification / Report / Submission / Ledger | Verification 规则引擎、ReportDraft、Submission dry-run 控制层、CNY 现金 Ledger（append-only/ExternalRef/REVERSAL/Summary/Reconcile/Feedback）已实现；**真实平台 SubmitAdapter 未实现**；非现金奖励仅留接口 |
 
 ### Implementation notes

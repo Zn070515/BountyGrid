@@ -75,11 +75,11 @@ func parseModelOptions(args []string) (modelOptions, error) {
 	fs.StringVar(&o.Escalation, "escalation", "",
 		"optional escalation: STALLED|LOW_CONFIDENCE|HIGH_VALUE_TASK|VERIFICATION_CONFLICT")
 	fs.BoolVar(&o.Call, "call", false, "perform one real model call instead of printing a plan")
-	fs.StringVar(&o.Endpoint, "endpoint", os.Getenv("BOUNTYGRID_MODEL_ENDPOINT"), "loopback OpenAI-compatible base URL")
+	fs.StringVar(&o.Endpoint, "endpoint", os.Getenv("BOUNTYGRID_MODEL_ENDPOINT"), "loopback OpenAI- or Anthropic-compatible base URL")
 	fs.StringVar(&o.ProviderModel, "provider-model", os.Getenv("BOUNTYGRID_MODEL_NAME"), "provider model name")
 	fs.StringVar(&o.ProviderName, "provider-name", "", "registered provider name")
 	fs.StringVar(&o.ProviderFormat, "provider-format", os.Getenv("BOUNTYGRID_MODEL_FORMAT"), "message format: openai|anthropic")
-	fs.StringVar(&o.APIKeyEnv, "api-key-env", "", "environment variable holding the bearer token")
+	fs.StringVar(&o.APIKeyEnv, "api-key-env", "", "environment variable holding the provider API key")
 	fs.StringVar(&o.Prompt, "prompt", "", "user prompt for -call")
 	fs.StringVar(&o.PromptFile, "prompt-file", "", "UTF-8 file with the user prompt for -call")
 	fs.StringVar(&o.Program, "program", "", "program whose egress policy governs the call")

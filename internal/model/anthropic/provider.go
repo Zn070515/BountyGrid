@@ -130,6 +130,13 @@ func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.
 	if len(messages) == 0 {
 		return model.ModelResponse{}, fmt.Errorf("%w: anthropic requires at least one user or assistant message", domain.ErrNotSent)
 	}
+	// The Messages API rejects a conversation whose first turn is not a user
+	// message. Rejecting it here keeps the failure pre-send (FAILED_BEFORE_SEND)
+	// instead of turning a locally detectable 400 into an AMBIGUOUS, possibly
+	// billed call.
+	if messages[0].Role != "user" {
+		return model.ModelResponse{}, fmt.Errorf("%w: anthropic requires the first message to use the user role", domain.ErrNotSent)
+	}
 	body, err := json.Marshal(messagesRequest{
 		Model:     p.info.Model,
 		MaxTokens: req.MaxTokens,
@@ -170,10 +177,18 @@ func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.
 		return model.ModelResponse{}, fmt.Errorf("anthropic: decode response: %w", err)
 	}
 	var text strings.Builder
+	foundText := false
 	for _, block := range out.Content {
 		if block.Type == "text" {
 			text.WriteString(block.Text)
+			foundText = true
 		}
+	}
+	// A 200 with no text block (empty content, tool_use-only, thinking-only) is
+	// not a usable completion for a text provider. Fail instead of recording an
+	// empty response as COMPLETED; mirror openai's no-choices guard.
+	if !foundText {
+		return model.ModelResponse{}, fmt.Errorf("anthropic: response has no text content")
 	}
 	return model.ModelResponse{
 		Content:  text.String(),

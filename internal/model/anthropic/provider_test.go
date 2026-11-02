@@ -214,6 +214,46 @@ func TestCompleteOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestCompleteRejectsAssistantFirstMessageBeforeSend(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, `{"content":[{"type":"text","text":"ok"}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input:     []model.Message{{Role: "assistant", Content: "prefill"}},
+		MaxTokens: 4,
+	})
+	if !errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("err = %v, want ErrNotSent", err)
+	}
+	if called {
+		t.Fatal("an assistant-first conversation must be rejected before the request is sent")
+	}
+}
+
+func TestCompleteRejectsResponseWithoutText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"content":[{"type":"thinking","text":"ignored"}],"stop_reason":"end_turn"}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if err == nil || errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("err = %v, want a post-send response error", err)
+	}
+}
+
 func TestCompleteIgnoresEnvironmentProxy(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")

@@ -178,8 +178,8 @@ history（`ON CONFLICT DO NOTHING`），再删除 `FAILED_BEFORE_SEND` 的逻辑
   账单对账。
 - 逻辑调用 `COMPLETED` 但 `HasAmbiguousAttempt=true` 时，成功结果可以继续
   使用，但必须保留该标志，不能把 ambiguous 尝试的成本当作 0。
-- 当前没有真实 provider 适配器，`StaticProvider` 仅用于测试/本地 dry-run；
-  尝试账本的字段已为真实 adapter 预留。
+- `StaticProvider` 仅用于测试/本地 dry-run；本地 loopback 的 OpenAI / Anthropic
+  Provider 见 §8，云端 Provider 仍未实现；尝试账本的字段已为云端 adapter 预留。
 - 模型审计不产生 `ActionDecision`，也不能触发平台动作。
 
 ## 8. 本地 OpenAI / Anthropic 兼容 Provider
