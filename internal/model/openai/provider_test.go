@@ -156,6 +156,21 @@ func TestCompleteLengthIsTruncated(t *testing.T) {
 	}
 }
 
+func TestCompleteRejectsOutOfRangeTemperature(t *testing.T) {
+	p, err := New(Config{Model: "m", Endpoint: "http://127.0.0.1:1/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	temperature := 2.5
+	_, err = p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+		Temperature: &temperature,
+	})
+	if !errors.Is(err, domain.ErrNotSent) {
+		t.Fatalf("err = %v, want ErrNotSent", err)
+	}
+}
+
 func TestCompleteSendsThinkingAndTemperature(t *testing.T) {
 	var got struct {
 		Temperature        *float64       `json:"temperature"`

@@ -99,6 +99,9 @@ type chatResponse struct {
 // Complete performs one non-streaming chat completion. Output is text; it never
 // becomes a decision or a platform action.
 func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.ModelResponse, error) {
+	if req.Temperature != nil && (*req.Temperature < 0 || *req.Temperature > 2) {
+		return model.ModelResponse{}, fmt.Errorf("%w: temperature must be in [0, 2]", domain.ErrNotSent)
+	}
 	body, err := json.Marshal(chatRequest{
 		Model:              p.info.Model,
 		Messages:           toMessages(req.Input),
