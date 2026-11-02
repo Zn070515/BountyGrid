@@ -109,14 +109,23 @@ four-module task.
   `success` means functional + scope + the agent ended normally (not a step
   cap). A test-passing run that exhausted its step budget no longer counts as a
   completed agent.
-- **Shell execution boundary.** `run_command` only allows predefined
-  test/build/read-only commands (`python -m unittest|pytest|py_compile`,
-  `node --test`, `go test`, `git status|diff|log|show`, `ls`/`dir`/`cat`/
-  `grep`/`rg`/`find`); shell metacharacters and newlines are rejected. It also
-  rejects write-capable flags such as `find -exec/-delete/-fprint`, `--output`,
-  `go test -o`, coverage/profile flags and `--junitxml`. This closes the shell
-  escape around the write allowlist, but it is a command allowlist, not an OS
-  sandbox.
+- **Command boundary.** `run_command` no longer uses a shell. The command is
+  split into an argv list and executed with `shell=False`; only predefined
+  (executable, subcommand) pairs are accepted (`python -m
+  unittest|pytest|py_compile`, `node --test`, `go test`,
+  `git status|diff|log|show`, plus read-only `head`/`tail`/`wc`/`grep`/`rg`/
+  `find`/`Select-String`). `dir`/`ls`/`Get-ChildItem` and `type`/`cat` are
+  implemented in the adapter, so they work without cmd.exe/PowerShell.
+  Shell metacharacters and newlines are rejected. Write-capable flags are
+  checked per argv token, including `find -exec/-execdir/-ok/-okdir/-fprint/
+  -fprint0/-fprintf/-fls/-delete`, `-o`/`--output`, `--basetemp`,
+  coverage/profile flags, `--junitxml` and `--pre`. Read-only executables and
+  allowed helpers reject absolute and `..` path arguments, `read_file` refuses
+  `.git/**`, and command timeouts are clamped to 1–300 s. This still is not an
+  OS sandbox: acceptance imports agent-modified code, so arbitrary code
+  execution inside the worktree remains possible. The `external` arm
+  (`--agent-cmd`) bypasses the adapter entirely; its scope is checked only
+  after the fact. Policy tests: `python runner/test_command_policy.py`.
 - **Non-adapter agents.** A cloud CLI without an `agent_usage.json` completion
   flag falls back to its exit status for `agent_completed`; the adapter writes
   `completed`/`step_cap_hit` explicitly. Pass `--agent-max-steps N` so
@@ -130,6 +139,17 @@ four-module task.
 - **Long-context strictness.** `run_longdepth.py` pairs every `@ section N`
   with its nearest code (a swapped section fails), and adds a second injection
   variant (`distractor2`).
+- **Bounded listing and reads.** `list_files` walks with `os.scandir` and
+  stops at the 300-entry limit instead of sorting a whole `rglob` tree;
+  `read_text` streams to the requested window instead of loading the file
+  first. On a 10k-file tree the listing dropped from 31 ms to 2.8 ms.
+  Regression tests: `python runner/test_listing.py`.
+- **Oracle control.** `apply_oracle` touches the copied files and removes
+  `__pycache__`/`*.pyc` after `copytree`. Without this, a patch with the same
+  size and second-resolution mtime as the baseline file is invisible to git's
+  stat cache and Python's pyc header, so the oracle silently re-ran the buggy
+  code. Regression tests: `python runner/test_run_task.py`; all 24 oracle runs
+  pass.
 
 Fixed data: `runs/schema-fixed.jsonl`, `runs/schema-fixed-summary.json`,
 `runs/longdepth-fixed.jsonl`, `runs/longdepth-summary.json`

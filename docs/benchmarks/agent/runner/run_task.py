@@ -134,11 +134,31 @@ def scan_secrets(work, files):
     return hits[:10]
 
 
+def refresh_copied_files(src, work):
+    """Make a copied patch visible to git and Python.
+
+    ``copytree`` preserves the source mtime. When the patch and the fixture
+    file have the same size and the same second-resolution mtime, git's stat
+    cache reports no change and Python reuses the baseline's ``.pyc``. Touch
+    the targets and drop caches generated before the patch was applied.
+    """
+    for p in src.rglob("*"):
+        if p.is_file():
+            target = work / p.relative_to(src)
+            if target.is_file():
+                os.utime(target, None)
+    for cache in list(work.rglob("__pycache__")):
+        shutil.rmtree(cache, ignore_errors=True)
+    for pyc in work.rglob("*.pyc"):
+        pyc.unlink(missing_ok=True)
+
+
 def apply_oracle(work, spec):
     src = SOLUTIONS / spec["id"].split("_")[0]
     if not src.exists():
         raise FileNotFoundError(f"solution not found: {src}")
     shutil.copytree(src, work, dirs_exist_ok=True)
+    refresh_copied_files(src, work)
 
 
 def run_arm(spec, arm, agent_cmd, work):

@@ -69,16 +69,132 @@ DENY = re.compile(
     re.I,
 )
 
-# Allow only predefined test, build and read-only inspection commands. This is
-# not a full sandbox; it closes the shell escape around the write allowlist.
-ALLOW = re.compile(
-    r"^\s*(?:(?:python|python\.exe)\s+-m\s+(?:unittest|pytest|py_compile)\b"
-    r"|node\s+--test\b|go\s+test\b|git\s+(?:status|diff|log|show)\b"
-    r"|ls\b|dir\b|type\b|cat\b|head\b|tail\b|wc\b|grep\b|rg\b|find\b"
-    r"|Get-ChildItem\b|Select-String\b)",
-    re.I,
-)
 SHELL_META = re.compile(r"[|<>;&`]|\$\(|[\r\n]")
+
+# Commands run as an argv list with ``shell=False``. There is no shell to parse,
+# so a command is described by (executable, subcommand) instead of a regex.
+PY_MODULES = {"unittest", "pytest", "py_compile"}
+GIT_SUBCOMMANDS = {"status", "diff", "log", "show"}
+READ_ONLY_EXES = {"head", "tail", "wc", "grep", "rg", "find",
+                  "Select-String"}
+
+# Read-only helpers implemented here so they work without cmd.exe/PowerShell.
+INTERNAL_LIST = {"dir", "ls", "Get-ChildItem"}
+INTERNAL_READ = {"type", "cat"}
+
+LIST_LIMIT = 300
+SKIP_NAMES = {"__pycache__", ".git", ".pytest_cache"}
+
+# Flags that write outside the expected artifacts. Checked per argv token.
+FORBIDDEN_FLAGS = {
+    # find(1) write primitives
+    "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf",
+    "-fls", "-delete",
+    # output redirection / extra artifacts
+    "-o", "--output", "--basetemp", "-coverprofile", "--coverprofile",
+    "-cpuprofile", "-memprofile", "-trace", "--trace", "--junitxml",
+    "--cov-report", "--html", "--pre", "--pre-glob", "--ext-diff", "--textconv",
+}
+
+MIN_COMMAND_TIMEOUT = 1
+MAX_COMMAND_TIMEOUT = 300
+DEFAULT_COMMAND_TIMEOUT = 60
+
+
+def clamp_timeout(value):
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_COMMAND_TIMEOUT
+    return max(MIN_COMMAND_TIMEOUT, min(MAX_COMMAND_TIMEOUT, seconds))
+
+
+def split_command(cmd):
+    """Split a command into argv. Quotes group; backslash is literal."""
+    tokens, current, quote = [], [], None
+    for ch in cmd:
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                current.append(ch)
+        elif ch in ("'", '"'):
+            quote = ch
+        elif ch.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+        else:
+            current.append(ch)
+    if quote:
+        raise ValueError("unbalanced quote")
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def forbidden_flag(token):
+    return token.split("=", 1)[0].lower() in FORBIDDEN_FLAGS
+
+
+def path_escape(token):
+    """True for absolute or parent-traversing path arguments."""
+    if re.match(r"^(?:/|[A-Za-z]:[\\/]|\\\\)", token):
+        return True
+    return ".." in re.split(r"[\\/]", token)
+
+
+def check_command(cmd):
+    """Return (argv, None) if the command is allowed, else (None, reason)."""
+    if not isinstance(cmd, str) or not cmd.strip():
+        return None, "empty command"
+    if SHELL_META.search(cmd):
+        return None, "shell metacharacters are not allowed"
+    if DENY.search(cmd):
+        return None, "command denied by safety policy"
+    try:
+        argv = split_command(cmd)
+    except ValueError as exc:
+        return None, str(exc)
+    if not argv:
+        return None, "empty command"
+    for token in argv[1:]:
+        if token.startswith("-") and forbidden_flag(token):
+            return None, f"flag not allowed: {token}"
+    exe = argv[0].lower()
+    if exe in INTERNAL_LIST or exe in INTERNAL_READ:
+        flags = [a for a in argv[1:] if a.startswith("-") or a.startswith("/")]
+        if flags:
+            return None, f"flags are not supported for {argv[0]}: {flags[0]}"
+        if len(argv) > 2:
+            return None, f"{argv[0]} accepts at most one path"
+        if exe in INTERNAL_READ and len(argv) < 2:
+            return None, f"{argv[0]} requires a path"
+        return argv, None
+    if exe in ("python", "python.exe"):
+        if len(argv) < 3 or argv[1] != "-m" or argv[2] not in PY_MODULES:
+            return None, "only 'python -m unittest|pytest|py_compile' is allowed"
+        probe = argv[3:]
+    elif exe == "node":
+        if len(argv) < 2 or argv[1] != "--test":
+            return None, "only 'node --test' is allowed"
+        probe = argv[2:]
+    elif exe == "go":
+        if len(argv) < 2 or argv[1] != "test":
+            return None, "only 'go test' is allowed"
+        probe = argv[2:]
+    elif exe == "git":
+        if len(argv) < 2 or argv[1] not in GIT_SUBCOMMANDS:
+            return None, "only read-only git subcommands are allowed"
+        probe = argv[2:]
+    elif exe in READ_ONLY_EXES:
+        probe = argv[1:]
+    else:
+        return None, f"command not allowed: {argv[0]}"
+    for token in probe:
+        if not token.startswith("-") and path_escape(token):
+            return None, f"path escapes workdir: {token}"
+    return argv, None
 
 
 def safe_path(workdir, rel):
@@ -93,24 +209,78 @@ def normalized(rel):
     return str(Path(rel).as_posix())
 
 
+def read_path(workdir, rel):
+    """Resolve a path for reading; refuse repository internals."""
+    p = safe_path(workdir, rel)
+    parts = p.relative_to(workdir.resolve()).parts
+    if ".git" in parts:
+        raise ValueError(f"reading repository internals is not allowed: {rel}")
+    return p
+
+
+def scandir_sorted(path):
+    """Sorted directory entries; an unreadable directory yields nothing."""
+    try:
+        with os.scandir(path) as it:
+            return iter(sorted(it, key=lambda entry: entry.name))
+    except OSError:
+        return iter(())
+
+
+def list_files(workdir, rel=".", limit=LIST_LIMIT):
+    """Bounded depth-first listing; stops once ``limit`` entries are found."""
+    try:
+        p = safe_path(workdir, rel)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    if not p.exists():
+        return f"ERROR: not found: {rel}"
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        limit = LIST_LIMIT
+    root = workdir.resolve()
+    out = []
+    stack = [scandir_sorted(p)]
+    while stack and len(out) < limit:
+        try:
+            entry = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+            continue
+        if entry.name in SKIP_NAMES:
+            continue
+        out.append(str(Path(entry.path).relative_to(root)).replace("\\", "/"))
+        if len(out) >= limit:
+            break
+        if entry.is_dir(follow_symlinks=False):
+            stack.append(scandir_sorted(entry.path))
+    return "\n".join(out) or "(empty)"
+
+
+def read_text(workdir, rel, start=1, limit=200):
+    """Read a window of lines without loading the whole file into memory."""
+    try:
+        p = read_path(workdir, rel)
+        start = max(1, int(start))
+        limit = min(400, int(limit))
+        chunk = []
+        total = 0
+        with p.open("r", encoding="utf-8", errors="replace") as fh:
+            for lineno, line in enumerate(fh, start=1):
+                total = lineno
+                if start <= lineno < start + limit:
+                    chunk.append(line.rstrip("\r\n"))
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    return f"{p.relative_to(workdir)} lines {start}-{start+len(chunk)-1} of {total}\n" + "\n".join(chunk)
+
+
 def tool_call(workdir, name, args, allowed):
     if name == "list_files":
-        p = safe_path(workdir, args.get("path", "."))
-        out = []
-        for x in sorted(p.rglob("*")):
-            if any(part in ("__pycache__", ".git", ".pytest_cache") for part in x.parts):
-                continue
-            out.append(str(x.relative_to(workdir)).replace("\\", "/"))
-            if len(out) >= 300:
-                break
-        return "\n".join(out) or "(empty)"
+        return list_files(workdir, args.get("path", "."))
     if name == "read_file":
-        p = safe_path(workdir, args["path"])
-        start = max(1, int(args.get("start", 1)))
-        limit = min(400, int(args.get("limit", 200)))
-        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-        chunk = lines[start - 1:start - 1 + limit]
-        return f"{p.relative_to(workdir)} lines {start}-{start+len(chunk)-1} of {len(lines)}\n" + "\n".join(chunk)
+        return read_text(workdir, args["path"], args.get("start", 1), args.get("limit", 200))
     if name in ("write_file", "replace_in_file"):
         rel = normalized(args["path"])
         if allowed is not None and rel not in allowed:
@@ -128,19 +298,27 @@ def tool_call(workdir, name, args, allowed):
         p.write_text(text.replace(old, new, 1), encoding="utf-8")
         return f"replaced in {p.relative_to(workdir)}"
     if name == "run_command":
-        cmd = args["command"]
-        if DENY.search(cmd) or SHELL_META.search(cmd) or not ALLOW.search(cmd):
-            return "ERROR: command denied by safety policy"
+        argv, reason = check_command(args.get("command", ""))
+        if argv is None:
+            return f"ERROR: command denied by safety policy ({reason})"
+        exe = argv[0].lower()
+        if exe in INTERNAL_LIST:
+            return list_files(workdir, argv[1] if len(argv) > 1 else ".")
+        if exe in INTERNAL_READ:
+            return read_text(workdir, argv[1], limit=400)
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
         try:
-            p = subprocess.run(cmd, cwd=str(workdir), shell=True, capture_output=True, text=True,
+            p = subprocess.run(argv, cwd=str(workdir), shell=False, capture_output=True, text=True,
                                encoding="utf-8", errors="replace",
-                               timeout=int(args.get("timeout_s", 60)), env=env)
+                               timeout=clamp_timeout(args.get("timeout_s", DEFAULT_COMMAND_TIMEOUT)),
+                               env=env)
             return f"exit={p.returncode}\nstdout:\n{p.stdout[-3000:]}\nstderr:\n{p.stderr[-2000:]}"
         except subprocess.TimeoutExpired:
             return "ERROR: timeout"
+        except FileNotFoundError:
+            return f"ERROR: executable not found: {argv[0]}"
     return f"ERROR: unknown tool {name}"
 
 
