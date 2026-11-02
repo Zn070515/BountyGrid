@@ -333,3 +333,26 @@ func TestCompleteDoesNotFollowRedirects(t *testing.T) {
 		t.Fatalf("redirect error was classified as not sent: %v", err)
 	}
 }
+
+func TestCompleteIgnoresEnvironmentProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:1")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"direct"}}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	})
+	if err != nil {
+		t.Fatalf("loopback call used the environment proxy: %v", err)
+	}
+	if resp.Content != "direct" {
+		t.Fatalf("content = %q", resp.Content)
+	}
+}
