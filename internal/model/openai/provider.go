@@ -5,16 +5,23 @@
 package openai
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/Zn070515/BountyGrid/internal/domain"
 	"github.com/Zn070515/BountyGrid/internal/model"
 )
+
+var _ model.Provider = (*Provider)(nil)
 
 const (
 	defaultName             = "local-openai"
@@ -154,4 +161,98 @@ func isLoopbackHost(host string) bool {
 	}
 	ip, err := netip.ParseAddr(h)
 	return err == nil && ip.Unmap().IsLoopback()
+}
+
+type chatRequest struct {
+	Model     string        `json:"model"`
+	Messages  []chatMessage `json:"messages"`
+	MaxTokens int           `json:"max_tokens"`
+	Stream    bool          `json:"stream"`
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatResponse struct {
+	Choices []struct {
+		Message chatMessage `json:"message"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
+}
+
+// Complete performs one non-streaming chat completion. Output is text; it never
+// becomes a decision or a platform action.
+func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.ModelResponse, error) {
+	body, err := json.Marshal(chatRequest{
+		Model:     p.info.Model,
+		Messages:  toMessages(req.Input),
+		MaxTokens: req.MaxTokens,
+		Stream:    false,
+	})
+	if err != nil {
+		return model.ModelResponse{}, fmt.Errorf("%w: marshal request: %v", domain.ErrNotSent, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.base+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return model.ModelResponse{}, fmt.Errorf("%w: build request: %v", domain.ErrNotSent, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("User-Agent", userAgent)
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return model.ModelResponse{}, classifyDoError(err)
+	}
+	defer resp.Body.Close()
+
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, p.maxBody+1))
+	if err != nil {
+		return model.ModelResponse{}, fmt.Errorf("openai: read response: %w", err)
+	}
+	if int64(len(payload)) > p.maxBody {
+		return model.ModelResponse{}, fmt.Errorf("openai: response exceeds %d bytes", p.maxBody)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return model.ModelResponse{}, fmt.Errorf("openai: %s returned HTTP %d: %s",
+			p.info.Name, resp.StatusCode, snippet(payload))
+	}
+	var out chatResponse
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return model.ModelResponse{}, fmt.Errorf("openai: decode response: %w", err)
+	}
+	if len(out.Choices) == 0 {
+		return model.ModelResponse{}, fmt.Errorf("openai: response has no choices")
+	}
+	return model.ModelResponse{
+		Content:  out.Choices[0].Message.Content,
+		Usage:    model.Usage{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens},
+		Model:    p.info.Model,
+		Provider: p.info.Name,
+	}, nil
+}
+
+func toMessages(in []model.Message) []chatMessage {
+	out := make([]chatMessage, 0, len(in))
+	for _, m := range in {
+		out = append(out, chatMessage{Role: m.Role, Content: m.Content})
+	}
+	return out
+}
+
+func classifyDoError(err error) error { return err }
+
+func snippet(b []byte) string {
+	if len(b) <= errorSnippetBytes {
+		return string(b)
+	}
+	return string(b[:errorSnippetBytes]) + "...(truncated)"
 }

@@ -1,6 +1,11 @@
 package openai
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -64,5 +69,138 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 		if _, err := New(cfg); err == nil {
 			t.Fatalf("case %d: New accepted an invalid config", i)
 		}
+	}
+}
+
+func TestCompleteSuccess(t *testing.T) {
+	var gotPath, gotCT, gotUA string
+	var got struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+		Stream    bool   `json:"stream"`
+		Messages  []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotCT = r.Header.Get("Content-Type")
+		gotUA = r.Header.Get("User-Agent")
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{Model: "test-model", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.Complete(context.Background(), model.ModelRequest{
+		Input:     []model.Message{{Role: "user", Content: "hi"}},
+		MaxTokens: 16,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotCT != "application/json" || gotUA != userAgent {
+		t.Fatalf("headers content-type=%q user-agent=%q", gotCT, gotUA)
+	}
+	if got.Model != "test-model" || got.MaxTokens != 16 || got.Stream {
+		t.Fatalf("request body = %+v", got)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].Role != "user" || got.Messages[0].Content != "hi" {
+		t.Fatalf("messages = %+v", got.Messages)
+	}
+	if resp.Content != "hello" {
+		t.Fatalf("content = %q", resp.Content)
+	}
+	if resp.Usage.InputTokens != 7 || resp.Usage.OutputTokens != 3 {
+		t.Fatalf("usage = %+v", resp.Usage)
+	}
+	if resp.Provider != defaultName || resp.Model != "test-model" {
+		t.Fatalf("provider/model = %q/%q", resp.Provider, resp.Model)
+	}
+}
+
+func TestCompleteBaseAlreadyV1(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL + "/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q, want no doubled /v1", gotPath)
+	}
+}
+
+func TestCompleteSendsBearerOnlyWhenConfigured(t *testing.T) {
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "" {
+		t.Fatalf("Authorization = %q without a credential", auth)
+	}
+
+	p, err = New(Config{Model: "m", Endpoint: srv.URL, APIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "Bearer secret" {
+		t.Fatalf("Authorization = %q, want Bearer secret", auth)
+	}
+}
+
+func TestCompleteEmptyContentIsValid(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":""}}],"usage":{"prompt_tokens":5,"completion_tokens":5}}`)
+	}))
+	defer srv.Close()
+	p, err := New(Config{Model: "m", Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.Complete(context.Background(), model.ModelRequest{
+		Input: []model.Message{{Role: "user", Content: "hi"}}, MaxTokens: 5,
+	})
+	if err != nil {
+		t.Fatalf("empty content was treated as an error: %v", err)
+	}
+	if resp.Content != "" || resp.Usage.OutputTokens != 5 {
+		t.Fatalf("resp = %+v", resp)
 	}
 }
