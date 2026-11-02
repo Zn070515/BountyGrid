@@ -105,6 +105,9 @@ func runModel(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if opts.Call {
+		return runModelCall(ctx, opts)
+	}
 	plan, err := buildModelPlan(opts)
 	if err != nil {
 		return err
