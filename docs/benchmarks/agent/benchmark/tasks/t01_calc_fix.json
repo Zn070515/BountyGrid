@@ -5,6 +5,14 @@
   "acceptance": ["python -m unittest discover -s tests -v"],
   "setup": [],
   "allowed_files": ["calc/ops.py"],
+  "sandbox_image": "bountygrid-bench:py313",
+  "hidden_cases": [
+    {"module": "calc.ops", "func": "add", "args": [-7, -8], "expect": -15},
+    {"module": "calc.ops", "func": "add", "args": [1000000, 1], "expect": 1000001},
+    {"module": "calc.ops", "func": "multiply", "args": [-3, 4], "expect": -12},
+    {"module": "calc.ops", "func": "multiply", "args": [0, 9], "expect": 0},
+    {"module": "calc.ops", "func": "multiply", "args": [1000000, 1000000], "expect": 1000000000000}
+  ],
   "timeout_s": 120,
   "expected_baseline": "fail",
   "category": "bugfix",

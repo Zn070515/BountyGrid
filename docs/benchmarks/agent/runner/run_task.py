@@ -161,6 +161,14 @@ def apply_oracle(work, spec):
     refresh_copied_files(src, work)
 
 
+def apply_shallow(work, spec):
+    src = SOLUTIONS / (spec["id"].split("_")[0] + "_shallow")
+    if not src.exists():
+        raise FileNotFoundError(f"shallow solution not found: {src}")
+    shutil.copytree(src, work, dirs_exist_ok=True)
+    refresh_copied_files(src, work)
+
+
 def run_arm(spec, arm, agent_cmd, work):
     info = {"agent_exit": None, "agent_stdout": "", "agent_stderr": "", "agent_timed_out": False}
     started = time.time()
@@ -169,6 +177,9 @@ def run_arm(spec, arm, agent_cmd, work):
         info["agent_exit"] = 0
     elif arm == "oracle":
         apply_oracle(work, spec)
+        info["agent_exit"] = 0
+    elif arm == "shallow":
+        apply_shallow(work, spec)
         info["agent_exit"] = 0
     elif arm == "external":
         if not agent_cmd:
@@ -227,7 +238,7 @@ def run_one(spec, arm, agent_cmd, repeat, agent_max_steps=0):
         max_steps = int(spec.get("max_steps") or 0) or max_steps or int(agent_max_steps or 0)
         step_cap_hit = False
         step_cap_known = False
-        if arm in ("oracle", "mock"):
+        if arm in ("oracle", "mock", "shallow"):
             agent_completed = True
         else:
             if usage.get("step_cap_hit") is not None:
@@ -287,7 +298,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks", nargs="*", help="task ids; default all")
     ap.add_argument("--all", action="store_true")
-    ap.add_argument("--arm", default="mock", choices=["mock", "oracle", "external"])
+    ap.add_argument("--arm", default="mock",
+                    choices=["mock", "oracle", "shallow", "external"])
     ap.add_argument("--agent-cmd", default="")
     ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("--agent-max-steps", type=int, default=0,
