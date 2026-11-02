@@ -124,7 +124,11 @@ python -I -X utf8 runner/run_paired.py
 
 `t26` is the second task with `sandbox_image` and `hidden_cases`; run it with
 `--sandbox docker` to exercise the hidden probe. The paired runner still uses
-the host path for all tasks.
+the host path for all tasks. The first run scored 12/12 in host mode; the
+Docker hidden run scored `on` 4/4 hidden but hit the 20-step cap, `off` 4/4
+hidden in 6 steps. See
+[`summary-2026-11-02-v2.md`](summary-2026-11-02-v2.md) section 8 for the
+full table.
 
 ## Harness fixes (2026-11-02)
 
@@ -201,9 +205,9 @@ Build the image once:
 docker build -f runner/sandbox/Dockerfile.bench -t bountygrid-bench:py313 runner/sandbox
 ```
 
-Only `t01_calc_fix` declares `sandbox_image` in this phase. The other tasks
-fail closed under the default; run them with `--sandbox none` until they get
-images. `--agent-backend adapter` is required for `agent_trust=TRUSTED_ADAPTER`
+`t01_calc_fix` and `t26_money_rounding` declare `sandbox_image` in this phase.
+The other tasks fail closed under the default; run them with `--sandbox none`
+until they get images. `--agent-backend adapter` is required for `agent_trust=TRUSTED_ADAPTER`
 and `sandbox_container` matching; the default `external` is recorded
 `HOST_UNTRUSTED` and cannot claim container isolation.
 
@@ -225,8 +229,8 @@ Fixed data: `runs/schema-fixed.jsonl`, `runs/schema-fixed-summary.json`,
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
 $env:CGO_ENABLED='1'          # required for go test -race
-python -I -X utf8 docs\benchmarks\agent\runner\run_task.py --all --arm oracle --repeat 1 --sandbox none --out $env:TEMP\oracle.jsonl   # 24/24
-python -I -X utf8 docs\benchmarks\agent\runner\run_task.py --all --arm mock   --repeat 1 --sandbox none --out $env:TEMP\mock.jsonl     # 0/24
+python -I -X utf8 docs\benchmarks\agent\runner\run_task.py --all --arm oracle --repeat 1 --sandbox none --out $env:TEMP\oracle.jsonl   # 27/27
+python -I -X utf8 docs\benchmarks\agent\runner\run_task.py --all --arm mock   --repeat 1 --sandbox none --out $env:TEMP\mock.jsonl     # 0/27
 ```
 
 ## Run the paired study

@@ -1,0 +1,67 @@
+{
+  "generated_at": "2026-11-02T07:47:43Z",
+  "model": "qwen3.8-flash-next-iq3_s",
+  "reps": 2,
+  "tasks": 3,
+  "paired": {
+    "overall": {
+      "on": {
+        "runs": 6,
+        "success_rate": 1.0,
+        "median_wall_s": 31.6,
+        "median_input_tokens": 24076.0,
+        "median_output_tokens": 2241.0,
+        "median_steps": 13.0
+      },
+      "off": {
+        "runs": 6,
+        "success_rate": 1.0,
+        "median_wall_s": 9.3,
+        "median_input_tokens": 6458.5,
+        "median_output_tokens": 390.0,
+        "median_steps": 6.0
+      }
+    },
+    "bootstrap_success_diff_on_minus_off": {
+      "observed": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "tasks": 3
+    },
+    "per_task": {
+      "t25_ledger_termination": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t26_money_rounding": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      },
+      "t27_config_concurrency": {
+        "on": {
+          "success": 2,
+          "runs": 2
+        },
+        "off": {
+          "success": 2,
+          "runs": 2
+        }
+      }
+    }
+  },
+  "scope_ab": {}
+}
