@@ -36,13 +36,24 @@ type Config struct {
 }
 
 // Client is a validated loopback HTTP client. Providers add their own message
-// mapping on top of it.
+// mapping on top of it. The fields are unexported so a caller cannot repoint a
+// validated client at a non-loopback host after Router.New accepted it.
 type Client struct {
-	Base    string
-	APIKey  string
-	MaxBody int64
-	HTTP    *http.Client
+	base    string
+	apiKey  string
+	maxBody int64
+	http    *http.Client
 }
+
+func (c *Client) Base() string   { return c.base }
+func (c *Client) APIKey() string { return c.apiKey }
+func (c *Client) MaxBody() int64 { return c.maxBody }
+
+// Do sends a request through the validated loopback client.
+func (c *Client) Do(req *http.Request) (*http.Response, error) { return c.http.Do(req) }
+
+// ReadBody reads a response body with the client's byte limit.
+func (c *Client) ReadBody(r io.Reader) ([]byte, error) { return ReadLimited(r, c.maxBody) }
 
 // New validates the transport configuration. Zero timeout and max response
 // bytes use the package defaults; negative values are rejected.
@@ -66,10 +77,10 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("loopback: max response bytes must not be negative")
 	}
 	return &Client{
-		Base:    base,
-		APIKey:  strings.TrimSpace(cfg.APIKey),
-		MaxBody: maxBody,
-		HTTP: &http.Client{
+		base:    base,
+		apiKey:  strings.TrimSpace(cfg.APIKey),
+		maxBody: maxBody,
+		http: &http.Client{
 			Timeout:   timeout,
 			Transport: &http.Transport{Proxy: nil},
 			CheckRedirect: func(*http.Request, []*http.Request) error {

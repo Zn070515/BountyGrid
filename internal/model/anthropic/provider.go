@@ -85,7 +85,7 @@ func New(cfg Config) (*Provider, error) {
 			MaxOutputTokens:    cfg.MaxOutputTokens,
 			InputPricePerMTok:  cfg.InputPricePerMTok,
 			OutputPricePerMTok: cfg.OutputPricePerMTok,
-			Endpoint:           client.Base,
+			Endpoint:           client.Base(),
 			Trust:              model.TrustInProcess,
 			Strength:           cfg.Strength,
 		},
@@ -146,7 +146,7 @@ func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.
 	if err != nil {
 		return model.ModelResponse{}, fmt.Errorf("%w: marshal request: %v", domain.ErrNotSent, err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.client.Base+"/messages", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.client.Base()+"/messages", bytes.NewReader(body))
 	if err != nil {
 		return model.ModelResponse{}, fmt.Errorf("%w: build request: %v", domain.ErrNotSent, err)
 	}
@@ -154,17 +154,17 @@ func (p *Provider) Complete(ctx context.Context, req model.ModelRequest) (model.
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", userAgent)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
-	if p.client.APIKey != "" {
-		httpReq.Header.Set("x-api-key", p.client.APIKey)
+	if p.client.APIKey() != "" {
+		httpReq.Header.Set("x-api-key", p.client.APIKey())
 	}
 
-	resp, err := p.client.HTTP.Do(httpReq)
+	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		return model.ModelResponse{}, loopback.ClassifyDoError(err)
 	}
 	defer resp.Body.Close()
 
-	payload, err := loopback.ReadLimited(resp.Body, p.client.MaxBody)
+	payload, err := p.client.ReadBody(resp.Body)
 	if err != nil {
 		return model.ModelResponse{}, err
 	}
